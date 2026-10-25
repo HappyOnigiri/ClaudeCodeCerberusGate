@@ -1,6 +1,7 @@
 {
   "name": "claude-code-cerberus-gate",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "fmt": "oxfmt",
