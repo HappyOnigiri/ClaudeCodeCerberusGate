@@ -60,15 +60,27 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
     token: candidate.token,
     epoch: candidate.epoch,
     mode,
-    text:
-      mode === "publish"
-        ? candidate.text
-        : withNote(verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED, candidate.text),
+    text: candidate.text,
   };
-  if (mode === "revise") {
-    gate.revisions++;
-    delivery.context = correction(candidate.text, verdict.findings);
-    log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
+  switch (mode) {
+    case "publish":
+      break;
+    case "notice":
+      delivery.text = withNote(
+        verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED,
+        candidate.text,
+      );
+      break;
+    case "revise":
+      delivery.text = withNote(UNRESOLVED, candidate.text);
+      gate.revisions++;
+      delivery.context = correction(candidate.text, verdict.findings);
+      log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
+      break;
+    default: {
+      const exhaustive: never = mode;
+      throw new Error(`Unknown delivery mode: ${String(exhaustive)}`);
+    }
   }
   gate.active = undefined;
   gate.delivery = delivery;
