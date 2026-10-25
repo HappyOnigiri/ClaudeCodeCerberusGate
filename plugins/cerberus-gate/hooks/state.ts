@@ -1,18 +1,18 @@
 import type { Verdict } from "./policy.ts";
 export type Candidate = {
   token: number;
+  turnId: string;
   epoch: number;
   text: string;
   context: string;
-  agentId?: string;
-  rawReview: string;
+  controller: AbortController;
+  timedOut: boolean;
 };
 export type Delivery = {
   token: number;
   epoch: number;
-  mode: "publish" | "revise" | "notice" | "restart";
-  text: string;
-  context?: string;
+  context: string;
+  mode: "revise" | "restart";
 };
 type Phase =
   | "idle"
@@ -40,6 +40,7 @@ export function createState() {
 }
 export type GateState = ReturnType<typeof createState>;
 export function reset(state: GateState, prompt: string): void {
+  state.active?.controller.abort();
   state.epoch++;
   state.revisions = 0;
   state.active = undefined;
@@ -52,15 +53,13 @@ export function reset(state: GateState, prompt: string): void {
 export function current(state: GateState, candidate: Candidate): boolean {
   return state.active === candidate && candidate.epoch === state.epoch && !state.blocked;
 }
-export function disposition(
-  verdict: Verdict,
-  revisions: number,
-  max: number,
-): Exclude<Delivery["mode"], "restart"> {
+export type Mode = "publish" | "revise" | "notice";
+
+export function disposition(verdict: Verdict, revisions: number, max: number): Mode {
   const modes = {
     PASS: "publish",
     REVISE: revisions < max ? "revise" : "notice",
     UNVERIFIED: "notice",
-  } satisfies Record<Verdict["decision"], Exclude<Delivery["mode"], "restart">>;
+  } satisfies Record<Verdict["decision"], Mode>;
   return modes[verdict.decision];
 }

@@ -35,20 +35,25 @@
 登録用モジュールでも、外部への依存は `claude-code` の型 import に限る。
 生成型、テスト、検証スクリプト内の文字列 fixture は依存境界の検査対象外とする。
 
-許可する API は次の14種類とする。
+許可する API は次の16種類とする。
 
 - `agent.list/register/spawn`
 - `clock.now/after`
 - `command.register`
 - `prompt.submit`
+- `model.complete`
+- `turn.abort`
 - `session.messages/version`
 - `state.get/set`（自分の再ロード復元用の状態のみ）
 - `tool.list/call`
 - `ui.status`
 
 `state.get/set` の対象は `plugin: "cerberus-gate", key: "recovery"` に限定する。
-`tool.call` は `TaskStop` だけ、エージェント登録・起動は既存のレビュアーだけに限定する。
-対象はリテラルまたは一意な定数参照から解決し、解決できなければ拒否する。
+`tool.call` の静的な対象は `TaskStop`、エージェント登録・起動は既存のレビュアーだけに限定する。
+これらの対象はリテラルまたは一意な定数参照から解決し、解決できなければ拒否する。
+審査用モデルが選ぶ読み取りツールの呼び出しだけは `callReviewTool` に集約する。
+この関数は先頭で `allowedTool` を確認して不許可の要求を拒否し、検査済みの引数とツール名だけを転送する形を静的検査する。
+実行時にはツール要求の制御フィールドを拒否し、`tool.call`・`tool.check` でも許可リストと MCP の読み取り属性を検査する。
 API の別名参照、計算プロパティ、間接的なコード読み込みも拒否する。
 エンジン引数は `$` または `_$` とし、直接呼び出しか、`EngineInterface` を受け取るローカル関数への受け渡しに限る。
 これは静的な使用箇所の検査であり、実行時の読み取り専用ガードと権限テストも維持する。

@@ -2,7 +2,7 @@
   "name": "cerberus-gate",
   "displayName": "Cerberus Gate",
   "version": "0.1.0",
-  "description": "Review final answers before publication using a read-only agent, and route corrections back to the main agent.",
+  "description": "Review final answers before publication using a review model and read-only tools, and route corrections back to the main agent.",
   "author": {
     "name": "HappyOnigiri"
   },
