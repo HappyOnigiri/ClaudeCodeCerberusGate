@@ -231,7 +231,7 @@ async function finishReview(
     log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
     await saveRecovery($, gate);
     queueContinuation($, delivery);
-    return WAITING;
+    return "";
   }
   switch (mode) {
     case "publish":
