@@ -11,6 +11,7 @@ import {
   WAITING,
 } from "./policy.ts";
 import { createState, current, disposition, reset } from "./state.ts";
+import { createLog } from "./log.ts";
 import type { Candidate, Delivery } from "./state.ts";
 import type { Config, Verdict } from "./policy.ts";
 import type {
@@ -23,6 +24,7 @@ import type {
 } from "claude-code";
 
 const gate = createState();
+const log = createLog();
 let config: Config = readConfig({});
 let configured = true;
 let interactive = true;
@@ -44,6 +46,9 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
   timer?.cancel();
   timer = undefined;
   const mode = disposition(verdict, gate.revisions, config.maxRevisions);
+  log.record($.clock.now(), `審査 #${candidate.token}: ${verdict.decision}`);
+  if (mode === "notice" && verdict.decision === "REVISE")
+    log.record($.clock.now(), "修正回数の上限に到達しました。");
   const delivery: Delivery = {
     token: candidate.token,
     epoch: candidate.epoch,
@@ -53,6 +58,7 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
   if (mode === "revise") {
     gate.revisions++;
     delivery.context = correction(candidate.text, verdict.findings);
+    log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
   }
   gate.active = undefined;
   gate.delivery = delivery;
@@ -60,6 +66,7 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
   const sent = await $.prompt.submit({ text: controlText(delivery) }).catch(() => undefined);
   if (sent === undefined || sent.drop !== undefined) {
     if (gate.epoch === delivery.epoch) {
+      log.record($.clock.now(), "検証処理の継続に失敗しました。本文は公開しません。");
       gate.delivery = undefined;
       gate.action = undefined;
       gate.blocked = true;
@@ -81,6 +88,7 @@ async function startReview($: EngineInterface, e: TurnStepInput, text: string): 
   };
   gate.active = candidate;
   gate.phase = "reviewing";
+  log.record($.clock.now(), `審査 #${candidate.token}: 開始`);
   const available = await $.tool.list();
   const tools = available.map((t) => t.name).filter((t) => allowedTool(t, config));
   await $.agent.register({
@@ -99,6 +107,7 @@ async function startReview($: EngineInterface, e: TurnStepInput, text: string): 
   });
   if (!current(gate, candidate)) return;
   if (spawned.deny !== undefined || spawned.agentId === undefined) {
+    log.record($.clock.now(), "レビュアーを起動できませんでした。");
     await dispatch($, candidate, { decision: "UNVERIFIED", findings: [] });
     return;
   }
@@ -106,6 +115,7 @@ async function startReview($: EngineInterface, e: TurnStepInput, text: string): 
   gate.reviewers.add(spawned.agentId);
   timer = $.clock.after(config.reviewTimeoutMs, async () => {
     if (!current(gate, candidate)) return;
+    log.record($.clock.now(), `審査 #${candidate.token}: タイムアウト`);
     await dispatch($, candidate, { decision: "UNVERIFIED", findings: [] });
     await $.tool.call({ tool: "TaskStop", task_id: spawned.agentId }).catch(() => undefined);
   });
@@ -119,6 +129,10 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     gate.action = undefined;
     gate.phase = action.mode === "publish" ? "published" : "unverified";
     if (next.signal.aborted || action.epoch !== gate.epoch) return resultOf(e, "");
+    log.record(
+      $.clock.now(),
+      action.mode === "publish" ? "検証済みの本文を公開しました。" : UNVERIFIED,
+    );
     $.ui.status("");
     yield { kind: "text", index: 0, text: action.text };
     yield { kind: "stop", stopReason: "end_turn", usage: null };
@@ -174,6 +188,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     (response.stopReason !== "end_turn" && response.stopReason !== "stop_sequence") ||
     text.length > MAX_DRAFT
   ) {
+    log.record($.clock.now(), "回答の終了条件またはサイズが審査の対象外です。本文は公開しません。");
     yield { kind: "text", index: 0, text: UNVERIFIED };
     yield { kind: "stop", stopReason: "end_turn", usage: response.usage };
     return resultOf(e, UNVERIFIED);
@@ -189,6 +204,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
 
 // 異常終了時に元のストリームへフォールバックしない。
 const stepFailure: Hook<"turn.step"> = async function* ($, e) {
+  log.record($.clock.now(), "回答処理でエラーが発生しました。本文は公開しません。");
   gate.blocked = true;
   gate.active = undefined;
   gate.delivery = undefined;
@@ -239,6 +255,7 @@ const onComplete: Hook<"turn.complete"> = async ($, e, next) => {
     return result;
   }
   if (e.agentId === undefined && e.isAborted) {
+    log.record($.clock.now(), "回答処理が中断されました。");
     timer?.cancel();
     reset(gate, gate.prompt);
     gate.phase = "cancelled";
@@ -246,7 +263,7 @@ const onComplete: Hook<"turn.complete"> = async ($, e, next) => {
   return result;
 };
 
-const onPrompt: Hook<"prompt.submit"> = async (_$, e, next) => {
+const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
   if (e.origin.kind === "plugin" && e.origin.name === "cerberus-gate") {
     const delivery = gate.delivery;
     if (delivery === undefined || e.text !== controlText(delivery) || delivery.epoch !== gate.epoch)
@@ -268,6 +285,8 @@ const onPrompt: Hook<"prompt.submit"> = async (_$, e, next) => {
     return { drop: "Cerberus: 検証結果を処理済みです。" };
   timer?.cancel();
   timer = undefined;
+  if (gate.active !== undefined || gate.delivery !== undefined || gate.action !== undefined)
+    log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
   reset(gate, e.text);
   return next(e);
 };
@@ -295,6 +314,7 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
 };
 
 export const register: Register = (on, options) => {
+  log.clear();
   configured = true;
   try {
     config = readConfig(options);
@@ -302,9 +322,13 @@ export const register: Register = (on, options) => {
     configured = false;
   }
   on("session.start", async ($, e, next) => {
+    log.clear();
     interactive = e.isInteractive;
     const version = await $.session.version();
     configured = configured && version.base === "2.1.310";
+    log.record($.clock.now(), "Cerberus Gate を起動しました。");
+    if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
+    if (!interactive) log.record($.clock.now(), "非対話セッションは対象外です。");
     // 再ロードで失った原稿を公開せず、残っている自分の審査だけを停止する。
     for (const agent of await $.agent.list()) {
       if (agent.type !== REVIEWER || agent.spawnedBy !== "cerberus-gate") continue;
@@ -313,14 +337,24 @@ export const register: Register = (on, options) => {
         await $.tool.call({ tool: "TaskStop", task_id: agent.id }).catch(() => undefined);
     }
     await $.command.register({ name: "cerberus", description: "回答検証の状態を表示" });
+    await $.command.register({
+      name: "cgate",
+      description: "Cerberus Gate の状態・セッションログを表示",
+      argumentHint: "[log|cancel]",
+      immediate: true,
+    });
     return next(e);
   });
-  on("command.run", { command: "cerberus" }, async ($, e) => {
-    if (e.args.trim() === "cancel") {
+  on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
+    const argument = e.args.trim();
+    if (argument === "log") return { text: await log.text() };
+    if (argument !== "" && argument !== "cancel") return { text: "使い方: /cgate [log|cancel]" };
+    if (argument === "cancel") {
       const id = gate.active?.agentId;
       timer?.cancel();
       reset(gate, gate.prompt);
       gate.phase = "cancelled";
+      log.record($.clock.now(), "コマンドで検証処理を取り消しました。");
       if (id !== undefined)
         await $.tool.call({ tool: "TaskStop", task_id: id }).catch(() => undefined);
     }
@@ -352,13 +386,15 @@ export const register: Register = (on, options) => {
     decision: "deny",
     reason: "Cerberus: permission guard failed.",
   }));
-  on("turn.abort", async (_$, e, next) => {
+  on("turn.abort", async ($, e, next) => {
+    log.record($.clock.now(), "回答処理が中断されました。");
     timer?.cancel();
     reset(gate, gate.prompt);
     gate.phase = "cancelled";
     return next(e);
   });
   on("session.end", async (_$, e, next) => {
+    log.clear();
     timer?.cancel();
     reset(gate, "");
     return next(e);
