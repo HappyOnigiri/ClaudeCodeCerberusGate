@@ -310,7 +310,11 @@ test("REVISE exposes findings in its prompt but keeps the draft in hidden contex
   const h = harness();
   await started(h);
   h.replies.push(verdict("REVISE", ["fact.txt:1 contradicts the draft"]));
-  assert.equal((await h.step()).text, WAITING);
+  const held = await h.step();
+  assert.equal(held.text, "");
+  assert.equal(held.result.answer, "");
+  assert.deepEqual(held.chunks, []);
+  assert.ok(h.events.statuses.includes(WAITING));
   await h.flushCorrections();
   assert.equal(h.events.prompts.length, 1);
   const sent = h.events.prompts[0];
@@ -429,7 +433,7 @@ test("revision cap shows a note; correction delivery failure is reported without
   await started(failed);
   failed.failPrompt();
   failed.replies.push(verdict("REVISE", ["SECRET FINDING"]));
-  assert.equal((await failed.step()).text, WAITING);
+  assert.equal((await failed.step()).text, "");
   await failed.flushCorrections();
   assert.match(
     (await failed.fire("command.run", { command: "cgate", args: "log" })).text,
@@ -565,7 +569,7 @@ test("a newer request or cancel invalidates a scheduled correction before dispat
     const h = harness();
     await started(h);
     h.replies.push(verdict("REVISE", ["SECRET FINDING"]));
-    assert.equal((await h.step()).text, WAITING);
+    assert.equal((await h.step()).text, "");
     if (cancel) await h.fire("command.run", { command: "cgate", args: "cancel" });
     else await h.prompt("new request");
     await h.flushCorrections();
@@ -683,7 +687,7 @@ test("reload preserves correction counts across queued and accepted correction p
       /PRIVATE FINDING|UNPUBLISHED DRAFT/u,
     );
     next.replies.push(verdict("REVISE", ["still wrong"]));
-    assert.equal((await next.step()).text, WAITING);
+    assert.equal((await next.step()).text, "");
     await next.flushCorrections();
     next.replies.push(verdict("REVISE", ["still wrong"]));
     assert.equal((await next.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));

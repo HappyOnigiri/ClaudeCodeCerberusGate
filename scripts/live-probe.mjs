@@ -449,6 +449,8 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
+    if (mode === "revise" && latest.includes("回答を検証中です。"))
+      throw new Error("Waiting notice remained in the completed answer");
     if (mode === "revise" || mode === "reload-review") {
       for (const name of (await readdir(artifacts)).filter((entry) =>
         /^review-\d+\.json$/u.test(entry),
