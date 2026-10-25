@@ -30,11 +30,6 @@ Claude Code で次の2つを実行してください。
 Claude Code を再起動すると有効になります。
 更新時は `/plugin marketplace update cerberus-gate` と `/plugin update cerberus-gate@cerberus-gate` を実行し、再起動してください。
 
-以前 `make install` で導入した場合は、対話セッションを終了し、更新したリポジトリで `npm run migrate` を実行してください。
-審査設定を引き継ぎ、旧版2つを無効化して公開版へ切り替えます。
-完了後に Claude Code を再起動してください。
-移行の詳細は [開発と検証](/docs/development.md#公開版への移行) を参照してください。
-
 ## 使い方
 
 インストール後は、普段どおり Claude Code に依頼してください。
