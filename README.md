@@ -1,8 +1,8 @@
 # Claude Code Cerberus Gate
 
 Claude Code の最終回答を表示前に検証する TypeScript 製 Mods。
-読み取り専用の Side Agent が根拠を確認し、修正が必要なら本文を保留してメインエージェントへ戻す。
-合格した本文をそのまま公開する。
+審査用モデルと読み取り専用ツールが根拠を確認し、修正が必要なら本文を保留してメインエージェントへ戻す。
+合格した本文は追加プロンプトを送らず、元のターンでそのまま公開する。
 
 ## 起動
 
@@ -34,6 +34,7 @@ claude --plugin-dir "$PWD/plugins/cerberus-gate"
 `reviewerModel` と `reviewerEffort` の既定値は `inherit` で、最終回答を生成したステップのモデルと effort を引き継ぐ。
 `/config` でモデル ID や effort（`inherit`・`low`・`medium`・`high`・`xhigh`・`max`）を設定できる。
 モデルが対応しない effort はエンジン側の制約に従う。
+元のステップの effort が数値の場合、審査 API は数値を受け付けないため、審査モデルの既定値を使う。
 選択 UI からの保存先はユーザースコープの `~/.claude/settings.json` の `pluginConfigs[<plugin>].options`。
 `CLAUDE_CONFIG_DIR` を指定した場合は、その配下の `settings.json` に保存する。
 MCP の初期状態は不許可。検索ツールの完全一致の名前を明示し、エンジンが読み取り専用と判定する呼び出しだけを許可する。

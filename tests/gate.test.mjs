@@ -11,24 +11,39 @@ import {
   withNote,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
+const verdict = (decision = "PASS", findings = []) => JSON.stringify({ decision, findings });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
 function harness(
   options = {},
   version = "2.1.310",
-  host = { states: new Map(), reviewers: [], counter: 0 },
+  host = { states: new Map(), reviewers: [] },
   registerHook = register,
 ) {
   const handlers = new Map();
   const events = {
     prompts: [],
+    statuses: [],
     calls: [],
-    inputs: [],
-    agents: [],
+    models: [],
     timers: [],
     commands: [],
-    spawns: [],
+    inputs: [],
   };
-
+  const replies = [];
   let draft = "UNPUBLISHED DRAFT";
+  let time = 0;
+  const controller = new AbortController();
+  let callResult = { result: "read result", text: "fact.txt:1 stable", isReadOnly: true };
+  let promptFailure = false;
+  let permission = "allow";
+  let readOnly = true;
+  let messages = async () => [{ role: "user", content: "original request" }];
   const matches = (m, e) =>
     Object.entries(m).every(([k, v]) =>
       v instanceof RegExp ? typeof e[k] === "string" && v.test(e[k]) : v === e[k],
@@ -45,7 +60,9 @@ function harness(
   }, options);
   const engine = {
     ui: {
-      status() {},
+      status(value) {
+        events.statuses.push(value);
+      },
       open: async (pane) => {
         events.pane = pane;
         return { isPlaced: true };
@@ -68,6 +85,7 @@ function harness(
         return { isSet: true, version: 1 };
       },
     },
+    turn: { abort: async () => fire("turn.abort", {}) },
     command: {
       register: async (spec) => {
         events.commands.push(spec);
@@ -76,26 +94,29 @@ function harness(
     },
     session: {
       version: async () => ({ version, base: version }),
-      messages: async () => [{ role: "user", content: "original request" }],
+      messages: () => messages(),
+    },
+    model: {
+      complete: async (request, callOptions) => {
+        events.models.push({ request, options: callOptions });
+        const reply = replies.length ? replies.shift() : verdict();
+        if (typeof reply === "function") return reply(request, callOptions);
+        return { isAnswered: true, text: reply, usage: {} };
+      },
     },
     tool: {
-      list: async () => [
-        { name: "Read" },
-        { name: "Write" },
-        { name: "Bash" },
-        { name: "mcp__notes__search" },
-      ],
-      call: async (e) => fire("tool.call", e),
+      list: async () =>
+        ["Read", "Write", "Bash", "mcp__notes__search"].map((name) => ({
+          name,
+          description: name,
+          mcp: name.startsWith("mcp__"),
+        })),
+      call: async (e) => fire("tool.call", e, "cerberus-gate"),
     },
-    agent: {
-      list: async () => host.reviewers,
-      register: async (e) => {
-        events.agents.push(e);
-      },
-      spawn: async (e) => fire("agent.spawn", e),
-    },
+    agent: { list: async () => host.reviewers },
     prompt: {
       submit: async (e) => {
+        if (promptFailure) throw new Error("queue unavailable");
         const result = await fire("prompt.submit", {
           ...e,
           wait: false,
@@ -106,7 +127,7 @@ function harness(
       },
     },
     clock: {
-      now: async () => 0,
+      now: async () => time,
       after: (ms, fn) => {
         const timer = {
           ms,
@@ -121,39 +142,32 @@ function harness(
       },
     },
   };
-  const core = async (name, e) => {
-    if (name === "agent.spawn") {
-      events.spawns.push(e);
-      const agentId = `review-${++host.counter}`;
-      host.reviewers.push({
-        id: agentId,
-        type: "cerberus-gate:reviewer",
-        spawnedBy: "cerberus-gate",
-        status: "running",
-      });
-      return { model: "haiku", agentId };
-    }
+  const core = async (name, e, origin) => {
     if (name === "prompt.submit") return { text: e.text, context: e.context };
-    if (name === "turn.complete") return { text: e.answer };
-    if (name === "tool.check") return { decision: "allow" };
+    if (name === "tool.check") return { decision: permission };
     if (name === "tool.call") {
+      const check = await fire(
+        "tool.check",
+        { tool: e.tool, input: e, ...(readOnly ? { isReadOnly: true } : {}) },
+        origin,
+      );
+      if (check.decision !== "allow") return { deny: check.decision };
       events.calls.push(e.tool);
       events.inputs.push(e);
-      return { result: "read result" };
+      return typeof callResult === "function" ? callResult(e) : callResult;
     }
     return {};
   };
-  const signal = new AbortController().signal;
-  async function fire(name, e) {
+  async function fire(name, e, origin = "engine") {
     const chain = (handlers.get(name) ?? []).filter((h) => matches(h.matcher, e));
-    const invoke = async (index) => {
-      const entry = chain[index];
-      if (!entry) return core(name, e);
+    const invoke = async (i) => {
+      const entry = chain[i];
+      if (!entry) return core(name, e, origin);
       const next = (arg) => {
         e = arg;
-        return invoke(index + 1);
+        return invoke(i + 1);
       };
-      Object.assign(next, { signal, origin: { plugin: "cerberus-gate" } });
+      Object.assign(next, { signal: controller.signal, origin: { plugin: origin } });
       try {
         return await entry.handler(engine, e, next);
       } catch (error) {
@@ -181,8 +195,8 @@ function harness(
       ...(agentId ? { agentId } : {}),
     };
     const chain = (handlers.get("turn.step") ?? []).filter((h) => matches(h.matcher, e));
-    const invoke = (index) => {
-      const entry = chain[index];
+    const invoke = (i) => {
+      const entry = chain[i];
       if (!entry)
         return (async function* () {
           yield { kind: "text", index: 0, text };
@@ -192,7 +206,7 @@ function harness(
           return { ...e, answer: text, toolUses: tools, stopReason, usage: null };
         })();
       const next = () => {
-        const iterator = invoke(index + 1);
+        const iterator = invoke(i + 1);
         let finish;
         const result = new Promise((resolve) => {
           finish = resolve;
@@ -207,7 +221,7 @@ function harness(
           },
         };
       };
-      Object.assign(next, { signal, origin: { plugin: "cerberus-gate" } });
+      Object.assign(next, { signal: controller.signal, origin: { plugin: "engine" } });
       return (async function* () {
         try {
           return yield* entry.handler(engine, e, next);
@@ -217,8 +231,8 @@ function harness(
         }
       })();
     };
-    const chunks = [];
-    const stream = invoke(0);
+    const chunks = [],
+      stream = invoke(0);
     let r;
     while (!(r = await stream.next()).done) chunks.push(r.value);
     return {
@@ -230,360 +244,478 @@ function harness(
       result: r.value,
     };
   }
-  const prompt = (text) =>
-    fire("prompt.submit", { text, origin: { kind: "composer" }, wait: false });
-  const finish = async (decision = "PASS", findings = []) => {
-    const agentId = `review-${host.counter}`;
-    await step({ agentId, text: JSON.stringify({ decision, findings }) });
-    await fire("turn.complete", {
-      agentId,
-      turnId: "review-turn",
-      answer: "private verdict",
-      reason: "answer",
-      isAborted: false,
-      durationMs: 1,
-    });
-  };
   return {
     events,
     host,
+    unload: () => controller.abort(),
+    flushCorrections: async () => {
+      for (const timer of events.timers.filter((t) => t.ms === 0 && !t.cancelled)) {
+        timer.cancel();
+        await timer.fn();
+      }
+    },
+    replies,
     engine,
     step,
     fire,
-    prompt,
-    finish,
-    setDraft: (t) => {
-      draft = t;
+    prompt: (text) => fire("prompt.submit", { text, origin: { kind: "composer" }, wait: false }),
+    setDraft: (text) => {
+      draft = text;
+    },
+    setCall: (value) => {
+      callResult = value;
+    },
+    setPermission: (value) => {
+      permission = value;
+    },
+    setReadOnly: (value) => {
+      readOnly = value;
+    },
+    setMessages: (read) => {
+      messages = read;
+    },
+    failPrompt: () => {
+      promptFailure = true;
+    },
+    advance: (ms) => {
+      time += ms;
     },
   };
 }
-
-test("draft is withheld; read-only reviewer approves the exact stored text once", async () => {
-  const h = harness();
+const started = async (h) => {
+  await h.fire("session.start", { isInteractive: true });
   await h.prompt("original request");
+};
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("PASS returns the exact held answer in the original step without a prompt", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }), verdict());
+  const result = await h.step();
+  assert.equal(result.text, "UNPUBLISHED DRAFT");
+  assert.equal(result.result.turnId, "t");
+  assert.deepEqual(h.events.calls, ["Read"]);
+  assert.equal(h.events.prompts.length, 0);
+  assert.ok(h.events.models[1].request.prompt.includes("fact.txt:1 stable"));
+  assert.ok(!h.events.models[0].request.prompt.includes('"name":"Write"'));
+  assert.ok(h.events.timers[0].cancelled);
+});
+
+test("only REVISE sends hidden context; corrected answer is reviewed without a publication prompt", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(verdict("REVISE", ["fact.txt:1 contradicts the draft"]));
   assert.equal((await h.step()).text, WAITING);
-  assert.deepEqual(h.events.agents[0].tools, ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]);
-  for (const tool of ["Grep", "Glob"]) {
-    assert.equal((await h.fire("tool.check", { agentId: "review-1", tool })).decision, "allow");
-    assert.equal((await h.fire("tool.call", { agentId: "review-1", tool })).result, "read result");
-  }
-  assert.equal(
-    (await h.fire("tool.call", { agentId: "review-1", tool: "Write" })).deny.includes("read-only"),
-    true,
-  );
-  assert.deepEqual(h.events.calls, ["Grep", "Glob"]);
-  const review = await h.step({ agentId: "review-1", text: '{"decision":"PASS","findings":[]}' });
-  assert.ok(!review.text.includes("PASS"));
-  await h.fire("turn.complete", { agentId: "review-1", reason: "answer", answer: "hidden" });
-  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+  await h.flushCorrections();
+  assert.equal(h.events.prompts.length, 1);
+  const sent = h.events.prompts[0];
+  assert.doesNotMatch(sent.text, /UNPUBLISHED|fact.txt/u);
+  assert.ok(sent.context.join("").includes("fact.txt:1"));
+  h.setDraft("CORRECTED");
+  assert.equal((await h.step()).text, "CORRECTED");
   assert.equal(h.events.prompts.length, 1);
 });
 
-test("corrections are hidden context to main; revised answer is reviewed again", async () => {
-  const h = harness();
-  await h.prompt("fix the task");
-  await h.step();
-  await h.finish("REVISE", ["fact.txt:1 contradicts the draft"]);
-  const sent = h.events.prompts[0];
-  assert.ok(!sent.text.includes("UNPUBLISHED"));
-  assert.ok(sent.context.join("").includes("fact.txt:1"));
-  h.setDraft("CORRECTED");
-  assert.equal((await h.step()).text, WAITING);
-  await h.finish();
-  assert.equal((await h.step()).text, "CORRECTED");
+test("malformed verdicts, denied tools and spoofed envelope fields never pass or execute", async () => {
+  for (const response of [
+    "PASS",
+    '{"decision":"PASS","findings":["error"]}',
+    JSON.stringify({ tool: "Bash", input: { command: "touch forbidden" } }),
+    JSON.stringify({ tool: "Write", input: { file_path: "fact.txt", content: "changed" } }),
+    ...["consent", "agentId", "tool", "tool_use_id", "requestMeta", "__proto__"].map(
+      (key) => `{"tool":"Read","input":{"file_path":"fact.txt","${key}":"spoof"}}`,
+    ),
+    '{"tool":"Read","input":{},"decision":"PASS","findings":[]}',
+  ]) {
+    const h = harness();
+    await started(h);
+    h.replies.push(response);
+    assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"), response);
+    assert.deepEqual(h.events.calls, [], response);
+    assert.deepEqual(h.events.prompts, []);
+  }
 });
 
-test("MCP requires an exact allow-list and a read-only call without overriding permissions", async () => {
+test("MCP requires exact allow-list and runtime read-only metadata; existing denials stand", async () => {
+  for (const allowlisted of [false, true])
+    for (const readonly of [false, true]) {
+      const h = harness(allowlisted ? { readOnlyMcpTools: "mcp__notes__search" } : {});
+      await started(h);
+      h.setReadOnly(readonly);
+      h.replies.push(
+        JSON.stringify({ tool: "mcp__notes__search", input: { query: "fact" } }),
+        verdict(),
+      );
+      assert.equal(
+        (await h.step()).text,
+        allowlisted && readonly ? "UNPUBLISHED DRAFT" : withNote(UNVERIFIED, "UNPUBLISHED DRAFT"),
+      );
+      assert.equal(h.events.calls.length, allowlisted && readonly ? 1 : 0);
+    }
+  const h = harness();
+  await started(h);
+  h.setPermission("deny");
+  h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
+  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, []);
+  const plain = harness();
+  assert.equal((await plain.fire("tool.call", { tool: "Write" })).result, "read result");
+});
+
+test("MCP output without a read-only stamp is not accepted even after a permissive check", async () => {
   const h = harness({ readOnlyMcpTools: "mcp__notes__search" });
-  await h.prompt("request");
-  await h.step();
-  assert.equal(
-    (await h.fire("tool.check", { agentId: "review-1", tool: "mcp__notes__search" })).decision,
-    "deny",
-  );
-  assert.equal(
-    (
-      await h.fire("tool.check", {
-        agentId: "review-1",
-        tool: "mcp__notes__search",
-        isReadOnly: true,
-      })
-    ).decision,
-    "allow",
-  );
-  assert.equal(
-    (await h.fire("tool.call", { agentId: "review-1", tool: "Bash" })).deny.includes("read-only"),
-    true,
-  );
-  assert.equal((await h.fire("tool.call", { tool: "Write" })).result, "read result");
+  await started(h);
+  h.setCall({ result: "unstamped result" });
+  h.replies.push(JSON.stringify({ tool: "mcp__notes__search", input: {} }));
+  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
 });
 
-test("timeout, revision cap and malformed verdict show the draft with a note", async () => {
-  const timeout = harness();
-  await timeout.prompt("request");
-  await timeout.step();
-  await timeout.events.timers[0].fn();
-  assert.equal((await timeout.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+test("timeout aborts the model and shows the original text without another prompt", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(
+    (_request, { signal }) =>
+      new Promise((resolve) =>
+        signal.addEventListener("abort", () => resolve({ isAnswered: false, reason: "aborted" }), {
+          once: true,
+        }),
+      ),
+  );
+  const running = h.step();
+  await tick();
+  await h.events.timers[0].fn();
+  assert.equal((await running).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.ok(h.events.models[0].options.signal.aborted);
+  assert.deepEqual(h.events.prompts, []);
+  assert.match(
+    (await h.fire("command.run", { command: "cgate", args: "log" })).text,
+    /タイムアウト[\s\S]*UNVERIFIED/u,
+  );
+});
+
+test("timeout releases a pending read and ignores its later result", async () => {
+  const h = harness();
+  await started(h);
+  const held = deferred();
+  h.setCall(() => held.promise);
+  h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
+  const running = h.step();
+  await tick();
+  await h.events.timers[0].fn();
+  assert.equal((await running).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  held.resolve({ result: "late" });
+  await tick();
+  assert.equal(h.events.models.length, 1);
+});
+
+test("revision cap shows a note; correction delivery failure is reported without exposing findings", async () => {
   const cap = harness({ maxRevisions: 0 });
-  await cap.prompt("request");
-  await cap.step();
-  await cap.finish("REVISE", ["SECRET FINDING"]);
-  const capped = (await cap.step()).text;
-  assert.equal(capped, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
-  assert.doesNotMatch(capped, /SECRET FINDING/u);
-  const bad = harness();
-  await bad.prompt("request");
-  await bad.step();
-  await bad.step({ agentId: "review-1", text: "PASS" });
-  await bad.fire("turn.complete", { agentId: "review-1", reason: "answer" });
-  assert.equal((await bad.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  await started(cap);
+  cap.replies.push(verdict("REVISE", ["SECRET FINDING"]));
+  assert.equal((await cap.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
+  assert.equal(cap.events.prompts.length, 0);
+  const failed = harness();
+  await started(failed);
+  failed.failPrompt();
+  failed.replies.push(verdict("REVISE", ["SECRET FINDING"]));
+  assert.equal((await failed.step()).text, WAITING);
+  await failed.flushCorrections();
+  assert.match(
+    (await failed.fire("command.run", { command: "cgate", args: "log" })).text,
+    /送信に失敗/u,
+  );
 });
 
-test("truncated answers and unsupported versions are shown without review", async () => {
-  const truncated = harness();
-  await truncated.prompt("request");
-  const cut = await truncated.step({ stopReason: "max_tokens" });
-  assert.equal(cut.text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
-  assert.equal(truncated.events.agents.length, 0);
-  const old = harness({}, "2.1.300");
-  await old.fire("session.start", { isInteractive: true });
-  await old.prompt("request");
-  assert.equal((await old.step()).text, "UNPUBLISHED DRAFT");
-  assert.equal(old.events.agents.length, 0);
+test("new prompt, abort, cancel and session end invalidate an in-flight review", async () => {
+  for (const event of ["prompt", "turn.abort", "cancel", "session.end"]) {
+    const h = harness();
+    await started(h);
+    const held = deferred();
+    h.replies.push(() => held.promise);
+    const running = h.step();
+    await tick();
+    if (event === "prompt") await h.prompt("new request");
+    else if (event === "cancel") await h.fire("command.run", { command: "cgate", args: "cancel" });
+    else await h.fire(event, {});
+    assert.ok(h.events.models[0].options.signal.aborted);
+    held.resolve({ isAnswered: true, text: verdict() });
+    assert.equal((await running).text, "");
+    assert.deepEqual(h.events.prompts, []);
+  }
 });
 
-test("new prompt and abort prevent stale review publication; unrelated subagents are unchanged", async () => {
+test("round, evidence and deadline limits never approve an incomplete review", async () => {
+  const loop = harness();
+  await started(loop);
+  for (let i = 0; i < 8; i++)
+    loop.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
+  assert.equal((await loop.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(loop.events.models.length, 8);
+  const big = harness();
+  await started(big);
+  big.setCall({ result: "x".repeat(90_000) });
+  big.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
+  assert.equal((await big.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  const deadline = harness({ reviewTimeoutSeconds: 1 });
+  await started(deadline);
+  deadline.replies.push(() => {
+    deadline.advance(1001);
+    return {
+      isAnswered: true,
+      text: JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }),
+    };
+  });
+  assert.equal((await deadline.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+});
+
+test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
   const h = harness();
-  await h.prompt("old");
-  await h.step();
-  await h.prompt("new");
-  await h.finish();
-  assert.equal(h.events.prompts.length, 0);
+  await started(h);
+  assert.ok(
+    (await h.step({ tools: [{ name: "Read", input: {} }] })).chunks.some((c) => c.kind === "tool"),
+  );
   assert.equal((await h.step({ agentId: "other", text: "other response" })).text, "other response");
-  await h.step();
-  await h.fire("turn.abort", {});
-  await h.finish();
-  assert.equal(h.events.prompts.length, 0);
+  assert.equal(h.events.models.length, 0);
+  const old = harness({}, "2.1.300");
+  await started(old);
+  assert.equal((await old.step()).text, "UNPUBLISHED DRAFT");
+  assert.equal(old.events.models.length, 0);
+  const invalid = harness({ maxRevisions: -1 });
+  await started(invalid);
+  assert.equal((await invalid.step()).text, "UNPUBLISHED DRAFT");
+  const headless = harness();
+  await headless.fire("session.start", { isInteractive: false });
+  await headless.prompt("request");
+  assert.match((await headless.step()).text, /対話セッション/u);
+  assert.equal(headless.events.models.length, 0);
 });
 
-test("tool steps proceed; stream failures show only the failed step's text", async () => {
+test("truncated answers and stream failures show only that step's text", async () => {
   const h = harness();
-  await h.prompt("request");
-  const tools = await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
-  assert.ok(tools.chunks.some((c) => c.kind === "tool"));
-  assert.equal(h.events.agents.length, 0);
+  await started(h);
+  assert.equal(
+    (await h.step({ stopReason: "max_tokens" })).text,
+    withNote(UNVERIFIED, "UNPUBLISHED DRAFT"),
+  );
   assert.equal((await h.step({ fail: true, text: "PARTIAL" })).text, withNote(FAILED, "PARTIAL"));
   assert.equal((await h.step({ text: "NEXT" })).text, "NEXT");
   const empty = harness();
-  await empty.prompt("request");
+  await started(empty);
   assert.equal((await empty.step({ fail: true, text: "" })).text, NO_DRAFT);
 });
 
-test("internal handback never delivers raw findings or wakes main as a peer", async () => {
+test("session log works during review, hides drafts/findings and clears at session end", async () => {
   const h = harness();
-  await h.prompt("request");
-  await h.step();
-  await h.fire("tool.call", {
-    tool: "SubagentHandback",
-    agentId: "review-1",
-    message: '{"decision":"PASS","findings":[]}',
-  });
-  const message = h.events.inputs.at(-1).message;
-  assert.ok(!message.includes("PASS"));
-  assert.equal(
-    (
-      await h.fire("prompt.submit", { text: message, origin: { kind: "peer" }, wait: false })
-    ).drop.includes("処理済み"),
-    true,
-  );
-  await h.fire("turn.complete", { agentId: "review-1", reason: "answer" });
-  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
-});
-
-test("headless mode fails closed without generating an unreviewed answer", async () => {
-  const h = harness();
-  await h.fire("session.start", { isInteractive: false });
-  await h.prompt("request");
-  assert.ok((await h.step()).text.includes("対話セッション"));
-  assert.equal(h.events.agents.length, 0);
-});
-
-test("cgate is registered for immediate use and log does not disturb a pending review", async () => {
-  const h = harness();
-  await h.fire("session.start", { isInteractive: true });
+  await started(h);
   assert.ok(h.events.commands.some((c) => c.name === "cgate" && c.immediate));
-  await h.prompt("SECRET REQUEST");
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const running = h.step();
+  await tick();
+  const pending = (await h.fire("command.run", { command: "cgate", args: "log" })).text;
+  assert.match(pending, /審査 #\d+: 開始/u);
+  assert.doesNotMatch(pending, /UNPUBLISHED/u);
+  assert.match(
+    (await h.fire("command.run", { command: "cgate", args: "unknown" })).text,
+    /使い方/u,
+  );
+  held.resolve({ isAnswered: true, text: verdict("REVISE", ["SECRET FINDING"]) });
+  await running;
+  await h.flushCorrections();
   await h.step();
-  const before = await h.fire("command.run", { command: "cgate", args: "log" });
-  assert.match(before.text, /審査 #\d+: 開始/u);
-  assert.match(before.text, /1970-01-01T00:00:00.000Z/u);
-  assert.doesNotMatch(before.text, /SECRET REQUEST|UNPUBLISHED DRAFT/u);
-  assert.equal(h.events.prompts.length, 0);
-  await h.finish();
-  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
-  const after = await h.fire("command.run", { command: "cgate", args: " log " });
-  assert.match(after.text, /PASS[\s\S]*検証済みの本文を公開/u);
-  assert.equal(after.context, undefined);
-});
-
-test("session logs survive requests and cancellation, hide findings, and clear at session end", async () => {
-  const h = harness();
-  await h.prompt("first");
-  await h.step();
-  await h.finish("REVISE", ["SECRET FINDING"]);
-  await h.step();
-  await h.fire("command.run", { command: "cgate", args: "cancel" });
-  const cancelled = await h.fire("command.run", { command: "cgate", args: "log" });
-  assert.match(cancelled.text, /REVISE[\s\S]*修正を依頼[\s\S]*取り消しました/u);
-  assert.doesNotMatch(cancelled.text, /SECRET FINDING|UNPUBLISHED DRAFT/u);
-  await h.prompt("second");
-  await h.step();
-  await h.finish();
-  await h.step();
-  const text = (await h.fire("command.run", { command: "cgate", args: "log" })).text;
-  assert.match(text, /REVISE[\s\S]*PASS/u);
-  await h.fire("session.end", { reason: "clear" });
+  const log = (await h.fire("command.run", { command: "cerberus", args: " log " })).text;
+  assert.match(log, /REVISE[\s\S]*PASS[\s\S]*検証済みの本文を公開/u);
+  assert.doesNotMatch(log, /SECRET FINDING|UNPUBLISHED/u);
+  assert.match(log, /1970-01-01T00:00:00.000Z/u);
+  await h.fire("session.end", {});
   assert.match(
     (await h.fire("command.run", { command: "cgate", args: "log" })).text,
     /ログはありません/u,
   );
 });
 
-test("cgate reports timeout and errors; unknown arguments are harmless and cerberus stays available", async () => {
+test("cancellation while collecting conversation evidence does not start a reviewer", async () => {
   const h = harness();
-  await h.prompt("request");
-  await h.step();
-  const invalid = await h.fire("command.run", { command: "cgate", args: "unknown" });
-  assert.match(invalid.text, /使い方/u);
-  await h.events.timers[0].fn();
-  await h.step();
-  const text = (await h.fire("command.run", { command: "cgate", args: "log" })).text;
-  assert.match(text, /タイムアウト[\s\S]*UNVERIFIED[\s\S]*注記付きで表示/u);
-  await h.prompt("next");
-  await h.step({ fail: true });
-  assert.match(
-    (await h.fire("command.run", { command: "cgate", args: "log" })).text,
-    /エラーが発生/u,
+  await started(h);
+  const held = deferred();
+  h.setMessages(() => held.promise);
+  const running = h.step();
+  await tick();
+  await h.fire("command.run", { command: "cgate", args: "cancel" });
+  held.resolve([]);
+  assert.equal((await running).text, "");
+  assert.equal(h.events.models.length, 0);
+  assert.deepEqual(h.events.prompts, []);
+});
+
+test("a newer request or cancel invalidates a scheduled correction before dispatch", async () => {
+  for (const cancel of [false, true]) {
+    const h = harness();
+    await started(h);
+    h.replies.push(verdict("REVISE", ["SECRET FINDING"]));
+    assert.equal((await h.step()).text, WAITING);
+    if (cancel) await h.fire("command.run", { command: "cgate", args: "cancel" });
+    else await h.prompt("new request");
+    await h.flushCorrections();
+    assert.deepEqual(h.events.prompts, []);
+  }
+});
+
+test("reviewer model override and a shrinking total deadline are passed to the completion API", async () => {
+  const h = harness({ reviewerModel: "haiku", reviewTimeoutSeconds: 10 });
+  await started(h);
+  h.replies.push(() => {
+    h.advance(2000);
+    return {
+      isAnswered: true,
+      text: JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }),
+    };
+  }, verdict());
+  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+  assert.deepEqual(
+    h.events.models.map((m) => m.request.model),
+    ["haiku", "haiku"],
   );
-  assert.match(
-    (await h.fire("command.run", { command: "cerberus", args: "cancel" })).text,
-    /cancelled/u,
+  assert.deepEqual(
+    h.events.models.map((m) => m.request.timeoutMs),
+    [10000, 8000],
   );
 });
 
+test("built-in search tools stay available when omitted from the main tool list", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(
+    JSON.stringify({ tool: "Glob", input: { pattern: "**/fact.txt" } }),
+    JSON.stringify({ tool: "Grep", input: { pattern: "stable", path: "fact.txt" } }),
+    verdict(),
+  );
+  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+  assert.deepEqual(h.events.calls, ["Glob", "Grep"]);
+  const names = JSON.parse(h.events.models[0].request.prompt).tools.map((tool) => tool.name);
+  for (const name of ["Read", "Glob", "Grep", "WebSearch", "WebFetch"])
+    assert.ok(names.includes(name));
+  assert.equal(h.events.statuses.at(-1), undefined);
+  assert.ok(!h.events.statuses.includes(""));
+});
+
 let reloadSerial = 0;
-async function reload(h) {
+async function reload(h, options = {}) {
+  h.unload();
   const fresh = await import(`../plugins/cerberus-gate/hooks/register.ts?reload=${++reloadSerial}`);
-  const next = harness({}, "2.1.310", h.host, fresh.register);
+  const next = harness(options, "2.1.310", h.host, fresh.register);
   await next.fire("session.start", { isInteractive: true });
   return next;
 }
 
-test("reload during work retains the request and reviews the next answer", async () => {
+test("reload during work restores the request and reviews without a restart prompt", async () => {
   const h = harness();
-  await h.prompt("original request");
-  await h.step({ tools: [{ name: "Read" }] });
+  await started(h);
+  await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
   const next = await reload(h);
+  await next.flushCorrections();
   assert.equal(next.events.prompts.length, 0);
-  assert.equal((await next.step()).text, WAITING);
-  assert.equal(JSON.parse(next.events.spawns[0].prompt).request, "original request");
-  await next.finish();
   assert.equal((await next.step()).text, "UNPUBLISHED DRAFT");
+  assert.equal(JSON.parse(next.events.models[0].request.prompt).request, "original request");
   assert.equal(next.host.states.get("recovery").pending, false);
 });
 
-test("reload during review stops old reviewers and regenerates without restoring drafts", async () => {
+test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
   const h = harness();
-  await h.prompt("original request");
-  await h.step({ text: "PRIVATE OLD DRAFT" });
+  await started(h);
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const running = h.step({ text: "PRIVATE OLD DRAFT" });
+  await tick();
   const saved = h.host.states.get("recovery");
-  const oldControl = `Cerberus Gate: 検証処理を継続します。 [${saved.epoch}-${saved.serial}]`;
+  assert.equal(saved.pending, true);
+  assert.doesNotMatch(JSON.stringify(saved), /PRIVATE OLD DRAFT/u);
+  h.host.reviewers.push({
+    id: "legacy-reviewer",
+    type: "cerberus-gate:reviewer",
+    spawnedBy: "cerberus-gate",
+    status: "running",
+  });
   const next = await reload(h);
+  await next.flushCorrections();
   assert.deepEqual(next.events.calls, ["TaskStop"]);
   assert.equal(next.events.prompts.length, 1);
-  assert.match(next.events.prompts[0].context[0], /original request/u);
-  assert.doesNotMatch(JSON.stringify(next.host.states.get("recovery")), /PRIVATE OLD DRAFT/u);
+  assert.match(next.events.prompts[0].context.join(""), /original request/u);
   assert.ok(
     (
       await next.fire("prompt.submit", {
-        text: oldControl,
         origin: { kind: "plugin", name: "cerberus-gate" },
+        text: `Cerberus Gate: 検証処理を継続します。 [${saved.epoch}-${saved.serial}]`,
       })
     ).drop,
   );
-  await next.fire("turn.complete", { agentId: "review-1", reason: "answer" });
-  assert.equal(next.events.prompts.length, 1);
-  assert.ok((await next.fire("tool.call", { agentId: "review-1", tool: "Read" })).deny);
-  assert.equal((await next.step({ text: "FRESH DRAFT" })).text, WAITING);
-  await next.finish();
-  assert.equal((await next.step()).text, "FRESH DRAFT");
+  assert.ok((await next.fire("tool.call", { agentId: "legacy-reviewer", tool: "Read" })).deny);
+  held.resolve({ isAnswered: true, text: verdict() });
+  assert.equal((await running).text, "");
+  assert.equal((await next.step({ text: "FRESH DRAFT" })).text, "FRESH DRAFT");
+  assert.equal(next.host.states.get("recovery").pending, false);
 });
 
-test("reload preserves correction limits and invalidates a queued publication", async () => {
-  const h = harness({ maxRevisions: 2 });
-  await h.prompt("request");
-  await h.step();
-  await h.finish("REVISE", ["private finding"]);
-  const next = await reload(h);
-  assert.equal(next.host.states.get("recovery").revisions, 1);
-  assert.doesNotMatch(
-    JSON.stringify(next.host.states.get("recovery")),
-    /private finding|UNPUBLISHED DRAFT/u,
-  );
-  await next.step();
-  await next.finish();
-  // PASS has queued publication but no turn.step has delivered it yet.
-  const again = await reload(next);
-  assert.equal(again.events.prompts.length, 1);
-  assert.equal((await again.step({ text: "REGENERATED" })).text, WAITING);
-  await again.finish("REVISE", ["still wrong"]);
-  await again.step({ text: "CORRECTED" });
-  await again.finish("REVISE", ["still wrong"]);
-  assert.match((await again.step()).text, /修正回数の上限/u);
+test("reload preserves correction counts across queued and accepted correction prompts", async () => {
+  for (const accepted of [false, true]) {
+    const h = harness({ maxRevisions: 2 });
+    await started(h);
+    h.replies.push(verdict("REVISE", ["PRIVATE FINDING"]));
+    await h.step();
+    if (accepted) await h.flushCorrections();
+    const next = await reload(h);
+    await next.flushCorrections();
+    assert.equal(next.host.states.get("recovery").revisions, 1);
+    assert.doesNotMatch(
+      JSON.stringify(next.host.states.get("recovery")),
+      /PRIVATE FINDING|UNPUBLISHED DRAFT/u,
+    );
+    next.replies.push(verdict("REVISE", ["still wrong"]));
+    assert.equal((await next.step()).text, WAITING);
+    await next.flushCorrections();
+    next.replies.push(verdict("REVISE", ["still wrong"]));
+    assert.equal((await next.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
+    assert.equal(next.events.prompts.length, 2);
+  }
 });
 
-test("cancel, interruption, and session end cannot restart an old review after reload", async () => {
-  for (const event of ["cancel", "turn.abort", "session.end"]) {
+test("published, unverified, cancelled, aborted and ended sessions do not auto-restart on reload", async () => {
+  for (const event of ["publish", "unverified", "cancel", "turn.abort", "session.end"]) {
     const h = harness();
-    await h.prompt("request");
+    await started(h);
+    if (event === "unverified") h.replies.push("INVALID_REVIEW");
     await h.step();
     if (event === "cancel") await h.fire("command.run", { command: "cgate", args: "cancel" });
-    else await h.fire(event, {});
+    else if (event !== "publish" && event !== "unverified") await h.fire(event, {});
     const next = await reload(h);
-    assert.equal(next.events.prompts.length, 0);
+    await next.flushCorrections();
+    assert.equal(next.events.prompts.length, 0, event);
     if (event === "session.end") assert.equal(next.host.states.get("recovery").prompt, "");
   }
 });
 
-test("a new user request supersedes a queued reload restart", async () => {
+test("new requests supersede a queued reload restart and failed restart delivery clears pending state", async () => {
   const h = harness();
-  await h.prompt("old request");
+  await started(h);
+  h.replies.push(verdict("REVISE", ["finding"]));
   await h.step();
   const next = await reload(h);
   await next.prompt("new request");
-  await next.step({ text: "new answer" });
-  assert.equal(JSON.parse(next.events.spawns[0].prompt).request, "new request");
-  await next.finish();
-  assert.equal((await next.step()).text, "new answer");
-});
-
-test("failed reload resumption is logged and does not leave a pending gate", async () => {
-  const h = harness();
-  await h.prompt("request");
-  await h.step();
-  const fresh = await import(`../plugins/cerberus-gate/hooks/register.ts?reload=${++reloadSerial}`);
-  const next = harness({}, "2.1.310", h.host, fresh.register);
-  next.engine.prompt.submit = async () => {
-    throw new Error("unavailable");
-  };
-  await next.fire("session.start", { isInteractive: true });
-  assert.equal(next.host.states.get("recovery").pending, false);
+  await next.flushCorrections();
+  assert.equal(next.events.prompts.length, 0);
+  assert.equal((await next.step({ text: "new answer" })).text, "new answer");
+  assert.equal(JSON.parse(next.events.models[0].request.prompt).request, "new request");
+  next.replies.push(verdict("REVISE", ["finding"]));
+  await next.step();
+  const again = await reload(next);
+  again.failPrompt();
+  await again.flushCorrections();
+  assert.equal(again.host.states.get("recovery").pending, false);
   assert.match(
-    (await next.fire("command.run", { command: "cgate", args: "log" })).text,
+    (await again.fire("command.run", { command: "cgate", args: "log" })).text,
     /再開に失敗/u,
   );
-  await next.prompt("continue");
-  assert.equal((await next.step()).text, WAITING);
 });
 
 test("reviewer model and effort inherit the answer step or use independent overrides", async () => {
@@ -596,8 +728,8 @@ test("reviewer model and effort inherit the answer step or use independent overr
     const h = harness(options);
     await h.prompt("request");
     await h.step({ effort: "high" });
-    assert.equal(h.events.agents[0].model, expectedModel);
-    assert.equal(h.events.agents[0].effort, expectedEffort);
+    assert.equal(h.events.models[0].request.model, expectedModel);
+    assert.equal(h.events.models[0].request.effort, expectedEffort);
   }
   assert.equal(readConfig({}).reviewerEffort, "inherit");
   for (const effort of ["inherit", "low", "medium", "high", "xhigh", "max"])
@@ -607,7 +739,9 @@ test("reviewer model and effort inherit the answer step or use independent overr
   const h = harness();
   await h.prompt("request");
   await h.step();
-  assert.equal(h.events.agents[0].effort, undefined);
+  assert.equal(h.events.models[0].request.effort, undefined);
+  await h.step({ effort: 10 });
+  assert.equal(h.events.models[1].request.effort, undefined);
 });
 
 test("model picker saves selection and applies it to the next review", async () => {
@@ -630,8 +764,8 @@ test("model picker saves selection and applies it to the next review", async () 
   assert.equal(h.events.closed, true);
   await h.prompt("request");
   await h.step();
-  assert.equal(h.events.agents[0].model, "haiku");
-  assert.equal(h.events.agents[0].effort, "low");
+  assert.equal(h.events.models[0].request.model, "haiku");
+  assert.equal(h.events.models[0].request.effort, "low");
 });
 
 test("a denied or failed model save preserves the previous reviewer model", async () => {
@@ -650,6 +784,6 @@ test("a denied or failed model save preserves the previous reviewer model", asyn
     assert.equal(h.events.closed, undefined);
     await h.prompt("request");
     await h.step();
-    assert.equal(h.events.agents[0].model, "haiku");
+    assert.equal(h.events.models[0].request.model, "haiku");
   }
 });

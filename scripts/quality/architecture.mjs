@@ -22,6 +22,8 @@ const api = new Set([
   "tool.list",
   "tool.call",
   "ui.status",
+  "model.complete",
+  "turn.abort",
 ]);
 const engineNames = new Set(["$", "_$"]);
 function chain(node) {
@@ -41,6 +43,65 @@ function constants(program) {
     }
   }
   return values;
+}
+// One named boundary may forward model-selected read tools; all other calls need static targets.
+function member(node, object, property) {
+  return (
+    node?.type === "MemberExpression" &&
+    !node.computed &&
+    node.object.name === object &&
+    node.property.name === property
+  );
+}
+function readGuard(guard) {
+  const test = guard?.test,
+    deny = guard?.consequent;
+  return (
+    guard?.type === "IfStatement" &&
+    test?.type === "UnaryExpression" &&
+    test.operator === "!" &&
+    test.argument?.callee?.name === "allowedTool" &&
+    member(test.argument.arguments[0], "call", "tool") &&
+    test.argument.arguments[1]?.name === "config" &&
+    deny?.type === "ReturnStatement" &&
+    deny.argument?.type === "ObjectExpression" &&
+    deny.argument.properties.some(
+      (p) =>
+        p.key?.name === "deny" && p.value?.type === "Literal" && typeof p.value.value === "string",
+    )
+  );
+}
+function readCall(expression) {
+  if (expression?.type !== "CallExpression" || chain(expression.callee).join(".") !== "$.tool.call")
+    return false;
+  let arg = expression.arguments[0];
+  while (arg?.type === "TSAsExpression") arg = arg.expression;
+  if (arg?.type !== "ObjectExpression" || arg.properties.length !== 2) return false;
+  const [spread, tool] = arg.properties;
+  return (
+    spread.type === "SpreadElement" &&
+    member(spread.argument, "call", "input") &&
+    tool.type === "Property" &&
+    !tool.computed &&
+    tool.key?.name === "tool" &&
+    member(tool.value, "call", "tool")
+  );
+}
+function guardedReadCalls(program) {
+  const approved = new Set();
+  walk(program, (fn) => {
+    if (
+      fn.type !== "FunctionDeclaration" ||
+      fn.id?.name !== "callReviewTool" ||
+      fn.params[0]?.name !== "$" ||
+      fn.params[1]?.name !== "call"
+    )
+      return;
+    const [guard, result] = fn.body.body;
+    if (readGuard(guard) && result?.type === "ReturnStatement" && readCall(result.argument))
+      approved.add(result.argument.callee);
+  });
+  return approved;
 }
 export function inspect(file, text, importedConstants = new Map()) {
   const { program } = parse(file, text);
@@ -93,7 +154,16 @@ export function inspect(file, text, importedConstants = new Map()) {
     if (n.params) for (const p of n.params) if (p.name === "on") parameters.add(p);
   });
   for (const [name, count] of bindings) if (count > 1) helpers.delete(name);
-  const context = { privileged, report, file, literal, parameters, helpers, typeName };
+  const context = {
+    privileged,
+    report,
+    file,
+    literal,
+    parameters,
+    helpers,
+    typeName,
+    readCalls: guardedReadCalls(program),
+  };
   walk(program, (n, parent) => {
     inspectDependency(n, context);
     inspectMember(n, parent, context);
@@ -151,7 +221,7 @@ function inspectDependency(n, { file, privileged, literal, report }) {
   if (n.type === "NewExpression" && n.callee.name === "Function")
     report(n, "dependency-boundary", "indirect code loading is forbidden");
 }
-function inspectMember(n, parent, { privileged, literal, report }) {
+function inspectMember(n, parent, { privileged, literal, report, readCalls }) {
   if (n.type === "MemberExpression") {
     const parts = chain(n);
     if (!engineNames.has(parts[0])) return;
@@ -172,6 +242,7 @@ function inspectMember(n, parent, { privileged, literal, report }) {
       )
         report(n, "mods-api-target", "config.set requires the reviewer model setting");
     }
+    if (name === "tool.call" && readCalls.has(n)) return;
     if (name === "state.get" || name === "state.set") {
       const argument = parent.arguments[0];
       const properties = argument?.type === "ObjectExpression" ? argument.properties : [];

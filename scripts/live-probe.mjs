@@ -9,7 +9,18 @@ const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceA
 await mkdir(report, { recursive: true });
 const cases = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["pass", "model", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"];
+  : [
+      "pass",
+      "model",
+      "search",
+      "revise",
+      "unverified",
+      "cancel",
+      "slow",
+      "timeout",
+      "reload-work",
+      "reload-review",
+    ];
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -36,6 +47,8 @@ for (const mode of cases) {
       "revise",
       "unverified",
       "cancel",
+      "slow",
+      "timeout",
       "reload-work",
       "reload-review",
     ].includes(mode)
@@ -93,37 +106,44 @@ for (const mode of cases) {
   await writeFile(
     join(fixture, "hooks/register.ts"),
     `
- let first=true;
+ let first=true,review=0,prompts=0,tools=0;
  export const register=on=>{
-  on('agent.spawn',async($,e,next)=>next(${JSON.stringify(mode)}==='search' ? {...e,prompt:e.prompt+'\\nBefore deciding, use Glob to find **/fact.txt and Grep to search for stable in fact.txt. Both searches are required evidence.'} : e));
   on('turn.step',async function*($,e,next){
-   if(e.agentId && ${JSON.stringify(mode)}==='reload-review' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
-    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','review');
-    await $.clock.sleep(12000);
-   }
-   if(!e.agentId && first && ${JSON.stringify(mode)}==='revise'){
+   if(!e.agentId && first && ['revise','reload-review'].includes(${JSON.stringify(mode)})){
     first=false;
     const text='The release channel is beta. CERBERUS_REJECTED_DRAFT';
     yield {kind:'text',index:0,text};yield {kind:'stop',stopReason:'end_turn',usage:null};
     return {turnId:e.turnId,index:e.index,answer:text,toolUses:[],stopReason:'end_turn',usage:null};
-   }
-   if(e.agentId && ${JSON.stringify(mode)}==='cancel')await $.clock.sleep(7000);
-   if(e.agentId && ${JSON.stringify(mode)}==='unverified'){
-    yield {kind:'text',index:0,text:'INVALID_REVIEW'};yield {kind:'stop',stopReason:'end_turn',usage:null};
-    return {turnId:e.turnId,index:e.index,answer:'INVALID_REVIEW',toolUses:[],stopReason:'end_turn',usage:null};
    }
    const stream=next(e);const pieces=[];for await(const c of stream){pieces.push(c);yield c;}
    const result=await stream.result;
    await $.fs.write(${JSON.stringify(artifacts)}+'/step-'+(e.agentId??'main')+'-'+e.turnId+'-'+e.index+'.json',JSON.stringify({event:e,result,pieces}));
    return result;
   });
-  on('tool.call',{tool:'Read'},async($,e,next)=>{
-   const result=await next(e);
-   if(!e.agentId && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
-    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');
-    await $.clock.sleep(7000);
+  on('prompt.submit',async($,e,next)=>{
+   await $.fs.write(${JSON.stringify(artifacts)}+'/prompt-'+(++prompts)+'.json',JSON.stringify(e));return next(e);
+  });
+  on('model.complete',async($,e,next)=>{
+   const index=++review;
+   if(${JSON.stringify(mode)}==='reload-review' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
+    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','review');await $.clock.sleep(7000);
    }
+   await $.fs.write(${JSON.stringify(artifacts)}+'/review-start-'+index+'.json',JSON.stringify({at:Date.now(),request:e}));
+   if(['cancel','timeout'].includes(${JSON.stringify(mode)}))await $.clock.sleep(7000);
+   if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
+   if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
+   const result=${JSON.stringify(mode)}==='unverified'
+    ? {value:{isAnswered:true,text:'INVALID_REVIEW',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
+    : await next(e);
+   await $.fs.write(${JSON.stringify(artifacts)}+'/review-'+index+'.json',JSON.stringify({request:e,result:result.value,at:Date.now()}));
    return result;
+  });
+  on('tool.call',async($,e,next)=>{
+   const result=await next(e);
+   if(e.tool==='Read' && !e.agentId && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
+    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');await $.clock.sleep(7000);
+   }
+   await $.fs.write(${JSON.stringify(artifacts)}+'/tool-'+(++tools)+'.json',JSON.stringify({tool:e.tool,origin:next.origin,result}));return result;
   });
   on('turn.complete',async($,e,next)=>{
    await $.fs.write(${JSON.stringify(artifacts)}+'/complete-'+e.turnId+'.json',JSON.stringify(e));return next(e);
@@ -134,6 +154,38 @@ for (const mode of cases) {
  };
  `,
   );
+  const delay = join(work, "delay");
+  if (mode === "slow") {
+    await mkdir(join(delay, ".claude-plugin"), { recursive: true });
+    await mkdir(join(delay, "hooks"));
+    await writeFile(
+      join(delay, ".claude-plugin/plugin.json"),
+      JSON.stringify({
+        name: "cerberus-probe-delay",
+        version: "0.0.1",
+        description: "Slow review fixture",
+      }),
+    );
+    await writeFile(
+      join(delay, "hooks/hooks.json"),
+      JSON.stringify({ modules: ["./register.ts"] }),
+    );
+    await writeFile(
+      join(delay, "hooks/register.ts"),
+      `export const register=on=>on('model.complete',async($,e,next)=>{await $.clock.sleep(6000);return next(e);});`,
+    );
+  }
+  if (mode === "timeout") {
+    const path = join(plugin, "hooks/register.ts");
+    const source = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      source.replace(
+        "config = readConfig(options)",
+        "config = readConfig({...options, reviewTimeoutSeconds:1})",
+      ),
+    );
+  }
   await writeFile(join(work, "fact.txt"), "The release channel is stable.\n");
   const session = `cerberus-${mode}-${process.pid}`;
   const args = [
@@ -151,6 +203,7 @@ for (const mode of cases) {
     plugin,
     "--plugin-dir",
     fixture,
+    ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
     mode === "reload-work" || mode === "model" ? "user,project,local" : "project,local",
     "--strict-mcp-config",
@@ -246,20 +299,12 @@ for (const mode of cases) {
       }
       if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
         throw new Error("Private draft or verdict leaked to the TUI");
-      if (/\berror\b|hook skipped|hook failed/iu.test(latest)) throw new Error("Hook error in TUI");
+      if (/\berror\b|hook skipped|hook failed|hooks module did not load/iu.test(latest))
+        throw new Error("Hook error in TUI");
       if (mode === "cancel" && !cancelled && latest.includes("回答を検証中です。")) {
         await submit(session, "/cgate log");
-        const logDeadline = Date.now() + 10_000;
-        let pendingLogSeen = false;
-        while (Date.now() < logDeadline) {
-          const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
-          if (screen.includes("このセッションのログ（時刻は UTC）")) {
-            pendingLogSeen = true;
-            break;
-          }
-          await pause(250);
-        }
-        if (!pendingLogSeen) throw new Error("Pending review log not observed");
+        // The command runs immediately but its transcript row may wait for the held turn's flush.
+        // Cancel before waiting for that row, so the review is still in flight.
         await submit(session, "/cgate cancel");
         cancelled = true;
         await pause(8500);
@@ -270,7 +315,7 @@ for (const mode of cases) {
         break;
       }
       if (
-        mode === "unverified" &&
+        (mode === "unverified" || mode === "timeout") &&
         latest.includes("未検証の本文をそのまま表示します") &&
         /\bstable\b/u.test(latest)
       ) {
@@ -282,6 +327,7 @@ for (const mode of cases) {
           mode === "model" ||
           mode === "search" ||
           mode === "revise" ||
+          mode === "slow" ||
           mode.startsWith("reload-")) &&
         /⏺\s+stable\b/u.test(latest)
       ) {
@@ -300,11 +346,13 @@ for (const mode of cases) {
         pass: "検証済みの本文を公開しました。",
         model: "検証済みの本文を公開しました。",
         search: "検証済みの本文を公開しました。",
+        slow: "検証済みの本文を公開しました。",
+        timeout: "タイムアウト",
+        "reload-work": "検証済みの本文を公開しました。",
+        "reload-review": "検証済みの本文を公開しました。",
         revise: "修正を依頼しました",
         unverified: "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
-        "reload-work": "検証済みの本文を公開しました。",
-        "reload-review": "検証済みの本文を公開しました。",
       }[mode];
       if (latest.includes("このセッションのログ（時刻は UTC）") && latest.includes(expected)) {
         logSeen = true;
@@ -317,16 +365,9 @@ for (const mode of cases) {
     if (mode.startsWith("reload-")) {
       if (!reloaded || !latest.includes("再ロード前の依頼と修正回数を復元しました。"))
         throw new Error("Reload recovery not observed");
-      if (
-        mode === "reload-review" &&
-        !latest.includes("再ロードで中断した回答の再生成・再審査を依頼します。")
-      )
-        throw new Error("Interrupted review did not restart");
-      if (
-        mode === "reload-work" &&
-        latest.includes("再ロードで中断した回答の再生成・再審査を依頼します。")
-      )
-        throw new Error("Work reload happened after review started");
+      const restarted = latest.includes("再ロードで中断した回答の再生成・再審査を依頼します。");
+      if (mode === "reload-work" && restarted)
+        throw new Error("Work reload unnecessarily restarted a review");
     }
     if (!/\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]/u.test(latest))
       throw new Error("UTC timestamp not observed in session log");
@@ -346,43 +387,93 @@ for (const mode of cases) {
       if (!screen.includes("このセッションのログはありません。"))
         throw new Error("Session log survived /clear");
     }
+    if (mode === "cancel" && !latest.includes("審査 #1: 開始"))
+      throw new Error("Pending review log not observed");
     if (mode === "cancel" && /⏺\s+stable\b/u.test(latest))
       throw new Error("Cancelled answer published");
     if ((await readFile(join(work, "fact.txt"), "utf8")) !== "The release channel is stable.\n")
       throw new Error("Evidence modified");
-    const steps = [];
-    for (const name of await readdir(artifacts))
-      if (name.startsWith("step-"))
-        steps.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+    const records = await readdir(artifacts);
+    const verdicts = [];
+    const origins = [];
+    let restartPrompts = 0;
+    for (const name of records) {
+      if (/^review-\d+\.json$/u.test(name)) {
+        const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
+        verdicts.push(review.result.text ?? "");
+      }
+      if (name.startsWith("prompt-")) {
+        const prompt = JSON.parse(await readFile(join(artifacts, name), "utf8"));
+        origins.push(prompt.origin);
+        if (
+          prompt.context?.some((text) =>
+            text.includes("The answer review was interrupted by a plugin reload."),
+          )
+        )
+          restartPrompts++;
+      }
+    }
     if (mode === "model" || mode === "pass") {
-      const reviews = steps.filter((s) => s.event.agentId);
-      if (!reviews.length) throw new Error("No real reviewer step observed");
+      const steps = [];
+      const reviews = [];
+      for (const name of records) {
+        if (name.startsWith("step-"))
+          steps.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+        if (/^review-\d+\.json$/u.test(name))
+          reviews.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+      }
+      if (!reviews.length) throw new Error("No real reviewer call observed");
       const main = steps.find((s) => !s.event.agentId);
       if (!main) throw new Error("No main answer step observed");
       for (const review of reviews) {
-        if (review.event.model !== main.event.model)
+        if (review.request.model !== (mode === "model" ? "haiku" : main.event.model))
           throw new Error("Reviewer model did not match haiku");
-        if (review.event.effort !== (mode === "model" ? "low" : main.event.effort))
+        if (review.request.effort !== (mode === "model" ? "low" : main.event.effort))
           throw new Error("Reviewer effort did not match the configured or inherited effort");
       }
     }
-    if (mode === "search") {
-      const tools = steps
-        .filter((s) => s.event.agentId)
-        .flatMap((s) => s.result.toolUses.map((t) => t.name));
-      for (const tool of ["Grep", "Glob"])
-        if (!tools.includes(tool)) throw new Error(`Reviewer did not use ${tool}`);
-    }
-    const rawVerdicts = steps
-      .flatMap((s) => [
-        ...(s.result.toolUses ?? []),
-        { name: "SubagentHandback", input: { message: s.result.answer } },
-      ])
-      .filter((t) => t.name === "SubagentHandback")
-      .map((t) => t.input.message);
-    if (mode === "revise" && !rawVerdicts.some((v) => v.includes("REVISE")))
+    const pluginPrompts = origins.filter(
+      (origin) => origin.kind === "plugin" && origin.name === "cerberus-gate",
+    ).length;
+    if (mode === "revise" && !verdicts.some((v) => v.includes('"REVISE"')))
       throw new Error("No real reviewer REVISE verdict observed");
-    summary.push({ case: mode, status: "PASS", workspace: work });
+    const revisions = verdicts.filter((text) => {
+      try {
+        return JSON.parse(text).decision === "REVISE";
+      } catch {
+        return false;
+      }
+    }).length;
+    const expectedPrompts =
+      (mode === "revise" || mode === "reload-review" ? revisions : 0) + restartPrompts;
+    if (
+      restartPrompts > (mode === "reload-review" ? 1 : 0) ||
+      (mode === "revise" && revisions < 1) ||
+      pluginPrompts !== expectedPrompts
+    )
+      throw new Error(`Unexpected control prompt count: ${pluginPrompts}`);
+    if (mode === "search") {
+      const calls = [];
+      for (const name of records.filter((entry) => entry.startsWith("tool-")))
+        calls.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+      for (const tool of ["Grep", "Glob"])
+        if (
+          !calls.some(
+            (call) =>
+              call.tool === tool &&
+              call.origin.plugin === "cerberus-gate" &&
+              call.result.deny === undefined &&
+              !call.result.isError,
+          )
+        )
+          throw new Error(`Reviewer did not use ${tool}`);
+    }
+    if (mode === "slow") {
+      const start = JSON.parse(await readFile(join(artifacts, "review-start-1.json"), "utf8"));
+      const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
+      if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");
+    }
+    summary.push({ case: mode, status: "PASS", workspace: work, pluginPrompts, restartPrompts });
     console.log(`PASS ${mode}`);
   } catch (error) {
     if (started)
