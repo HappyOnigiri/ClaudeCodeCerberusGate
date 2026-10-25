@@ -6,6 +6,7 @@ import {
   MAX_DRAFT,
   NO_DRAFT,
   parseVerdict,
+  READ_TOOLS,
   readConfig,
   REVIEWER,
   REVIEW_PROMPT,
@@ -112,7 +113,13 @@ async function startReview($: EngineInterface, e: TurnStepInput, text: string): 
   gate.phase = "reviewing";
   log.record($.clock.now(), `審査 #${candidate.token}: 開始`);
   const available = await $.tool.list();
-  const tools = available.map((t) => t.name).filter((t) => allowedTool(t, config));
+  // メインの表示用一覧から省かれた組み込み検索ツールも、レビュアーには明示する。
+  const tools = [
+    ...new Set([
+      ...READ_TOOLS,
+      ...available.map((t) => t.name).filter((t) => allowedTool(t, config)),
+    ]),
+  ];
   await $.agent.register({
     name: "reviewer",
     description: "Verify the unpublished final answer using read-only evidence.",
