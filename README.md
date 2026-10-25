@@ -12,6 +12,9 @@ Claude Code 2.1.310 の対話セッションで、リポジトリから起動す
 claude --plugin-dir "$PWD/plugins/cerberus-gate"
 ```
 
+常用の Claude Code に入れるときは `make install` を使う。
+作業ツリーの状態を未コミットの変更も含めて `cerberus-gate@happyonigiri-plugins` としてインストールし、Claude Code の再起動後に有効になる。
+
 `/cgate` で状態確認、`/cgate log` でこのセッションの動作ログを表示する。
 審査開始・判定・修正依頼・公開・タイムアウト・取消を UTC の時刻付きで確認できる。
 `/cgate cancel` で保留中の処理を取り消せる。
