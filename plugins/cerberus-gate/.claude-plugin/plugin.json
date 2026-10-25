@@ -42,6 +42,13 @@
       "description": "Review final answers before publication.",
       "default": true,
       "required": false
+    },
+    "reviewPrompt": {
+      "type": "string",
+      "title": "Review prompt",
+      "description": "Replace the review criteria (up to 20,000 characters). Empty or whitespace uses the default. Read-only permissions and JSON protocol remain fixed.",
+      "default": "",
+      "required": false
     }
   },
   "types": "./types/index.d.ts"

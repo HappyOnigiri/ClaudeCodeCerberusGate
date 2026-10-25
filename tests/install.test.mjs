@@ -16,7 +16,12 @@ test("install deploys both plugins, keeps other marketplace entries and restores
   const log = join(work, "calls.jsonl");
   const plugins = ["cerberus-gate", "cerberus-gate-display"];
   const id = (name) => `${name}@happyonigiri-plugins`;
-  const options = { reviewerModel: "haiku", reviewerEffort: "low", maxRevisions: 3 };
+  const options = {
+    reviewerModel: "haiku",
+    reviewerEffort: "low",
+    maxRevisions: 3,
+    reviewPrompt: "Check sources.\nCheck assumptions.",
+  };
   await mkdir(bin, { recursive: true });
   await mkdir(join(marketplace, ".claude-plugin"), { recursive: true });
   for (const name of plugins) {
@@ -46,6 +51,16 @@ test("install deploys both plugins, keeps other marketplace entries and restores
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 const input = args.includes('--values-stdin') ? fs.readFileSync(0, 'utf8') : '';
+if (input && Object.values(JSON.parse(input)).some(v => /[\\r\\n]/u.test(v)))
+  throw new Error('configure accepts only single-line strings');
+const settingsPath = process.env.CLAUDE_CONFIG_DIR + '/settings.json';
+const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+if (args[1] === 'uninstall') delete settings.pluginConfigs[args.at(-1)];
+if (args[1] === 'install') {
+  settings.pluginConfigs[args.at(-1)] = { enabled: true, options: { futureOption: 'keep' } };
+  settings.installMarker = true;
+}
+fs.writeFileSync(settingsPath, JSON.stringify(settings));
 fs.appendFileSync(process.env.INSTALL_PROBE_LOG, JSON.stringify({args,input})+'\\n');
 if (args.join(' ') === 'plugin marketplace list --json') console.log('[{"name":"happyonigiri-plugins"}]');
 if (args.join(' ') === 'plugin list --json') console.log(JSON.stringify(${JSON.stringify(plugins.map((name) => ({ id: id(name), scope: "user" })))}));
@@ -98,10 +113,15 @@ if (args.join(' ') === 'plugin list --json') console.log(JSON.stringify(${JSON.s
       ),
     );
   }
-  const restored = calls.find(({ args }) => args.includes("--values-stdin"));
-  assert.deepEqual(
-    JSON.parse(restored.input),
-    Object.fromEntries(Object.entries(options).map(([key, value]) => [key, String(value)])),
-  );
-  assert.equal(restored.args.at(-1), id("cerberus-gate"));
+  assert.ok(!calls.some(({ args }) => args.includes("--values-stdin")));
+  const restored = JSON.parse(await readFile(join(config, "settings.json"), "utf8"));
+  assert.deepEqual(restored.pluginConfigs[id("cerberus-gate")], {
+    enabled: true,
+    options: { futureOption: "keep", ...options },
+  });
+  assert.equal(restored.installMarker, true);
+  assert.deepEqual(restored.pluginConfigs[id("cerberus-gate-display")], {
+    enabled: true,
+    options: { futureOption: "keep" },
+  });
 });

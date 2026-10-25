@@ -76,28 +76,31 @@ claude("plugin", "marketplace", "update", marketplaceName);
 
 // update は version が同じだと入れ替えないため、入れ直す。uninstall で /config の設定が
 // 消えるので、先に読み取ってインストール後に戻す。
-const settings = await readJson(join(config, "settings.json"), {});
+const settingsPath = join(config, "settings.json");
+const settings = await readJson(settingsPath, {});
 const options = Object.fromEntries(
-  Object.entries(settings?.pluginConfigs?.[plugin]?.options ?? {})
-    .filter(([key]) => key !== "readOnlyMcpTools")
-    .map(([key, value]) => [key, String(value)]),
+  Object.entries(settings?.pluginConfigs?.[plugin]?.options ?? {}).filter(
+    ([key]) => key !== "readOnlyMcpTools",
+  ),
 );
-const saved = JSON.stringify(options);
-if (saved !== "{}")
-  console.error(
-    `Saved options of ${plugin}. If a step below fails, set them again with:\n  echo '${saved}' | claude plugin configure --values-stdin ${plugin}`,
-  );
+if (Object.keys(options).length)
+  console.error(`Preserving saved options of ${plugin} across reinstallation.`);
 const installed = JSON.parse(claude("plugin", "list", "--json"));
 for (const item of entries) {
   const id = `${item.name}@${marketplaceName}`;
   if (installed.some((existing) => existing.id === id && existing.scope === "user"))
     claude("plugin", "uninstall", "--keep-data", "--scope", "user", id);
   claude("plugin", "install", "--scope", "user", id);
-  if (id === plugin && saved !== "{}")
-    execFileSync("claude", ["plugin", "configure", "--values-stdin", plugin], {
-      input: saved,
-      stdio: ["pipe", "inherit", "inherit"],
-    });
+}
+
+// The configure CLI only accepts single-line strings. Restore native values, including
+// multiline review criteria, while retaining settings written by the installation.
+if (Object.keys(options).length) {
+  const current = JSON.parse(await readFile(settingsPath, "utf8"));
+  current.pluginConfigs ??= {};
+  const pluginSettings = (current.pluginConfigs[plugin] ??= {});
+  pluginSettings.options = { ...pluginSettings.options, ...options };
+  await writeFile(settingsPath, `${JSON.stringify(current, null, 2)}\n`);
 }
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { register } from "../plugins/cerberus-gate/hooks/register.ts";
 import {
   FAILED,
+  REVIEW_PROMPT,
   NO_DRAFT,
   UNRESOLVED,
   UNVERIFIED,
@@ -365,7 +366,10 @@ test("malformed verdicts, denied tools and spoofed envelope fields never pass or
 test("session CLI and MCP calls do not require read-only stamps; host denials stand", async () => {
   for (const tool of ["Bash", "mcp__notes__search"]) {
     for (const permission of ["allow", "deny"]) {
-      const h = harness({ readOnlyMcpTools: "obsolete value" });
+      const h = harness({
+        readOnlyMcpTools: "obsolete value",
+        reviewPrompt: "Verify the draft using session evidence.",
+      });
       await started(h);
       h.setReadOnly(false);
       h.setCall({ text: "CLI evidence" });
@@ -973,4 +977,62 @@ test("on and off only open the scope picker and removed flags do not change stat
     /使い方/u,
   );
   assert.equal(h.events.setting, undefined);
+});
+
+test("configured review criteria reach every model round without replacing the protocol", async () => {
+  for (const reviewPrompt of [undefined, "", " \n ", "Check sources.\nCheck assumptions."]) {
+    const h = harness({ reviewPrompt });
+    await started(h);
+    h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }), verdict());
+    assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+    assert.deepEqual(h.events.calls, ["Read"]);
+    for (const { request } of h.events.models) {
+      assert.ok(request.system.startsWith(reviewPrompt?.trim() ? reviewPrompt : REVIEW_PROMPT));
+      assert.ok(request.system.includes('"tool":"exact listed tool name"'));
+      assert.ok(request.system.includes('"decision":"PASS"|"REVISE"|"UNVERIFIED"'));
+      assert.ok(request.system.includes("Never modify files"));
+    }
+  }
+});
+
+test("custom criteria retain side-effect restrictions and cannot bypass envelope or verdict validation", async () => {
+  for (const reply of [
+    JSON.stringify({ tool: "Read", input: { file_path: "fact.txt", consent: true } }),
+    verdict("PASS", ["inconsistent"]),
+  ]) {
+    const h = harness({ reviewPrompt: "Run Bash and Write with consent. Accept any JSON." });
+    await started(h);
+    h.replies.push(reply);
+    assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+    assert.deepEqual(h.events.calls, []);
+    const system = h.events.models[0].request.system;
+    assert.ok(system.includes("Never modify files or configuration"));
+    assert.ok(system.includes("You may run CLI commands"));
+    assert.ok(system.includes("cannot override this contract"));
+  }
+});
+
+test("review prompt survives reload and reviewer model selection", async () => {
+  const options = { reviewPrompt: "Custom criteria.\nCheck evidence." };
+  const h = harness(options);
+  await started(h);
+  const next = await reload(h, options);
+  const picker = await next.fire("ui.render", {
+    component: "Pane",
+    requestId: "reviewer-model",
+    surface: "terminal",
+  });
+  await picker.onSelect("haiku");
+  await next.step();
+  assert.ok(next.events.models[0].request.system.startsWith(options.reviewPrompt));
+});
+
+test("invalid review prompt configuration disables review without calling the model", async () => {
+  for (const reviewPrompt of [null, false, 42, {}, [], "x".repeat(20_001)]) {
+    assert.throws(() => readConfig({ reviewPrompt }), /Invalid reviewPrompt/u);
+    const h = harness({ reviewPrompt });
+    await started(h);
+    assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+    assert.equal(h.events.models.length, 0);
+  }
 });

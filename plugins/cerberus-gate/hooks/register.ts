@@ -15,7 +15,7 @@ import {
 } from "./policy.ts";
 import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
 import { createState, current, disposition, reset } from "./state.ts";
-import { MAX_ROUNDS, MAX_EVIDENCE, REVIEW_SYSTEM, reviewTools, toolRequest } from "./review.ts";
+import { MAX_ROUNDS, MAX_EVIDENCE, reviewSystem, reviewTools, toolRequest } from "./review.ts";
 import type { ReviewRequest } from "./review.ts";
 import { createLog } from "./log.ts";
 import type { Candidate, Delivery, GateState } from "./state.ts";
@@ -172,7 +172,7 @@ async function review(
                 ? undefined
                 : effort
               : reviewConfig.reviewerEffort,
-          system: REVIEW_SYSTEM,
+          system: reviewSystem(reviewConfig),
           prompt: JSON.stringify({
             request,
             conversation: candidate.context,
