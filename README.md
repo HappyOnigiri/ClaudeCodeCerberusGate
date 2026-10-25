@@ -105,3 +105,7 @@ cerberus-gate/debug/<sessionId>/
 強制終了・アンロードで末尾が未保存になる場合は、完全な JSONL 行までを解析してください。
 保存失敗は3秒の通知と履歴に表示し、`/cgate log` から確認できます。
 保存できなくても回答の検証は続けます。
+
+## ライセンス
+
+[MIT License](/LICENSE)
