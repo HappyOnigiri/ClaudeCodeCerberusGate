@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: HappyOnigiri/ReleaseActions/actions/publish-release@fd04fd72ec3a3d69f08db6e19dd8b1c618dc2235
+      - uses: HappyOnigiri/ReleaseActions/actions/publish-release@16cb118a622dd9219148928f60e60197a67029fc
         with:
           branch: ${{ github.event.pull_request.head.ref }}
           pr-body: ${{ github.event.pull_request.body }}

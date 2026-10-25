@@ -37,92 +37,39 @@ jobs:
     env:
       AUTOMATIC_RELEASE: ${{ github.event_name == 'schedule' || inputs.automatic }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: main
-          persist-credentials: false
-
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-          cache: npm
 
-      - name: Select release inputs
-        id: inputs
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_BUMP: ${{ inputs.bump || 'auto' }}
-        run: |
-          set -euo pipefail
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-
-          # 手動作成のリリース PR を、自動運用で自動マージしない。
-          if [ "$AUTOMATIC_RELEASE" = "true" ]; then
-            OPEN_RELEASES=$(gh pr list --repo "$GH_REPO" --base main --state open \
-              --limit 200 --json headRefName \
-              --jq '[.[] | select(.headRefName | test("^release/v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | length')
-            if [ "$OPEN_RELEASES" -ne 0 ]; then
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              echo "リリース PR が開いているため、自動運用をスキップしました。" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-          fi
-
-          BUMP="$RELEASE_BUMP"
-          if [ -n "$RELEASE_VERSION" ]; then
-            BUMP="none"
-          elif [ "$BUMP" = "auto" ]; then
-            RELEASES=$(gh release list --repo "$GH_REPO" --exclude-drafts \
-              --exclude-pre-releases --limit 1 --json tagName --jq 'length')
-            if [ "$RELEASES" -eq 0 ]; then
-              node scripts/initial-release-bump.ts
-              exit 0
-            fi
-          fi
-          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
-
-      - uses: HappyOnigiri/ReleaseActions/actions/prepare-release@fd04fd72ec3a3d69f08db6e19dd8b1c618dc2235
+      - uses: HappyOnigiri/ReleaseActions/actions/prepare-release@16cb118a622dd9219148928f60e60197a67029fc
         id: prepare
-        if: steps.inputs.outputs.skip != 'true'
         with:
           version: ${{ inputs.version }}
-          bump: ${{ steps.inputs.outputs.bump }}
+          bump: ${{ inputs.version != '' && 'none' || inputs.bump || 'auto' }}
           skip-if-no-changes: ${{ env.AUTOMATIC_RELEASE }}
+          skip-if-open-release-pr: ${{ env.AUTOMATIC_RELEASE }}
+          initial-release: merged-prs
           version-bump-type: json
           json-version-files: |
             plugins/cerberus-gate/.claude-plugin/plugin.json
             plugins/cerberus-gate-display/.claude-plugin/plugin.json
+          post-bump-command: |
+            set -euo pipefail
+            npm ci --ignore-scripts
+            npx --no-install oxfmt \
+              plugins/cerberus-gate/.claude-plugin/plugin.json \
+              plugins/cerberus-gate-display/.claude-plugin/plugin.json
           github-token: ${{ secrets.GH_TOKEN }}
 
-      - name: Format release manifests
-        if: steps.prepare.outputs.pr-number != ''
-        env:
-          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          npm ci --ignore-scripts
-          npx --no-install oxfmt \
-            plugins/cerberus-gate/.claude-plugin/plugin.json \
-            plugins/cerberus-gate-display/.claude-plugin/plugin.json
-          if ! git diff --quiet -- \
-            plugins/cerberus-gate/.claude-plugin/plugin.json \
-            plugins/cerberus-gate-display/.claude-plugin/plugin.json; then
-            git add -- plugins/cerberus-gate/.claude-plugin/plugin.json \
-              plugins/cerberus-gate-display/.claude-plugin/plugin.json
-            git commit -m "chore: リリース用manifestの書式を統一"
-            git push origin "HEAD:refs/heads/release/v${RELEASE_VERSION}"
-          fi
-
-      - name: Wait for checks and merge automatic release
+      - uses: HappyOnigiri/ReleaseActions/actions/merge-release@16cb118a622dd9219148928f60e60197a67029fc
         if: env.AUTOMATIC_RELEASE == 'true' && steps.prepare.outputs.pr-number != ''
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_PR: ${{ steps.prepare.outputs.pr-number }}
-        run: |
-          set -euo pipefail
-          RELEASE_SHA=$(git rev-parse HEAD)
-          node scripts/wait-release-checks.ts "$RELEASE_PR" "$RELEASE_SHA"
-          gh pr merge "$RELEASE_PR" --repo "$GH_REPO" --squash --match-head-commit "$RELEASE_SHA"
+        with:
+          pr-number: ${{ steps.prepare.outputs.pr-number }}
+          head-sha: ${{ steps.prepare.outputs.head-sha }}
+          workflow: ci.yml
+          events: |
+            push
+            pull_request
+          check-name: checks
+          timeout-seconds: "600"
+          github-token: ${{ secrets.GH_TOKEN }}
