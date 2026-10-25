@@ -33,6 +33,7 @@
 | その他のモジュール | hooks 内の登録用モジュール以外           |
 
 登録用モジュールでも、外部への依存は `claude-code` の型 import に限る。
+描画用プラグインの `plugins/cerberus-gate-display/hooks/register.ts` は `claude-code` の型 import だけを許可し、実行時の依存とエンジン API の呼び出しは許可しない。
 生成型、テスト、検証スクリプト内の文字列 fixture は依存境界の検査対象外とする。
 
 許可する API は次の20種類とする。

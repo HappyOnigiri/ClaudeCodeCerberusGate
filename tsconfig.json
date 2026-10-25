@@ -16,6 +16,7 @@
   },
   "include": [
     "plugins/cerberus-gate/hooks",
+    "plugins/cerberus-gate-display/hooks",
     "plugins/cerberus-gate/tests",
     "plugins/cerberus-gate/types"
   ]

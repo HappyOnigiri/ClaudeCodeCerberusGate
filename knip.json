@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "plugins/cerberus-gate/hooks/register.ts",
+    "plugins/cerberus-gate-display/hooks/register.ts",
     "plugins/cerberus-gate/tests/*.test.ts",
     "tests/*.test.mjs",
     "scripts/install.mjs"

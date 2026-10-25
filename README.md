@@ -9,11 +9,17 @@ Claude Code の最終回答を表示前に検証する TypeScript 製 Mods。
 Claude Code 2.1.310 の対話セッションで、リポジトリから起動する。
 
 ```sh
-claude --plugin-dir "$PWD/plugins/cerberus-gate"
+claude --plugin-dir "$PWD/plugins/cerberus-gate" --plugin-dir "$PWD/plugins/cerberus-gate-display"
 ```
 
 常用の Claude Code に入れるときは `make install` を使う。
-作業ツリーの状態を未コミットの変更も含めて `cerberus-gate@happyonigiri-plugins` としてインストールし、Claude Code の再起動後に有効になる。
+作業ツリーの状態を未コミットの変更も含めて `cerberus-gate@happyonigiri-plugins` と `cerberus-gate-display@happyonigiri-plugins` としてインストールし、Claude Code の再起動後に有効になる。
+
+修正・再開用プロンプトは通常画面で `Prompt from the cerberus-gate plugin` の見出しだけを表示する。
+Ctrl+O の詳細表示でプロンプト本文を展開でき、もう一度 Ctrl+O を押すと折りたたむ。
+これは会話全体の詳細表示の切替であり、見出しのクリックによる個別の展開ではない。
+描画用プラグインはターミナルの表示だけを変更し、モデルに渡す修正依頼や保存する会話は変更しない。
+審査用プラグインだけで起動した場合は、従来どおりプロンプト本文も表示する。
 
 `/cgate` で状態確認、`/cgate log` でこのセッションの動作ログを表示する。
 審査開始・判定・修正依頼・公開・タイムアウト・取消を UTC の時刻付きで確認できる。
