@@ -178,7 +178,11 @@ for (const mode of cases) {
         passed = true;
         break;
       }
-      if (mode === "unverified" && latest.includes("本文を公開しませんでした")) {
+      if (
+        mode === "unverified" &&
+        latest.includes("未検証の本文をそのまま表示します") &&
+        /\bstable\b/u.test(latest)
+      ) {
         passed = true;
         break;
       }

@@ -1,9 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { register } from "../plugins/cerberus-gate/hooks/register.ts";
-import { WAITING, UNVERIFIED } from "../plugins/cerberus-gate/hooks/policy.ts";
+import {
+  FAILED,
+  NO_DRAFT,
+  UNRESOLVED,
+  UNVERIFIED,
+  WAITING,
+  withNote,
+} from "../plugins/cerberus-gate/hooks/policy.ts";
 
-function harness(options = {}) {
+function harness(options = {}, version = "2.1.310") {
   const handlers = new Map();
   const events = { prompts: [], calls: [], inputs: [], agents: [], timers: [], commands: [] };
   let counter = 0;
@@ -31,7 +38,7 @@ function harness(options = {}) {
       },
     },
     session: {
-      version: async () => ({ version: "2.1.310", base: "2.1.310" }),
+      version: async () => ({ version, base: version }),
       messages: async () => [{ role: "user", content: "original request" }],
     },
     tool: {
@@ -255,23 +262,38 @@ test("MCP requires an exact allow-list and a read-only call without overriding p
   assert.equal((await h.fire("tool.call", { tool: "Write" })).result, "read result");
 });
 
-test("timeout, revision cap and malformed verdict all withhold the draft", async () => {
+test("timeout, revision cap and malformed verdict show the draft with a note", async () => {
   const timeout = harness();
   await timeout.prompt("request");
   await timeout.step();
   await timeout.events.timers[0].fn();
-  assert.equal((await timeout.step()).text, UNVERIFIED);
+  assert.equal((await timeout.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
   const cap = harness({ maxRevisions: 0 });
   await cap.prompt("request");
   await cap.step();
-  await cap.finish("REVISE", ["error"]);
-  assert.equal((await cap.step()).text, UNVERIFIED);
+  await cap.finish("REVISE", ["SECRET FINDING"]);
+  const capped = (await cap.step()).text;
+  assert.equal(capped, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
+  assert.doesNotMatch(capped, /SECRET FINDING/u);
   const bad = harness();
   await bad.prompt("request");
   await bad.step();
   await bad.step({ agentId: "review-1", text: "PASS" });
   await bad.fire("turn.complete", { agentId: "review-1", reason: "answer" });
-  assert.equal((await bad.step()).text, UNVERIFIED);
+  assert.equal((await bad.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+});
+
+test("truncated answers and unsupported versions are shown without review", async () => {
+  const truncated = harness();
+  await truncated.prompt("request");
+  const cut = await truncated.step({ stopReason: "max_tokens" });
+  assert.equal(cut.text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(truncated.events.agents.length, 0);
+  const old = harness({}, "2.1.300");
+  await old.fire("session.start", { isInteractive: true });
+  await old.prompt("request");
+  assert.equal((await old.step()).text, "UNPUBLISHED DRAFT");
+  assert.equal(old.events.agents.length, 0);
 });
 
 test("new prompt and abort prevent stale review publication; unrelated subagents are unchanged", async () => {
@@ -288,13 +310,17 @@ test("new prompt and abort prevent stale review publication; unrelated subagents
   assert.equal(h.events.prompts.length, 0);
 });
 
-test("tool steps proceed; stream failures never replay the buffered draft", async () => {
+test("tool steps proceed; stream failures show only the failed step's text", async () => {
   const h = harness();
   await h.prompt("request");
   const tools = await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
   assert.ok(tools.chunks.some((c) => c.kind === "tool"));
   assert.equal(h.events.agents.length, 0);
-  assert.equal((await h.step({ fail: true })).text, UNVERIFIED);
+  assert.equal((await h.step({ fail: true, text: "PARTIAL" })).text, withNote(FAILED, "PARTIAL"));
+  assert.equal((await h.step({ text: "NEXT" })).text, "NEXT");
+  const empty = harness();
+  await empty.prompt("request");
+  assert.equal((await empty.step({ fail: true, text: "" })).text, NO_DRAFT);
 });
 
 test("internal handback never delivers raw findings or wakes main as a peer", async () => {
@@ -376,7 +402,7 @@ test("cgate reports timeout and errors; unknown arguments are harmless and cerbe
   await h.events.timers[0].fn();
   await h.step();
   const text = (await h.fire("command.run", { command: "cgate", args: "log" })).text;
-  assert.match(text, /タイムアウト[\s\S]*UNVERIFIED[\s\S]*本文を公開しませんでした/u);
+  assert.match(text, /タイムアウト[\s\S]*UNVERIFIED[\s\S]*注記付きで表示/u);
   await h.prompt("next");
   await h.step({ fail: true });
   assert.match(

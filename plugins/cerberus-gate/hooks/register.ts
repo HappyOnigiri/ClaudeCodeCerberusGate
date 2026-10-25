@@ -2,13 +2,17 @@ import {
   allowedTool,
   CONTROL,
   correction,
+  FAILED,
   MAX_DRAFT,
+  NO_DRAFT,
   parseVerdict,
   readConfig,
   REVIEWER,
   REVIEW_PROMPT,
+  UNRESOLVED,
   UNVERIFIED,
   WAITING,
+  withNote,
 } from "./policy.ts";
 import { createState, current, disposition, reset } from "./state.ts";
 import { createLog } from "./log.ts";
@@ -29,6 +33,9 @@ let config: Config = readConfig({});
 let configured = true;
 let interactive = true;
 let timer: Timer | undefined;
+// 異常終了時に、そのステップで受け取った本文だけを表示するために保持する。
+let buffered = { key: "", text: "" };
+const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
 const controlText = (delivery: Delivery): string =>
   `${CONTROL} [${delivery.epoch}-${delivery.token}]`;
 const resultOf = (e: TurnStepInput, answer: string): TurnStepResult => ({
@@ -53,7 +60,10 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
     token: candidate.token,
     epoch: candidate.epoch,
     mode,
-    text: mode === "publish" ? candidate.text : UNVERIFIED,
+    text:
+      mode === "publish"
+        ? candidate.text
+        : withNote(verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED, candidate.text),
   };
   if (mode === "revise") {
     gate.revisions++;
@@ -66,13 +76,13 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
   const sent = await $.prompt.submit({ text: controlText(delivery) }).catch(() => undefined);
   if (sent === undefined || sent.drop !== undefined) {
     if (gate.epoch === delivery.epoch) {
-      log.record($.clock.now(), "検証処理の継続に失敗しました。本文は公開しません。");
+      log.record($.clock.now(), "検証処理の継続に失敗したため、本文を表示できませんでした。");
       gate.delivery = undefined;
       gate.action = undefined;
       gate.blocked = true;
       gate.phase = "unverified";
     }
-    $.ui.status(UNVERIFIED);
+    $.ui.status("Cerberus Gate: 検証処理の継続に失敗したため、本文を表示できませんでした。");
   }
 }
 
@@ -131,7 +141,9 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     if (next.signal.aborted || action.epoch !== gate.epoch) return resultOf(e, "");
     log.record(
       $.clock.now(),
-      action.mode === "publish" ? "検証済みの本文を公開しました。" : UNVERIFIED,
+      action.mode === "publish"
+        ? "検証済みの本文を公開しました。"
+        : "未検証の本文を注記付きで表示しました。",
     );
     $.ui.status("");
     yield { kind: "text", index: 0, text: action.text };
@@ -146,11 +158,8 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     yield { kind: "stop", stopReason: "end_turn", usage: null };
     return resultOf(e, notice);
   }
-  if (!configured || gate.blocked || !gate.prompt) {
-    yield { kind: "text", index: 0, text: UNVERIFIED };
-    yield { kind: "stop", stopReason: "end_turn", usage: null };
-    return resultOf(e, UNVERIFIED);
-  }
+  // 検証できない状態では回答を止めず、通常どおり生成・表示する。
+  if (!configured || gate.blocked || !gate.prompt) return yield* next(e);
   if (gate.active !== undefined || gate.delivery !== undefined) {
     yield { kind: "text", index: 0, text: WAITING };
     yield { kind: "stop", stopReason: "end_turn", usage: null };
@@ -159,7 +168,9 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   const stream = next(e);
   const chunks = [];
   let size = 0;
+  buffered = { key: stepKey(e), text: "" };
   for await (const chunk of stream) {
+    if (chunk.kind === "text") buffered.text += chunk.text;
     size +=
       chunk.kind === "text" || chunk.kind === "thinking"
         ? chunk.text.length
@@ -173,6 +184,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   if (next.signal.aborted || epoch !== gate.epoch) return resultOf(e, "");
   const hasTools = response.toolUses.length > 0 || chunks.some((c) => c.kind === "tool");
   if (hasTools) {
+    buffered.text = "";
     yield* chunks;
     return response;
   }
@@ -181,6 +193,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     .map((c) => c.text)
     .join("");
   if (!text.trim()) {
+    buffered.text = "";
     yield* chunks;
     return response;
   }
@@ -188,13 +201,19 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     (response.stopReason !== "end_turn" && response.stopReason !== "stop_sequence") ||
     text.length > MAX_DRAFT
   ) {
-    log.record($.clock.now(), "回答の終了条件またはサイズが審査の対象外です。本文は公開しません。");
-    yield { kind: "text", index: 0, text: UNVERIFIED };
-    yield { kind: "stop", stopReason: "end_turn", usage: response.usage };
-    return resultOf(e, UNVERIFIED);
+    log.record(
+      $.clock.now(),
+      "回答の終了条件またはサイズが審査の対象外のため、未検証の本文を表示しました。",
+    );
+    buffered.text = "";
+    const shown = withNote(UNVERIFIED, text);
+    yield { kind: "text", index: 0, text: shown };
+    yield { kind: "stop", stopReason: response.stopReason, usage: response.usage };
+    return { ...response, answer: shown };
   }
   $.ui.status(WAITING);
   await startReview($, e, text);
+  buffered.text = "";
   if (next.signal.aborted) return resultOf(e, "");
   // 空本文はエンジンが再生成するため、下書きに代えて状況だけを返す。
   yield { kind: "text", index: 0, text: WAITING };
@@ -202,18 +221,26 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   return { ...response, answer: WAITING };
 };
 
-// 異常終了時に元のストリームへフォールバックしない。
+// 異常終了時は、受け取り済みの本文を注記付きでそのまま表示する。
 const stepFailure: Hook<"turn.step"> = async function* ($, e) {
-  log.record($.clock.now(), "回答処理でエラーが発生しました。本文は公開しません。");
+  const text = buffered.key === stepKey(e) ? buffered.text : "";
+  buffered = { key: "", text: "" };
+  log.record(
+    $.clock.now(),
+    text.trim()
+      ? "回答処理でエラーが発生したため、未検証の本文を表示しました。"
+      : "回答処理でエラーが発生しました。表示できる本文はありません。",
+  );
   gate.blocked = true;
   gate.active = undefined;
   gate.delivery = undefined;
   gate.action = undefined;
   timer?.cancel();
   $.ui.status("");
-  yield { kind: "text", index: 0, text: UNVERIFIED };
+  const shown = text.trim() ? withNote(FAILED, text) : NO_DRAFT;
+  yield { kind: "text", index: 0, text: shown };
   yield { kind: "stop", stopReason: "end_turn", usage: null };
-  return resultOf(e, UNVERIFIED);
+  return resultOf(e, shown);
 };
 
 const onReviewerStep: Hook<"turn.step"> = async function* (_$, e, next) {

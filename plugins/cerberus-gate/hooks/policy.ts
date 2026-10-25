@@ -7,7 +7,15 @@ export type Config = {
 export type Verdict = { decision: "PASS" | "REVISE" | "UNVERIFIED"; findings: readonly string[] };
 export const READ_TOOLS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"] as const;
 export const WAITING = "回答を検証中です。";
-export const UNVERIFIED = "回答の検証を完了できなかったため、本文を公開しませんでした。";
+export const UNVERIFIED =
+  "Cerberus Gate: 回答の検証を完了できなかったため、未検証の本文をそのまま表示します。";
+export const UNRESOLVED =
+  "Cerberus Gate: 修正回数の上限に達したため、検証の指摘が残る本文をそのまま表示します。";
+export const FAILED =
+  "Cerberus Gate: 回答処理でエラーが発生したため、未検証の本文をそのまま表示します。";
+export const NO_DRAFT =
+  "Cerberus Gate: 回答処理でエラーが発生し、表示できる本文がありませんでした。";
+export const withNote = (note: string, text: string): string => `> ${note}\n\n${text}`;
 export const CONTROL = "Cerberus Gate: 検証処理を継続します。";
 export const REVIEWER = "cerberus-gate:reviewer";
 export const MAX_DRAFT = 100_000;
