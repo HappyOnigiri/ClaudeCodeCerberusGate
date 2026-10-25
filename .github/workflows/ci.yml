@@ -15,4 +15,11 @@ jobs:
       - run: npm install --no-save --ignore-scripts @anthropic-ai/claude-code@2.1.310
       - run: node node_modules/@anthropic-ai/claude-code/install.cjs
       - run: npx claude --version
+      - run: npm run setup:checks
       - run: npm run check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: node-coverage
+          path: tmp/coverage/lcov.info
+          if-no-files-found: error

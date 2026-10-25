@@ -14,7 +14,11 @@ hook は共通 Git ディレクトリに配置し、worktree でも共有する�
 ## 開発環境
 
 Node.js 24 以降と Claude Code 2.1.310 を使う。
-`npm ci` で固定バージョンの検査ツールを導入する。
+`npm ci` で固定バージョンの npm 検査ツールを導入する。
+続けて `npm run setup:checks` で actionlint と ShellCheck の固定版を準備する。
+公式配布物の SHA-256 検証後、`node_modules/.cache/cerberus-checks/` に配置する。
+グローバル環境は変更しない。
+macOS／Linux の arm64・x64 に対応し、未対応環境やダウンロード失敗では停止する。
 本体の TypeScript は Claude Code が直接読み込むため、配布用のビルド工程はない。
 型定義の更新は [型定義の手順](/types/README.md) に従う。
 
@@ -35,9 +39,14 @@ marketplace.json は watchdog など他のプラグインと共有するため�
 ## 検査
 
 `npm run check` をローカルと CI の共通の入口とする。
-フォーマット、Lint、型チェック、行数、Markdown、プラグイン検証、テストを実行する。
+検査の範囲と規約は [コード品質](/docs/code-quality.md) に従う。
+個別には `check:architecture`、`check:suppressions`、`docs:check`、`lint:workflows`、`lint:shell`、`lint:unused`、`test:coverage` を実行できる。
+`test:coverage` は Node テストを一度だけ実行し、要約と `tmp/coverage/lcov.info` を生成する。
+割合の閾値は設けない。
+`test:scripts` はカバレッジを付けずに Node テストだけを実行したい場合に使う。
 テストは判定・状態遷移に加え、審査から公開・修正・取消までの Hook の連携を検証する。
-CI は固定版の Claude Code を導入し、認証やモデル呼び出しを必要としない検査を実行する。
+CI は固定版の Claude Code とネイティブ検査ツールを導入し、認証やモデル呼び出しを必要としない共通検査を実行する。
+LCOV は `node-coverage` artifact に保存する。
 
 ## 実地検証
 

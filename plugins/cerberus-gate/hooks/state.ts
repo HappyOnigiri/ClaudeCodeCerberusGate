@@ -14,6 +14,16 @@ export type Delivery = {
   text: string;
   context?: string;
 };
+type Phase =
+  | "idle"
+  | "reviewing"
+  | "correction queued"
+  | "publish"
+  | "notice"
+  | "published"
+  | "unverified"
+  | "cancelled";
+
 export function createState() {
   return {
     epoch: 0,
@@ -24,7 +34,7 @@ export function createState() {
     action: undefined as Delivery | undefined,
     reviewers: new Set<string>(),
     prompt: "",
-    phase: "idle",
+    phase: "idle" as Phase,
     blocked: false,
   };
 }
@@ -42,11 +52,11 @@ export function reset(state: GateState, prompt: string): void {
 export function current(state: GateState, candidate: Candidate): boolean {
   return state.active === candidate && candidate.epoch === state.epoch && !state.blocked;
 }
-export function disposition(
-  verdict: Verdict,
-  revisions: number,
-  max: number,
-): "publish" | "revise" | "notice" {
-  if (verdict.decision === "PASS") return "publish";
-  return verdict.decision === "REVISE" && revisions < max ? "revise" : "notice";
+export function disposition(verdict: Verdict, revisions: number, max: number): Delivery["mode"] {
+  const modes = {
+    PASS: "publish",
+    REVISE: revisions < max ? "revise" : "notice",
+    UNVERIFIED: "notice",
+  } satisfies Record<Verdict["decision"], Delivery["mode"]>;
+  return modes[verdict.decision];
 }
