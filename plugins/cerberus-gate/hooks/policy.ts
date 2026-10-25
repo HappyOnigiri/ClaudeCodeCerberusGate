@@ -5,7 +5,7 @@ export type Config = {
   mcpTools: readonly string[];
 };
 export type Verdict = { decision: "PASS" | "REVISE" | "UNVERIFIED"; findings: readonly string[] };
-export const READ_TOOLS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"] as const;
+const READ_TOOLS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"] as const;
 export const WAITING = "回答を検証中です。";
 export const UNVERIFIED =
   "Cerberus Gate: 回答の検証を完了できなかったため、未検証の本文をそのまま表示します。";

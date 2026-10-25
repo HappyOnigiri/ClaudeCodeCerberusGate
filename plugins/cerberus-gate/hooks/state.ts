@@ -14,6 +14,16 @@ export type Delivery = {
   text: string;
   context?: string;
 };
+type Phase =
+  | "idle"
+  | "reviewing"
+  | "correction queued"
+  | "publish"
+  | "notice"
+  | "published"
+  | "unverified"
+  | "cancelled";
+
 export function createState() {
   return {
     epoch: 0,
@@ -24,7 +34,7 @@ export function createState() {
     action: undefined as Delivery | undefined,
     reviewers: new Set<string>(),
     prompt: "",
-    phase: "idle",
+    phase: "idle" as Phase,
     blocked: false,
   };
 }
@@ -46,7 +56,11 @@ export function disposition(
   verdict: Verdict,
   revisions: number,
   max: number,
-): "publish" | "revise" | "notice" | "restart" {
-  if (verdict.decision === "PASS") return "publish";
-  return verdict.decision === "REVISE" && revisions < max ? "revise" : "notice";
+): Exclude<Delivery["mode"], "restart"> {
+  const modes = {
+    PASS: "publish",
+    REVISE: revisions < max ? "revise" : "notice",
+    UNVERIFIED: "notice",
+  } satisfies Record<Verdict["decision"], Exclude<Delivery["mode"], "restart">>;
+  return modes[verdict.decision];
 }

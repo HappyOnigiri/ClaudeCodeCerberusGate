@@ -1,7 +1,9 @@
 {
   "gitignore": true,
+  "customRules": ["./scripts/quality/docs.mjs"],
   "config": {
     "MD013": false,
+    "MD052": true,
   },
   "overrides": [
     {

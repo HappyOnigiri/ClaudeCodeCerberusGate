@@ -14,10 +14,10 @@ import {
   WAITING,
   withNote,
 } from "./policy.ts";
-import { clearRecovery, restoreRecovery, saveRecovery } from "./recovery.ts";
+import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
 import { createState, current, disposition, reset } from "./state.ts";
 import { createLog } from "./log.ts";
-import type { Candidate, Delivery } from "./state.ts";
+import type { Candidate, Delivery, GateState } from "./state.ts";
 import type { Config, Verdict } from "./policy.ts";
 import type {
   EngineInterface,
@@ -48,6 +48,10 @@ const resultOf = (e: TurnStepInput, answer: string): TurnStepResult => ({
   usage: null,
 });
 
+async function saveRecovery($: EngineInterface, state: GateState): Promise<void> {
+  await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, snapshotRecovery(state));
+}
+
 // 審査結果や破棄原稿を通知経路から流さず、制御プロンプトの context にだけ渡す。
 async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdict): Promise<void> {
   if (!current(gate, candidate)) return;
@@ -61,15 +65,27 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
     token: candidate.token,
     epoch: candidate.epoch,
     mode,
-    text:
-      mode === "publish"
-        ? candidate.text
-        : withNote(verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED, candidate.text),
+    text: candidate.text,
   };
-  if (mode === "revise") {
-    gate.revisions++;
-    delivery.context = correction(candidate.text, verdict.findings);
-    log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
+  switch (mode) {
+    case "publish":
+      break;
+    case "notice":
+      delivery.text = withNote(
+        verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED,
+        candidate.text,
+      );
+      break;
+    case "revise":
+      delivery.text = withNote(UNRESOLVED, candidate.text);
+      gate.revisions++;
+      delivery.context = correction(candidate.text, verdict.findings);
+      log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
+      break;
+    default: {
+      const exhaustive: never = mode;
+      throw new Error(`Unknown delivery mode: ${String(exhaustive)}`);
+    }
   }
   gate.active = undefined;
   gate.delivery = delivery;
@@ -365,7 +381,10 @@ export const register: Register = (on, options) => {
     log.record($.clock.now(), "Cerberus Gate を起動しました。");
     if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
     if (!interactive) log.record($.clock.now(), "非対話セッションは対象外です。");
-    const pending = await restoreRecovery($, gate);
+    const pending = restoreRecovery(
+      gate,
+      (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value,
+    );
     if (gate.prompt) log.record($.clock.now(), "再ロード前の依頼と修正回数を復元しました。");
     // 古い判定を受理せず、残っている自分の審査だけを停止する。
     for (const agent of await $.agent.list()) {
@@ -459,7 +478,7 @@ export const register: Register = (on, options) => {
     log.clear();
     timer?.cancel();
     reset(gate, "");
-    await clearRecovery($);
+    await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);
     return next(e);
   });
 };

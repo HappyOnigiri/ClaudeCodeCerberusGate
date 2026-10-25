@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "plugins/cerberus-gate/hooks/register.ts",
+    "plugins/cerberus-gate/tests/*.test.ts",
+    "tests/*.test.mjs",
+    "scripts/install.mjs"
+  ],
+  "project": ["plugins/**/*.ts", "scripts/**/*.mjs", "tests/**/*.mjs", "types/**/*.d.ts"],
+  "ignoreDependencies": ["claude-code", "claude-code/testing"],
+  "ignoreUnresolved": ["claude-code", "claude-code-tools"]
+}
