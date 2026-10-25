@@ -16,8 +16,11 @@ const api = new Set([
   "ui.close",
   "ui.resolve",
   "prompt.submit",
-  "session.messages",
+  "process.run",
+  "plugin.root",
   "session.version",
+  "session.id",
+  "session.cwd",
   "state.get",
   "state.set",
   "tool.list",
@@ -208,6 +211,7 @@ function inspectDependency(n, { file, privileged, literal, report }) {
     const allowedLocal =
       file !== displayRegistration &&
       local &&
+      !local.endsWith("/session-log.mjs") &&
       local.startsWith("plugins/cerberus-gate/hooks/") &&
       !local.endsWith(".d.ts") &&
       (privileged ||
@@ -216,7 +220,32 @@ function inspectDependency(n, { file, privileged, literal, report }) {
       (privileged || file === displayRegistration) &&
       target === "claude-code" &&
       n.importKind === "type";
-    if (!allowedLocal && !hostTypes)
+    const helperImports = {
+      "node:fs/promises": [
+        "open",
+        "mkdtemp",
+        "writeFile",
+        "unlink",
+        "rmdir",
+        "realpath",
+        "readdir",
+        "lstat",
+      ],
+      "node:os": ["tmpdir", "homedir"],
+      "node:path": ["join", "dirname", "basename"],
+      "node:url": ["fileURLToPath"],
+    };
+    const helper =
+      file === "plugins/cerberus-gate/hooks/session-log.mjs" &&
+      n.type === "ImportDeclaration" &&
+      helperImports[target] &&
+      n.specifiers.every(
+        (s) =>
+          s.type === "ImportSpecifier" &&
+          s.local.name === s.imported.name &&
+          helperImports[target].includes(s.imported.name),
+      );
+    if (!allowedLocal && !hostTypes && !helper)
       report(n, "dependency-boundary", `forbidden dependency ${target ?? "<dynamic>"}`);
   }
   if (
@@ -228,16 +257,45 @@ function inspectDependency(n, { file, privileged, literal, report }) {
   if (n.type === "NewExpression" && n.callee.name === "Function")
     report(n, "dependency-boundary", "indirect code loading is forbidden");
 }
+function inspectProcess(n, parent, literal, report) {
+  const argv = parent.arguments[0];
+  const args = argv?.type === "ArrayExpression" ? argv.elements : [];
+  const helper = args[1];
+  if (
+    args.length !== 3 ||
+    literal(args[0]) !== "node" ||
+    !["create", "release"].includes(literal(args[2])) ||
+    helper?.type !== "TemplateLiteral" ||
+    helper.expressions.length !== 1 ||
+    chain(helper.expressions[0]).join(".") !== "$.plugin.root" ||
+    helper.quasis[0]?.value.cooked !== "" ||
+    helper.quasis[1]?.value.cooked !== "/hooks/session-log.mjs"
+  )
+    report(n, "mods-api-target", "process.run permits only the bundled session-log helper");
+  const options = parent.arguments[1];
+  if (
+    options?.type !== "ObjectExpression" ||
+    options.properties.some(
+      (p) => p.type !== "Property" || p.computed || !["stdin", "timeoutMs"].includes(p.key?.name),
+    )
+  )
+    report(n, "mods-api-target", "session-log permits only stdin and timeoutMs");
+}
 function inspectMember(n, parent, { privileged, literal, report, readCalls }) {
   if (n.type === "MemberExpression") {
     const parts = chain(n);
     if (!engineNames.has(parts[0])) return;
     if (parent?.type === "MemberExpression" && parent.object === n) return;
     const name = parts.slice(1).join(".");
-    if (!privileged || !api.has(name) || parent?.type !== "CallExpression" || parent.callee !== n) {
+    if (
+      !privileged ||
+      !api.has(name) ||
+      (name !== "plugin.root" && (parent?.type !== "CallExpression" || parent.callee !== n))
+    ) {
       report(n, "mods-api", `forbidden or indirect API reference ${parts.join(".")}`);
       return;
     }
+    if (name === "process.run") inspectProcess(n, parent, literal, report);
     if (name === "config.set") {
       const argument = parent.arguments[0];
       const properties = argument?.type === "ObjectExpression" ? argument.properties : [];

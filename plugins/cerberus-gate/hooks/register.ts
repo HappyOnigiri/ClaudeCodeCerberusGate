@@ -175,10 +175,13 @@ async function review(
           system: reviewSystem(reviewConfig),
           prompt: JSON.stringify({
             request,
-            conversation: candidate.context,
+            workingDirectory: await $.session.cwd(),
+            sessionLog: JSON.parse(candidate.context),
             unpublishedDraft: candidate.text,
             tools,
             evidence,
+            replyFormat:
+              'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
           }),
           maxTokens: 4096,
           timeoutMs: remaining,
@@ -198,7 +201,7 @@ async function review(
       evidence.push({
         tool: call.tool,
         input: call.input,
-        result: (result.text ?? JSON.stringify(result.result) ?? "").slice(0, MAX_EVIDENCE),
+        result: result.text ?? JSON.stringify(result.result) ?? "",
       });
       if (JSON.stringify(evidence).length > MAX_EVIDENCE) return unverified();
     }
@@ -280,10 +283,26 @@ async function verify(
     candidate.timedOut = true;
     candidate.controller.abort();
   });
+  let directory: string | undefined;
   try {
     await saveRecovery($, gate);
-    candidate.context = JSON.stringify(await $.session.messages({ as: "api" })).slice(-80_000);
+    const generated = await $.process.run(
+      ["node", `${$.plugin.root}/hooks/session-log.mjs`, "create"],
+      {
+        stdin: JSON.stringify({ sessionId: await $.session.id(), request: gate.prompt }),
+        timeoutMs: 15_000,
+      },
+    );
+    if (generated.exitCode !== 0 || generated.isStdoutTruncated) {
+      if (!current(gate, candidate) || signal.aborted) return "";
+      return await finishReview($, candidate, unverified());
+    }
+    const material = JSON.parse(generated.stdout);
+    directory = material.directory;
+    candidate.context = generated.stdout;
     if (!current(gate, candidate) || signal.aborted) return "";
+    gate.material = directory;
+    await saveRecovery($, gate);
     let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort);
     if (!current(gate, candidate) || signal.aborted) return "";
     if (candidate.timedOut) {
@@ -291,7 +310,23 @@ async function verify(
       verdict = { decision: "UNVERIFIED", findings: [] };
     }
     return await finishReview($, candidate, verdict);
+  } catch {
+    if (!current(gate, candidate) || signal.aborted) return "";
+    return await finishReview($, candidate, unverified());
   } finally {
+    if (directory !== undefined) {
+      const removed = await $.process
+        .run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "release"], {
+          stdin: JSON.stringify({ directory }),
+          timeoutMs: 15_000,
+        })
+        .catch(() => undefined);
+      if (removed?.exitCode !== 0) log.record($.clock.now(), "検証資料の削除に失敗しました。");
+    }
+    if (gate.material === directory) {
+      gate.material = undefined;
+      if (gate.prompt) await saveRecovery($, gate);
+    }
     timer.cancel();
     signal.removeEventListener("abort", abort);
     if (gate.active === candidate) gate.active = undefined;
@@ -469,10 +504,17 @@ export const register: Register = (on, options) => {
     log.record($.clock.now(), "Cerberus Gate を起動しました。");
     if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
     if (!interactive) log.record($.clock.now(), "非対話セッションは対象外です。");
-    const pending = restoreRecovery(
-      gate,
-      (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value,
-    );
+    const recovery = (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value;
+    if (recovery?.material !== undefined) {
+      await $.process
+        .run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "release"], {
+          stdin: JSON.stringify({ directory: recovery.material }),
+          timeoutMs: 15_000,
+        })
+        .catch(() => undefined);
+    }
+    gate.material = undefined;
+    const pending = restoreRecovery(gate, recovery);
     if (gate.prompt) log.record($.clock.now(), "再ロード前の依頼と修正回数を復元しました。");
     for (const agent of await $.agent.list()) {
       if (agent.type !== REVIEWER || agent.spawnedBy !== "cerberus-gate") continue;

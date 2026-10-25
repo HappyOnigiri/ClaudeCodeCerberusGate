@@ -32,6 +32,7 @@ export function createState() {
     serial: 0,
     revisions: 0,
     active: undefined as Candidate | undefined,
+    material: undefined as string | undefined,
     delivery: undefined as Delivery | undefined,
     action: undefined as Delivery | undefined,
     reviewers: new Set<string>(),

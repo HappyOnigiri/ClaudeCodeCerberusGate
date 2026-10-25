@@ -33,10 +33,14 @@
 | その他のモジュール | hooks 内の登録用モジュール以外           |
 
 登録用モジュールでも、外部への依存は `claude-code` の型 import に限る。
+検証資料専用の `hooks/session-log.mjs` だけは、ファイルの読み取り・専用一時ディレクトリの生成・削除に必要な Node 組み込み関数を名前付き import できる。
+許可する関数は `scripts/quality/architecture.mjs` に列挙し、他の本体モジュールからこのヘルパーを import することは禁止する。
+ヘルパーは標準 JSONL を読み取り専用で開き、書き込みは自身が生成した私有一時ディレクトリ内に限定する。
+原文・業務ファイルの不変性と、対象外の削除を拒否することはテストで確認する。
 描画用プラグインの `plugins/cerberus-gate-display/hooks/register.ts` は `claude-code` の型 import だけを許可し、実行時の依存とエンジン API の呼び出しは許可しない。
 生成型、テスト、検証スクリプト内の文字列 fixture は依存境界の検査対象外とする。
 
-許可する API は次の21種類とする。
+許可する API は次の24種類とする。
 
 - `agent.list/register/spawn`
 - `clock.now/after`
@@ -45,10 +49,15 @@
 - `prompt.submit`
 - `model.complete`
 - `turn.abort`
-- `session.messages/version`
+- `session.id/cwd/version`
+- `plugin.root`（同梱ヘルパーのパス解決のみ）
+- `process.run`（同梱ヘルパーの起動のみ）
 - `state.get/set`（自分の再ロード復元用の状態のみ）
 - `tool.list/call`
 - `ui.status/toast/open/close/resolve`
+
+`process.run` は `node` と `${$.plugin.root}/hooks/session-log.mjs`、操作 `create` または `release` の3引数だけを許可する。
+オプションは `stdin` と `timeoutMs` に限定し、shell・任意コマンド・環境変数・作業ディレクトリの変更を許可しない。
 
 `state.get/set` の対象は `plugin: "cerberus-gate", key: "recovery"` に限定する。
 `tool.call` の静的な対象は `TaskStop`、エージェント登録・起動は既存のレビュアーだけに限定する。
@@ -93,7 +102,7 @@ Hook 登録、Markdown カスタム規則、テスト、npm スクリプトか�
 
 ## カバレッジ
 
-Node 24 以降の標準機能で、本体の行・分岐・関数のカバレッジを計測する。
+Node 24 以降の標準機能で、同梱ヘルパーを含む本体の行・分岐・関数のカバレッジを計測する。
 既存の Node テストを一度だけ実行し、要約と `tmp/coverage/lcov.info` を出力する。
 CI は LCOV を artifact として保存する。
 Claude Code 独自ランナーのテスト結果は別に扱い、カバレッジには含めない。

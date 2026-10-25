@@ -45,7 +45,7 @@ function harness(
   let promptFailure = false;
   let permission = "allow";
   let readOnly = true;
-  let messages = async () => [{ role: "user", content: "original request" }];
+  let prepareMaterial = async () => ({});
   const matches = (m, e) =>
     Object.entries(m).every(([k, v]) =>
       v instanceof RegExp ? typeof e[k] === "string" && v.test(e[k]) : v === e[k],
@@ -61,6 +61,25 @@ function harness(
     };
   }, options);
   const engine = {
+    plugin: { root: "/plugin" },
+    process: {
+      run: async (argv) => {
+        if (argv[2] === "release") {
+          events.released = true;
+          return { exitCode: 0 };
+        }
+        await prepareMaterial();
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            directory: "/private/review",
+            users: "/private/review/users.txt",
+            history: "/private/review/history.txt",
+            source: "/private/review/source.jsonl",
+          }),
+        };
+      },
+    },
     ui: {
       toast(text, toastOptions) {
         events.toasts.push({ text, options: toastOptions });
@@ -98,8 +117,9 @@ function harness(
       },
     },
     session: {
+      id: async () => "session",
+      cwd: async () => "/project",
       version: async () => ({ version, base: version }),
-      messages: () => messages(),
     },
     model: {
       complete: async (request, callOptions) => {
@@ -276,8 +296,8 @@ function harness(
     setReadOnly: (value) => {
       readOnly = value;
     },
-    setMessages: (read) => {
-      messages = read;
+    setPreparation: (read) => {
+      prepareMaterial = read;
     },
     failPrompt: () => {
       promptFailure = true;
@@ -474,13 +494,13 @@ test("new prompt, abort, cancel and session end invalidate an in-flight review",
 test("round, evidence and deadline limits never approve an incomplete review", async () => {
   const loop = harness();
   await started(loop);
-  for (let i = 0; i < 8; i++)
+  for (let i = 0; i < 16; i++)
     loop.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
   assert.equal((await loop.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
-  assert.equal(loop.events.models.length, 8);
+  assert.equal(loop.events.models.length, 16);
   const big = harness();
   await started(big);
-  big.setCall({ result: "x".repeat(90_000) });
+  big.setCall({ result: "x".repeat(170_000) });
   big.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
   assert.equal((await big.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
   const deadline = harness({ reviewTimeoutSeconds: 1 });
@@ -562,11 +582,11 @@ test("session log works during review, shows findings without the draft and clea
   );
 });
 
-test("cancellation while collecting conversation evidence does not start a reviewer", async () => {
+test("cancellation while preparing session material does not start a reviewer", async () => {
   const h = harness();
   await started(h);
   const held = deferred();
-  h.setMessages(() => held.promise);
+  h.setPreparation(() => held.promise);
   const running = h.step();
   await tick();
   await h.fire("command.run", { command: "cgate", args: "cancel" });
@@ -991,6 +1011,7 @@ test("configured review criteria reach every model round without replacing the p
       assert.ok(request.system.includes('"tool":"exact listed tool name"'));
       assert.ok(request.system.includes('"decision":"PASS"|"REVISE"|"UNVERIFIED"'));
       assert.ok(request.system.includes("Never modify files"));
+      assert.ok(request.system.includes("FIRST Read sessionLog.users"));
     }
   }
 });
@@ -1035,4 +1056,30 @@ test("invalid review prompt configuration disables review without calling the mo
     assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
     assert.equal(h.events.models.length, 0);
   }
+});
+
+test("unavailable transcript is UNVERIFIED, without a reviewer or correction", async () => {
+  const h = harness();
+  await started(h);
+  h.engine.process.run = async () => ({ exitCode: 1, stdout: "" });
+  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(h.events.models.length, 0);
+  assert.equal(h.events.prompts.length, 0);
+});
+
+test("snapshot paths replace inline conversation and cleanup follows the held review", async () => {
+  const h = harness();
+  await started(h);
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const running = h.step();
+  await tick();
+  assert.equal(h.events.released, undefined);
+  const input = JSON.parse(h.events.models[0].request.prompt);
+  assert.equal(input.conversation, undefined);
+  assert.equal(input.sessionLog.users, "/private/review/users.txt");
+  await h.fire("command.run", { command: "cgate", args: "cancel" });
+  held.resolve({ isAnswered: true, text: verdict() });
+  assert.equal((await running).text, "");
+  assert.equal(h.events.released, true);
 });

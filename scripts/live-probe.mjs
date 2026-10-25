@@ -1,3 +1,4 @@
+import { verifyMaterials } from "./live-materials.mjs";
 import { randomBytes } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -12,6 +13,7 @@ const cases = process.argv.slice(2).length
   ? process.argv.slice(2)
   : [
       "pass",
+      "history",
       "model",
       "prompt",
       "bounds",
@@ -23,6 +25,7 @@ const cases = process.argv.slice(2).length
       "cli",
       "revise",
       "unverified",
+      "missing-log",
       "cancel",
       "slow",
       "timeout",
@@ -33,6 +36,13 @@ const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
 // Terminal wrapping and Markdown rendering consume whitespace, escape backslashes and code ticks.
+const decisionOf = (text) => {
+  try {
+    return JSON.parse(text).decision;
+  } catch {
+    return undefined;
+  }
+};
 const compact = (text) => text.replace(/[\s\\`]/gu, "");
 const withoutFindings = (screen, findings) =>
   findings.reduce(
@@ -89,6 +99,7 @@ for (const mode of cases) {
   if (
     ![
       "pass",
+      "history",
       "model",
       "prompt",
       "bounds",
@@ -100,6 +111,7 @@ for (const mode of cases) {
       "cli",
       "revise",
       "unverified",
+      "missing-log",
       "cancel",
       "slow",
       "timeout",
@@ -108,7 +120,7 @@ for (const mode of cases) {
     ].includes(mode)
   )
     throw new Error(`Unknown case ${mode}`);
-  const needsRevision = ["revise", "bounds", "environment", "causal"].includes(mode);
+  const needsRevision = ["history", "revise", "bounds", "environment", "causal"].includes(mode);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
   const visibleFindings = [];
@@ -122,6 +134,8 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
+  if (mode === "missing-log")
+    await writeFile(join(plugin, "hooks/session-log.mjs"), "process.exitCode=1;\n");
   const display = join(work, "display");
   await cp(join(root, "plugins/cerberus-gate-display"), display, {
     recursive: true,
@@ -178,25 +192,39 @@ for (const mode of cases) {
   await writeFile(
     join(fixture, "hooks/register.ts"),
     `
- let first=true,review=0,prompts=0,tools=0;
+ let first=true,review=0,prompts=0,tools=0,userPrompts=0,materials=0;const seenMaterials=new Set();
  export const register=on=>{
   on('turn.step',async function*($,e,next){
-   if(!e.agentId && first && ['revise','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)})){
+   if(!e.agentId && first && (['revise','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)}) || (${JSON.stringify(mode)}==='history' && userPrompts>=2))){
     first=false;
-    const text=${JSON.stringify(drafts[mode] ?? "The release channel is beta. CERBERUS_REJECTED_DRAFT")};
+    const text=${JSON.stringify(mode)}==='history'?'The limit is 8. CERBERUS_REJECTED_DRAFT':${JSON.stringify(drafts[mode] ?? "The release channel is beta. CERBERUS_REJECTED_DRAFT")};
     yield {kind:'text',index:0,text};yield {kind:'stop',stopReason:'end_turn',usage:null};
     return {turnId:e.turnId,index:e.index,answer:text,toolUses:[],stopReason:'end_turn',usage:null};
    }
-   const stream=next(e);const pieces=[];for await(const c of stream){pieces.push(c);yield c;}
-   const result=await stream.result;
+   const stream=next(e);const pieces=[];for await(const c of stream){pieces.push(c);if(${JSON.stringify(mode)}!=='history')yield c;}
+   let result=await stream.result;
+   if(${JSON.stringify(mode)}==='history'){
+    if(!e.agentId && userPrompts===1 && result.toolUses.length===0){
+     const text='ORCHID ACK'; pieces.splice(0,pieces.length,{kind:'text',index:0,text},{kind:'stop',stopReason:'end_turn',usage:null});result={...result,answer:text};
+    }
+    yield* pieces;
+   }
    await $.fs.write(${JSON.stringify(artifacts)}+'/step-'+(e.agentId??'main')+'-'+e.turnId+'-'+e.index+'.json',JSON.stringify({event:e,result,pieces}));
    return result;
   });
   on('prompt.submit',async($,e,next)=>{
+   if(e.origin.kind==='composer')userPrompts++;
    const result=await next(e);await $.fs.write(${JSON.stringify(artifacts)}+'/prompt-'+(++prompts)+'.json',JSON.stringify({...e,context:result.context??e.context}));return result;
   });
   on('model.complete',async($,e,next)=>{
    const index=++review;
+   const material=JSON.parse(e.prompt).sessionLog;
+   if(!seenMaterials.has(material.source)){
+    seenMaterials.add(material.source);
+    const raw=await $.fs.read(material.source), original=await $.fs.read(material.sourcePath);
+    if(!original.startsWith(raw))throw new Error('Source prefix changed');
+    await $.fs.write(${JSON.stringify(artifacts)}+'/material-'+(++materials)+'.json',JSON.stringify({material,raw,users:await $.fs.read(material.users),history:await $.fs.read(material.history)}));
+   }
    if(${JSON.stringify(mode)}==='reload-review' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
     await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','review');await $.clock.sleep(7000);
    }
@@ -204,6 +232,7 @@ for (const mode of cases) {
    if(['cancel','timeout'].includes(${JSON.stringify(mode)}))await $.clock.sleep(7000);
    if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
    if(${JSON.stringify(mode)}==='cli')e={...e,prompt:e.prompt+'\\nBefore deciding, request Bash with command '+${JSON.stringify(JSON.stringify(cliCommand))}+' to inspect the latest commit subject. The evidence array must contain this successful CLI output. Verify both the release channel and evidence token in the draft against that output. Do not substitute file reads. If this command is already in evidence, use it and decide; do not repeat it.'};
+   if(${JSON.stringify(mode)}==='history' && JSON.parse(e.prompt).unpublishedDraft.includes('CERBERUS_REJECTED_DRAFT'))e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain both a successful Grep on sessionLog.history with output_mode content and a successful Read of narrow matching history.txt ranges around the prior LIMIT tool result. Do not substitute a read of limits.ts for reading history.txt. Do not decide based solely on the current draft or request.'};
    if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
    const result=${JSON.stringify(mode)}==='unverified'
     ? {value:{isAnswered:true,text:'INVALID_REVIEW',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
@@ -259,6 +288,16 @@ for (const mode of cases) {
       ),
     );
   }
+  if (mode === "history")
+    await writeFile(
+      join(work, "limits.ts"),
+      "export const LIMIT = 7;\n" +
+        Array.from(
+          { length: 1200 },
+          (_, i) => `// independent context row ${i}: ${"detail ".repeat(12)}`,
+        ).join("\n") +
+        "\n",
+    );
   const factText = "The release channel is stable.\n" + (facts[mode] ? facts[mode] + "\n" : "");
   await writeFile(join(work, "fact.txt"), factText);
   if (mode === "cli") {
@@ -466,14 +505,30 @@ for (const mode of cases) {
       if (!Object.values(enabled.pluginConfigs ?? {}).some((p) => p.options?.enabled === true))
         throw new Error("Enabled setting was not persisted");
     }
+    if (mode === "history") {
+      await submit(
+        session,
+        `For all later answers include the token ORCHID. Use the Read tool on ${join(work, "limits.ts")} with limit 600 now; its LIMIT definition is authoritative. Acknowledge with ORCHID ACK.`,
+      );
+      const until = Date.now() + 90_000;
+      while (
+        !(await readdir(artifacts)).some((entry) => entry.startsWith("complete-")) ||
+        !tmux("capture-pane", "-p", "-t", session, "-S", "-1000").includes("done")
+      ) {
+        if (Date.now() > until) throw new Error("Historical turn did not complete");
+        await pause(250);
+      }
+    }
     await submit(
       session,
-      mode === "cli"
-        ? "Run git log -1 --format=%s and reply with exactly that JSON release record, including its evidence token. No other text."
-        : requests[mode]
-          ? "Read fact.txt. Start your answer with the release channel in lowercase plain text, then: " +
-            requests[mode]
-          : "Read fact.txt and reply with exactly the release channel, with no other text.",
+      mode === "history"
+        ? "Correction: report the numeric upper limit instead of the release channel. Keep earlier requirements. Reply in one line."
+        : mode === "cli"
+          ? "Run git log -1 --format=%s and reply with exactly that JSON release record, including its evidence token. No other text."
+          : requests[mode]
+            ? "Read fact.txt. Start your answer with the release channel in lowercase plain text, then: " +
+              requests[mode]
+            : "Read fact.txt and reply with exactly the release channel, with no other text.",
     );
     let reloaded = false;
     let cancelled = false;
@@ -519,7 +574,7 @@ for (const mode of cases) {
         break;
       }
       if (
-        (mode === "unverified" || mode === "timeout") &&
+        (mode === "unverified" || mode === "missing-log" || mode === "timeout") &&
         latest.includes("未検証の本文をそのまま表示します") &&
         /\bstable\b/u.test(latest)
       ) {
@@ -527,7 +582,8 @@ for (const mode of cases) {
         break;
       }
       if (
-        (mode === "pass" ||
+        (mode === "history" ||
+          mode === "pass" ||
           mode === "prompt" ||
           mode === "choice" ||
           mode === "toggle" ||
@@ -537,9 +593,13 @@ for (const mode of cases) {
           needsRevision ||
           mode === "slow" ||
           mode.startsWith("reload-")) &&
-        (mode === "cli"
-          ? latest.includes(cliToken) && /⏺\s*\{/u.test(latest)
-          : /⏺\s+stable\b/u.test(latest))
+        (mode === "history"
+          ? latest
+              .split("\n")
+              .some((line) => /⏺/u.test(line) && line.includes("ORCHID") && /\b7\b/u.test(line))
+          : mode === "cli"
+            ? latest.includes(cliToken) && /⏺\s*\{/u.test(latest)
+            : /⏺\s+stable\b/u.test(latest))
       ) {
         // A reload may queue another continuation after an earlier stable answer.
         // Observe an idle terminal before collecting the final control-prompt ledger.
@@ -556,7 +616,16 @@ for (const mode of cases) {
     if (!passed) throw new Error("Expected completion not observed before deadline");
     if (needsRevision && latest.includes("回答を検証中です。"))
       throw new Error("Waiting notice remained in the completed answer");
-    if (needsRevision || mode === "reload-review") {
+    if (mode === "history") {
+      for (const name of (await readdir(artifacts)).filter((entry) =>
+        /^review-\d+\.json$/u.test(entry),
+      )) {
+        const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
+        if (decisionOf(review.result.text) === "REVISE")
+          visibleFindings.push(...JSON.parse(review.result.text).findings);
+      }
+    }
+    if ((needsRevision && mode !== "history") || mode === "reload-review") {
       for (const name of (await readdir(artifacts)).filter((entry) =>
         /^review-\d+\.json$/u.test(entry),
       )) {
@@ -611,6 +680,7 @@ for (const mode of cases) {
     while (Date.now() < logDeadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       const expected = {
+        history: "修正を依頼しました",
         pass: "検証済みの本文を公開しました。",
         prompt: "検証済みの本文を公開しました。",
         choice: "検証済みの本文を公開しました。",
@@ -627,6 +697,7 @@ for (const mode of cases) {
         "reload-review": "検証済みの本文を公開しました。",
         revise: "修正を依頼しました",
         unverified: "UNVERIFIED",
+        "missing-log": "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
       }[mode];
       if (latest.includes("このセッションのログ（時刻は UTC）") && latest.includes(expected)) {
@@ -736,6 +807,7 @@ for (const mode of cases) {
     }
     if (mode === "choice" && verdicts.some((v) => v.includes('"REVISE"')))
       throw new Error("An unresolved specification proposal was incorrectly rejected");
+    await verifyMaterials(records, artifacts, mode);
     const pluginPrompts = origins.filter(
       (origin) => origin.kind === "plugin" && origin.name === "cerberus-gate",
     ).length;
@@ -802,7 +874,7 @@ for (const mode of cases) {
         const input = JSON.parse(review.request.prompt.split("\nBefore deciding,")[0]);
         try {
           return (
-            JSON.parse(review.result.text).decision === "PASS" &&
+            decisionOf(review.result.text) === "PASS" &&
             JSON.stringify(JSON.parse(input.unpublishedDraft)) === cliExpected &&
             input.evidence.some(
               (entry) =>
