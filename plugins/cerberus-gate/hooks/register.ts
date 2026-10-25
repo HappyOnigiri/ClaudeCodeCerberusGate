@@ -35,6 +35,9 @@ const log = createLog();
 let config: Config = readConfig({});
 let configured = true;
 let interactive = true;
+const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
+const status = (): string =>
+  `Cerberus Gate: ${enabled() ? "on" : "off"} (${gate.sessionEnabled === undefined ? "saved" : "session"}); ${gate.phase}; corrections=${gate.revisions}`;
 let buffered = { key: "", text: "" };
 const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
 const controlText = (delivery: Delivery): string =>
@@ -263,6 +266,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     gate.action = undefined;
     await saveRecovery($, gate);
   }
+  if (!enabled()) return yield* next(e);
   if (!interactive) {
     const text =
       "Cerberus Gate は対話セッションで利用してください。未検証の回答は生成・公開していません。";
@@ -292,7 +296,12 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     .filter((c) => c.kind === "text")
     .map((c) => c.text)
     .join("");
-  if (response.toolUses.length > 0 || chunks.some((c) => c.kind === "tool") || !text.trim()) {
+  if (
+    !enabled() ||
+    response.toolUses.length > 0 ||
+    chunks.some((c) => c.kind === "tool") ||
+    !text.trim()
+  ) {
     buffered.text = "";
     yield* chunks;
     return response;
@@ -414,6 +423,7 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
 };
 
 export const register: Register = (on, options) => {
+  gate.sessionEnabled = undefined;
   log.clear();
   configured = true;
   try {
@@ -443,10 +453,10 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: "cgate",
       description: "Cerberus Gate の状態・セッションログを表示",
-      argumentHint: "[model|log|cancel]",
+      argumentHint: "[on|off [--session]|reset --session|model|log|cancel]",
       immediate: true,
     });
-    if (pending && gate.prompt && configured && interactive) {
+    if (pending && gate.prompt && configured && interactive && enabled()) {
       const delivery: Delivery = {
         token: ++gate.serial,
         epoch: gate.epoch,
@@ -462,6 +472,42 @@ export const register: Register = (on, options) => {
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
     const argument = e.args.trim();
+    const toggle = /^(on|off)( --session)?$/u.exec(argument);
+    if (toggle || argument === "reset --session") {
+      if (toggle?.[2]) gate.sessionEnabled = toggle[1] === "on";
+      else if (toggle) {
+        try {
+          const result = await $.config.set({
+            key: "cerberus-gate.enabled",
+            value: toggle[1] === "on",
+          });
+          if (result.deny !== undefined || typeof result.value !== "boolean")
+            return { text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
+          config = { ...config, enabled: result.value };
+          gate.sessionEnabled = undefined;
+        } catch {
+          return { text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
+        }
+      } else gate.sessionEnabled = undefined;
+      const turnId = gate.active?.turnId;
+      const pending =
+        gate.active !== undefined || gate.delivery !== undefined || gate.action !== undefined;
+      if (!enabled() && pending) {
+        reset(gate, gate.prompt);
+        gate.phase = "cancelled";
+        $.ui.status(undefined);
+      }
+      await saveRecovery($, gate);
+      log.record($.clock.now(), status());
+      if (!enabled() && turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
+      return {
+        text:
+          status() +
+          (!enabled() && pending
+            ? " 保留中の回答を取り消しました。新しい依頼を送信してください。"
+            : ""),
+      };
+    }
     if (argument === "model") {
       await $.ui.open({
         id: "reviewer-model",
@@ -473,7 +519,7 @@ export const register: Register = (on, options) => {
     }
     if (argument === "log") return { text: await log.text() };
     if (argument !== "" && argument !== "cancel")
-      return { text: "使い方: /cgate [model|log|cancel]" };
+      return { text: "使い方: /cgate [on|off [--session]|reset --session|model|log|cancel]" };
     if (argument === "cancel") {
       const turnId = gate.active?.turnId;
       reset(gate, gate.prompt);
@@ -483,7 +529,7 @@ export const register: Register = (on, options) => {
       log.record($.clock.now(), "コマンドで検証処理を取り消しました。");
       if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
     }
-    return { text: `Cerberus Gate: ${gate.phase}; corrections=${gate.revisions}` };
+    return { text: status() };
   });
   on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
     if (e.surface === "mobile") {
@@ -510,6 +556,7 @@ export const register: Register = (on, options) => {
           }
           config = readConfig({
             ...options,
+            enabled: config.enabled,
             reviewerModel: result.value,
             reviewerEffort: config.reviewerEffort,
           });
@@ -552,6 +599,7 @@ export const register: Register = (on, options) => {
           }
           config = readConfig({
             ...options,
+            enabled: config.enabled,
             reviewerModel: config.reviewerModel,
             reviewerEffort: result.value,
           });
@@ -587,6 +635,7 @@ export const register: Register = (on, options) => {
   on("session.end", async ($, e, next) => {
     log.clear();
     reset(gate, "");
+    gate.sessionEnabled = undefined;
     await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);
     return next(e);
   });

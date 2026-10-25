@@ -866,3 +866,74 @@ test("temporary settings notifications leave a pending review status intact", as
   await step;
   assert.equal(h.events.statuses.at(-1), undefined);
 });
+
+test("enabled commands persist defaults and session overrides take precedence", async () => {
+  const h = harness();
+  await h.prompt("request");
+  const command = (args) => h.fire("command.run", { command: "cgate", args });
+  assert.match((await command("off")).text, /off \(saved\)/u);
+  assert.deepEqual(h.events.setting, { key: "cerberus-gate.enabled", value: false });
+  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+  assert.equal(h.events.models.length, 0);
+  assert.match((await command("on --session")).text, /on \(session\)/u);
+  await h.step();
+  assert.equal(h.events.models.length, 1);
+  assert.match((await command("reset --session")).text, /off \(saved\)/u);
+  assert.match((await command("on")).text, /on \(saved\)/u);
+  assert.match((await command("off --session")).text, /off \(session\)/u);
+  await h.fire("session.end", {});
+  assert.match((await command("")).text, /on \(saved\)/u);
+});
+
+test("session override survives reload without changing saved settings", async () => {
+  const h = harness({ enabled: false });
+  await h.fire("command.run", { command: "cgate", args: "on --session" });
+  assert.equal(h.events.setting, undefined);
+  const reloaded = await reload(h, { enabled: false });
+  assert.match(
+    (await reloaded.fire("command.run", { command: "cgate", args: "" })).text,
+    /on \(session\)/u,
+  );
+});
+
+test("failed persistence preserves current enabled state and override", async () => {
+  for (const result of [{ deny: "policy" }, { value: "false" }, new Error("failed")]) {
+    const h = harness();
+    await h.fire("command.run", { command: "cgate", args: "off --session" });
+    h.engine.config.set = async () => {
+      if (result instanceof Error) throw result;
+      return result;
+    };
+    assert.match(
+      (await h.fire("command.run", { command: "cgate", args: "on" })).text,
+      /保存できません/u,
+    );
+    assert.match(
+      (await h.fire("command.run", { command: "cgate", args: "" })).text,
+      /off \(session\)/u,
+    );
+  }
+});
+
+test("disabling during review cancels the held answer and stale verdict", async () => {
+  const h = harness();
+  await h.prompt("request");
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const running = h.step();
+  await tick();
+  assert.match(
+    (await h.fire("command.run", { command: "cgate", args: "off --session" })).text,
+    /取り消しました/u,
+  );
+  held.resolve({ isAnswered: true, text: verdict("REVISE", ["private finding"]) });
+  assert.equal((await running).text, "");
+  await h.flushCorrections();
+  assert.equal(h.events.prompts.length, 0);
+});
+
+test("enabled configuration accepts only booleans", () => {
+  assert.equal(readConfig({}).enabled, true);
+  assert.equal(readConfig({ enabled: false }).enabled, false);
+  assert.throws(() => readConfig({ enabled: "off" }), /Invalid enabled/u);
+});

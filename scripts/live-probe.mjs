@@ -12,6 +12,7 @@ const cases = process.argv.slice(2).length
   : [
       "pass",
       "model",
+      "toggle",
       "search",
       "revise",
       "unverified",
@@ -43,6 +44,7 @@ for (const mode of cases) {
     ![
       "pass",
       "model",
+      "toggle",
       "search",
       "revise",
       "unverified",
@@ -71,7 +73,7 @@ for (const mode of cases) {
   const settings = join(configDir, "settings.json");
   const reloadSettings = (maxRevisions) =>
     JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
-  if (mode === "reload-work" || mode === "model") {
+  if (mode === "reload-work" || mode === "model" || mode === "toggle") {
     await mkdir(configDir);
     const accountPath = process.env.CLAUDE_CONFIG_DIR
       ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
@@ -85,7 +87,7 @@ for (const mode of cases) {
     await writeFile(join(configDir, ".claude.json"), JSON.stringify(account));
     await writeFile(
       settings,
-      mode === "model"
+      mode === "model" || mode === "toggle"
         ? JSON.stringify({
             pluginConfigs: { "cerberus-gate@inline": { options: { reviewerEffort: "inherit" } } },
           })
@@ -212,7 +214,9 @@ for (const mode of cases) {
     fixture,
     ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
-    mode === "reload-work" || mode === "model" ? "user,project,local" : "project,local",
+    mode === "reload-work" || mode === "model" || mode === "toggle"
+      ? "user,project,local"
+      : "project,local",
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
@@ -221,7 +225,7 @@ for (const mode of cases) {
     "--debug-file",
     join(artifacts, "debug.log"),
   ];
-  if (mode === "reload-work" || mode === "model")
+  if (mode === "reload-work" || mode === "model" || mode === "toggle")
     args.unshift(
       "env",
       `CLAUDE_CONFIG_DIR=${configDir}`,
@@ -313,6 +317,47 @@ for (const mode of cases) {
       await writeFile(join(artifacts, "notice-after.txt"), after);
       if (after.includes(notice)) throw new Error("Temporary notice did not expire");
     }
+    if (mode === "toggle") {
+      const checkCommand = async (command, expected) => {
+        const before = tmux("capture-pane", "-p", "-t", session, "-S", "-1000").split(
+          expected,
+        ).length;
+        await submit(session, command);
+        const until = Date.now() + 15_000;
+        while (Date.now() < until) {
+          const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+          if (screen.split(expected).length > before) {
+            await writeFile(join(artifacts, command.replaceAll(/[^a-z]/gu, "-") + ".txt"), screen);
+            return;
+          }
+          await pause(250);
+        }
+        throw new Error(`Command failed: ${command}`);
+      };
+      await checkCommand("/cgate off", "off (saved)");
+      await pause(1500);
+      const saved = JSON.parse(await readFile(settings, "utf8"));
+      if (!Object.values(saved.pluginConfigs ?? {}).some((p) => p.options?.enabled === false))
+        throw new Error("Disabled setting was not persisted");
+      await submit(session, "Reply with exactly DISABLED_OK.");
+      const until = Date.now() + 30_000;
+      while (!tmux("capture-pane", "-p", "-t", session, "-S", "-1000").includes("⏺ DISABLED_OK")) {
+        if (Date.now() > until) throw new Error("Disabled answer not shown");
+        await pause(250);
+      }
+      if ((await readdir(artifacts)).some((name) => /^review-/u.test(name)))
+        throw new Error("Review ran while disabled");
+      await checkCommand("/cgate on --session", "on (session)");
+      const unchanged = JSON.parse(await readFile(settings, "utf8"));
+      if (JSON.stringify(unchanged) !== JSON.stringify(saved))
+        throw new Error("Session override changed settings");
+      await checkCommand("/cgate reset --session", "off (saved)");
+      await checkCommand("/cgate on", "on (saved)");
+      await pause(1500);
+      const enabled = JSON.parse(await readFile(settings, "utf8"));
+      if (!Object.values(enabled.pluginConfigs ?? {}).some((p) => p.options?.enabled === true))
+        throw new Error("Enabled setting was not persisted");
+    }
     await submit(
       session,
       "Read fact.txt and reply with exactly the release channel, with no other text.",
@@ -369,6 +414,7 @@ for (const mode of cases) {
       }
       if (
         (mode === "pass" ||
+          mode === "toggle" ||
           mode === "model" ||
           mode === "search" ||
           mode === "revise" ||
@@ -420,6 +466,7 @@ for (const mode of cases) {
       const expected = {
         pass: "検証済みの本文を公開しました。",
         model: "検証済みの本文を公開しました。",
+        toggle: "検証済みの本文を公開しました。",
         search: "検証済みの本文を公開しました。",
         slow: "検証済みの本文を公開しました。",
         timeout: "タイムアウト",

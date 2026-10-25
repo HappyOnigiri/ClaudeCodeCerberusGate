@@ -245,11 +245,17 @@ function inspectMember(n, parent, { privileged, literal, report, readCalls }) {
       if (
         properties.some((p) => p.type !== "Property" || p.computed) ||
         keys.length !== 1 ||
-        !["cerberus-gate.reviewerModel", "cerberus-gate.reviewerEffort"].includes(
-          literal(keys[0]?.value),
-        )
+        ![
+          "cerberus-gate.reviewerModel",
+          "cerberus-gate.reviewerEffort",
+          "cerberus-gate.enabled",
+        ].includes(literal(keys[0]?.value))
       )
-        report(n, "mods-api-target", "config.set requires a reviewer model or effort setting");
+        report(
+          n,
+          "mods-api-target",
+          "config.set requires an enabled, reviewer model or effort setting",
+        );
     }
     if (name === "tool.call" && readCalls.has(n)) return;
     if (name === "state.get" || name === "state.set") {

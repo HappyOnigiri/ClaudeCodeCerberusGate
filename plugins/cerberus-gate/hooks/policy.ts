@@ -1,4 +1,5 @@
 export type Config = {
+  enabled: boolean;
   reviewerModel: string;
   reviewerEffort: "inherit" | "low" | "medium" | "high" | "xhigh" | "max";
   maxRevisions: number;
@@ -22,6 +23,8 @@ export const REVIEWER = "cerberus-gate:reviewer";
 export const MAX_DRAFT = 100_000;
 
 export function readConfig(options: Readonly<Record<string, unknown>>): Config {
+  const enabled = options.enabled ?? true;
+  if (typeof enabled !== "boolean") throw new Error("Invalid enabled");
   const model = options.reviewerModel ?? "inherit";
   const effort = options.reviewerEffort ?? "inherit";
   if (
@@ -59,6 +62,7 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
   if (mcpTools.some((t) => !/^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+$/u.test(t)))
     throw new Error("Use exact MCP tool names");
   return {
+    enabled,
     reviewerModel: model,
     reviewerEffort: effort,
     maxRevisions: revisions,
