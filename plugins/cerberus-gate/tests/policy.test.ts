@@ -1,5 +1,5 @@
 import { describe, expect, test } from "claude-code/testing";
-import { allowedTool, parseVerdict, readConfig } from "../hooks/policy.ts";
+import { parseVerdict, readConfig } from "../hooks/policy.ts";
 import { createState, current, disposition, reset } from "../hooks/state.ts";
 
 describe("review contract", () => {
@@ -22,14 +22,8 @@ describe("review contract", () => {
       ),
     ).toBe("notice");
   });
-  test("only explicit read tools, bounded options and no wildcard MCP names", () => {
-    const config = readConfig({ readOnlyMcpTools: "mcp__notes__search" });
-    expect(allowedTool("Read", config)).toBe(true);
-    expect(allowedTool("mcp__notes__search", config)).toBe(true);
-    expect(allowedTool("Bash", config)).toBe(false);
-    expect(allowedTool("Write", config)).toBe(false);
-    expect(allowedTool("mcp__notes__write", config)).toBe(false);
-    expect(() => readConfig({ readOnlyMcpTools: "mcp__notes__*" })).toThrow();
+  test("bounded options and ignored legacy MCP setting", () => {
+    expect(readConfig({ readOnlyMcpTools: "mcp__notes__*" }).enabled).toBe(true);
     expect(() => readConfig({ maxRevisions: -1 })).toThrow();
     expect(() => readConfig({ reviewTimeoutSeconds: 0 })).toThrow();
   });

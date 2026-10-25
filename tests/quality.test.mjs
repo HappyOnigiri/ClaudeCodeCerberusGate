@@ -80,15 +80,15 @@ test("architecture permits current registration and rejects forbidden dependenci
     [],
   );
 });
-test("architecture permits only the guarded dynamic read-tool boundary", () => {
-  const source = `function callReviewTool($: EngineInterface,call:ReviewRequest) {
-    if(!allowedTool(call.tool,config)) return {deny:"unapproved"};
+test("architecture permits only the session-guarded dynamic tool boundary", () => {
+  const source = `function callReviewTool($: EngineInterface,call:ReviewRequest,tools:ReadonlySet<string>) {
+    if(!tools.has(call.tool)) return {deny:"unapproved"};
     return $.tool.call({...call.input,tool:call.tool} as ToolCallArgs);
   }`;
   assert.deepEqual(architecture(registration, source), []);
   for (const altered of [
-    source.replace('if(!allowedTool(call.tool,config)) return {deny:"unapproved"};', ""),
-    source.replace("!allowedTool(call.tool,config)", "allowedTool(call.tool,config)"),
+    source.replace('if(!tools.has(call.tool)) return {deny:"unapproved"};', ""),
+    source.replace("!tools.has(call.tool)", "tools.has(call.tool)"),
     source.replace('{deny:"unapproved"}', "{}"),
     source.replace("callReviewTool", "unguarded"),
     source.replace("...call.input,tool:call.tool", "tool:call.tool,...call.input"),

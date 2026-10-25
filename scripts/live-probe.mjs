@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
@@ -14,6 +15,7 @@ const cases = process.argv.slice(2).length
       "model",
       "toggle",
       "search",
+      "cli",
       "revise",
       "unverified",
       "cancel",
@@ -53,6 +55,7 @@ for (const mode of cases) {
       "model",
       "toggle",
       "search",
+      "cli",
       "revise",
       "unverified",
       "cancel",
@@ -66,6 +69,10 @@ for (const mode of cases) {
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
   const visibleFindings = [];
+  const cliToken = randomBytes(18).toString("hex");
+  const cliCommand = "git log -1 --format=%s";
+  const cliExpected = JSON.stringify({ channel: "stable", token: cliToken });
+
   await mkdir(artifacts, { recursive: true });
   const plugin = join(work, "gate");
   await cp(join(root, "plugins/cerberus-gate"), plugin, {
@@ -146,6 +153,7 @@ for (const mode of cases) {
    await $.fs.write(${JSON.stringify(artifacts)}+'/review-start-'+index+'.json',JSON.stringify({at:Date.now(),request:e}));
    if(['cancel','timeout'].includes(${JSON.stringify(mode)}))await $.clock.sleep(7000);
    if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
+   if(${JSON.stringify(mode)}==='cli')e={...e,prompt:e.prompt+'\\nBefore deciding, request Bash with command '+${JSON.stringify(JSON.stringify(cliCommand))}+' to inspect the latest commit subject. The evidence array must contain this successful CLI output. Verify both the release channel and evidence token in the draft against that output. Do not substitute file reads. If this command is already in evidence, use it and decide; do not repeat it.'};
    if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
    const result=${JSON.stringify(mode)}==='unverified'
     ? {value:{isAnswered:true,text:'INVALID_REVIEW',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
@@ -158,7 +166,7 @@ for (const mode of cases) {
    if(e.tool==='Read' && !e.agentId && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
     await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');await $.clock.sleep(7000);
    }
-   await $.fs.write(${JSON.stringify(artifacts)}+'/tool-'+(++tools)+'.json',JSON.stringify({tool:e.tool,origin:next.origin,result}));return result;
+   await $.fs.write(${JSON.stringify(artifacts)}+'/tool-'+(++tools)+'.json',JSON.stringify({tool:e.tool,input:e,origin:next.origin,result}));return result;
   });
   on('turn.complete',async($,e,next)=>{
    await $.fs.write(${JSON.stringify(artifacts)}+'/complete-'+e.turnId+'.json',JSON.stringify(e));return next(e);
@@ -202,6 +210,31 @@ for (const mode of cases) {
     );
   }
   await writeFile(join(work, "fact.txt"), "The release channel is stable.\n");
+  if (mode === "cli") {
+    execFileSync("git", ["init", "-q", work]);
+    execFileSync("git", [
+      "-C",
+      work,
+      "-c",
+      "user.name=Probe",
+      "-c",
+      "user.email=probe@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      cliExpected,
+    ]);
+    await writeFile(
+      join(artifacts, "cli-expected.json"),
+      JSON.stringify({ command: cliCommand, output: cliExpected }),
+    );
+  }
+  const cliHead =
+    mode === "cli"
+      ? execFileSync("git", ["-C", work, "rev-parse", "HEAD"], { encoding: "utf8" })
+      : undefined;
   const session = `cerberus-${mode}-${process.pid}`;
   const args = [
     "claude",
@@ -214,6 +247,7 @@ for (const mode of cases) {
     "Grep",
     "Glob",
     "SubagentHandback",
+    ...(mode === "cli" ? ["Bash(git log:*)"] : []),
     "--plugin-dir",
     plugin,
     "--plugin-dir",
@@ -229,7 +263,7 @@ for (const mode of cases) {
     "--mcp-config",
     '{"mcpServers":{}}',
     "--system-prompt",
-    "Follow the user request. Use Read for files.",
+    "Follow the user request. Use side-effect-free tools to inspect evidence.",
     "--debug-file",
     join(artifacts, "debug.log"),
   ];
@@ -381,7 +415,9 @@ for (const mode of cases) {
     }
     await submit(
       session,
-      "Read fact.txt and reply with exactly the release channel, with no other text.",
+      mode === "cli"
+        ? "Run git log -1 --format=%s and reply with exactly that JSON release record, including its evidence token. No other text."
+        : "Read fact.txt and reply with exactly the release channel, with no other text.",
     );
     let reloaded = false;
     let cancelled = false;
@@ -438,10 +474,13 @@ for (const mode of cases) {
           mode === "toggle" ||
           mode === "model" ||
           mode === "search" ||
+          mode === "cli" ||
           mode === "revise" ||
           mode === "slow" ||
           mode.startsWith("reload-")) &&
-        /⏺\s+stable\b/u.test(latest)
+        (mode === "cli"
+          ? latest.includes(cliToken) && /⏺\s*\{/u.test(latest)
+          : /⏺\s+stable\b/u.test(latest))
       ) {
         passed = true;
         break;
@@ -508,6 +547,7 @@ for (const mode of cases) {
         model: "検証済みの本文を公開しました。",
         toggle: "検証済みの本文を公開しました。",
         search: "検証済みの本文を公開しました。",
+        cli: "検証済みの本文を公開しました。",
         slow: "検証済みの本文を公開しました。",
         timeout: "タイムアウト",
         "reload-work": "検証済みの本文を公開しました。",
@@ -638,6 +678,61 @@ for (const mode of cases) {
           )
         )
           throw new Error(`Reviewer did not use ${tool}`);
+    }
+    if (mode === "cli") {
+      const reviews = [];
+      const calls = [];
+      for (const name of records) {
+        if (/^review-\d+\.json$/u.test(name))
+          reviews.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+        if (name.startsWith("tool-"))
+          calls.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+      }
+      const requested = reviews.some((review) => {
+        try {
+          const call = JSON.parse(review.result.text);
+          return call.tool === "Bash" && call.input.command === cliCommand;
+        } catch {
+          return false;
+        }
+      });
+      const executed = calls.some(
+        (call) =>
+          call.tool === "Bash" &&
+          call.input.command === cliCommand &&
+          call.origin.plugin === "cerberus-gate" &&
+          call.result.deny === undefined &&
+          !call.result.isError &&
+          JSON.stringify(call.result).includes(cliToken),
+      );
+      const used = reviews.some((review) => {
+        const input = JSON.parse(review.request.prompt.split("\nBefore deciding,")[0]);
+        try {
+          return (
+            JSON.parse(review.result.text).decision === "PASS" &&
+            JSON.stringify(JSON.parse(input.unpublishedDraft)) === cliExpected &&
+            input.evidence.some(
+              (entry) =>
+                entry.tool === "Bash" &&
+                entry.input.command === cliCommand &&
+                entry.result.includes(cliExpected),
+            )
+          );
+        } catch {
+          return false;
+        }
+      });
+      if (!requested || !executed || !used)
+        throw new Error(
+          "Reviewer CLI request, execution, output and evidence-based PASS were not all observed",
+        );
+      if (
+        execFileSync("git", ["-C", work, "rev-parse", "HEAD"], { encoding: "utf8" }) !== cliHead ||
+        execFileSync("git", ["-C", work, "log", "-1", "--format=%s"], {
+          encoding: "utf8",
+        }).trim() !== cliExpected
+      )
+        throw new Error("CLI evidence modified");
     }
     if (mode === "slow") {
       if (!persistentReview) throw new Error("Review status did not persist beyond three seconds");

@@ -12,7 +12,7 @@
     "validate": "claude plugin validate --strict plugins/cerberus-gate && claude plugin validate --strict plugins/cerberus-gate-display",
     "test": "claude plugin test plugins/cerberus-gate",
     "test:scripts": "node --test tests/*.test.mjs",
-    "check": "npm run fmt:check && npm run lint && npm run typecheck && npm run lines && npm run check:architecture && npm run check:suppressions && npm run docs:check && npm run lint:workflows && npm run lint:shell && npm run lint:unused && npm run validate && npm run test && npm run test:coverage",
+    "check": "npm run fmt:check && npm run lint && npm run typecheck && npm run lines && npm run check:review-inputs && npm run check:architecture && npm run check:suppressions && npm run docs:check && npm run lint:workflows && npm run lint:shell && npm run lint:unused && npm run validate && npm run test && npm run test:coverage",
     "test:live": "node scripts/live-probe.mjs",
     "setup:checks": "node scripts/quality/native.mjs setup",
     "check:architecture": "node scripts/quality/architecture.mjs",
@@ -20,7 +20,8 @@
     "lint:workflows": "node scripts/quality/native.mjs workflows",
     "lint:shell": "node scripts/quality/native.mjs shell",
     "lint:unused": "knip",
-    "test:coverage": "node scripts/quality/coverage.mjs"
+    "test:coverage": "node scripts/quality/coverage.mjs",
+    "check:review-inputs": "node scripts/review-inputs.mjs --check"
   },
   "devDependencies": {
     "knip": "6.43.0",
