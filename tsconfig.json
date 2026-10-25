@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "typeRoots": ["./types"],
+    "types": ["claude-code", "claude-code-tools"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["plugins/cerberus-gate/hooks", "plugins/cerberus-gate/tests"]
+}

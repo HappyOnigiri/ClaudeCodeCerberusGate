@@ -1,0 +1,15 @@
+{
+  "gitignore": true,
+  "config": {
+    "MD013": false,
+  },
+  "overrides": [
+    {
+      "filter": ["CLAUDE.md"],
+      "config": {
+        "MD041": false,
+      },
+      "combine": "merge",
+    },
+  ],
+}
