@@ -5,10 +5,8 @@ export type Config = {
   reviewerEffort: "inherit" | "low" | "medium" | "high" | "xhigh" | "max";
   maxRevisions: number;
   reviewTimeoutMs: number;
-  mcpTools: readonly string[];
 };
 export type Verdict = { decision: "PASS" | "REVISE" | "UNVERIFIED"; findings: readonly string[] };
-export const READ_TOOLS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"] as const;
 export const WAITING = "回答を検証中です。";
 export const UNVERIFIED =
   "Cerberus Gate: 回答の検証を完了できなかったため、未検証の本文をそのまま表示します。";
@@ -41,7 +39,6 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
   if (typeof prompt !== "string" || prompt.length > 20_000) throw new Error("Invalid reviewPrompt");
   const revisions = options.maxRevisions ?? 2;
   const seconds = options.reviewTimeoutSeconds ?? 120;
-  const tools = options.readOnlyMcpTools ?? "";
   if (typeof model !== "string" || !/^[a-zA-Z0-9._:-]+$/u.test(model))
     throw new Error("Invalid reviewerModel");
   if (
@@ -53,17 +50,6 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
     throw new Error("Invalid maxRevisions");
   if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 1 || seconds > 600)
     throw new Error("Invalid reviewTimeoutSeconds");
-  if (typeof tools !== "string") throw new Error("Invalid readOnlyMcpTools");
-  const mcpTools = [
-    ...new Set(
-      tools
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean),
-    ),
-  ];
-  if (mcpTools.some((t) => !/^mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+$/u.test(t)))
-    throw new Error("Use exact MCP tool names");
   return {
     enabled,
     reviewerModel: model,
@@ -71,7 +57,6 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
     reviewerEffort: effort,
     maxRevisions: revisions,
     reviewTimeoutMs: seconds * 1000,
-    mcpTools,
   };
 }
 
@@ -99,10 +84,6 @@ export function parseVerdict(text: string): Verdict {
   } catch {
     return { decision: "UNVERIFIED", findings: [] };
   }
-}
-
-export function allowedTool(name: string, config: Config): boolean {
-  return READ_TOOLS.some((t) => t === name) || config.mcpTools.includes(name);
 }
 
 export const REVIEW_PROMPT = `Verify material factual claims, task completion and test results against the original request, conversation evidence and real sources.

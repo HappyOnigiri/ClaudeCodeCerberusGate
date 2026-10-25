@@ -46,7 +46,7 @@ function constants(program) {
   }
   return values;
 }
-// One named boundary may forward model-selected read tools; all other calls need static targets.
+// One named boundary may forward model-selected session tools; all other calls need static targets.
 function member(node, object, property) {
   return (
     node?.type === "MemberExpression" &&
@@ -55,16 +55,15 @@ function member(node, object, property) {
     node.property.name === property
   );
 }
-function readGuard(guard) {
+function sessionGuard(guard) {
   const test = guard?.test,
     deny = guard?.consequent;
   return (
     guard?.type === "IfStatement" &&
     test?.type === "UnaryExpression" &&
     test.operator === "!" &&
-    test.argument?.callee?.name === "allowedTool" &&
+    member(test.argument?.callee, "tools", "has") &&
     member(test.argument.arguments[0], "call", "tool") &&
-    test.argument.arguments[1]?.name === "config" &&
     deny?.type === "ReturnStatement" &&
     deny.argument?.type === "ObjectExpression" &&
     deny.argument.properties.some(
@@ -96,11 +95,12 @@ function guardedReadCalls(program) {
       fn.type !== "FunctionDeclaration" ||
       fn.id?.name !== "callReviewTool" ||
       fn.params[0]?.name !== "$" ||
-      fn.params[1]?.name !== "call"
+      fn.params[1]?.name !== "call" ||
+      fn.params[2]?.name !== "tools"
     )
       return;
     const [guard, result] = fn.body.body;
-    if (readGuard(guard) && result?.type === "ReturnStatement" && readCall(result.argument))
+    if (sessionGuard(guard) && result?.type === "ReturnStatement" && readCall(result.argument))
       approved.add(result.argument.callee);
   });
   return approved;

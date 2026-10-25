@@ -39,7 +39,11 @@ test("install deploys both plugins, keeps other marketplace entries and restores
   );
   await writeFile(
     join(config, "settings.json"),
-    JSON.stringify({ pluginConfigs: { [id("cerberus-gate")]: { options } } }),
+    JSON.stringify({
+      pluginConfigs: {
+        [id("cerberus-gate")]: { options: { ...options, readOnlyMcpTools: "mcp__notes__search" } },
+      },
+    }),
   );
   await writeFile(
     join(bin, "claude"),

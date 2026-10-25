@@ -2,7 +2,7 @@
   "name": "cerberus-gate",
   "displayName": "Cerberus Gate",
   "version": "0.1.0",
-  "description": "Review final answers before publication using a review model and read-only tools, and route corrections back to the main agent.",
+  "description": "Review final answers using session tools under instructions prohibiting side effects, and route corrections to the main agent.",
   "author": {
     "name": "HappyOnigiri"
   },
@@ -17,22 +17,15 @@
     "maxRevisions": {
       "type": "number",
       "title": "Maximum corrections",
-      "description": "Number of correction prompts per user request (0–10).",
+      "description": "Number of correction prompts per user request (0\u201310).",
       "default": 2,
       "required": false
     },
     "reviewTimeoutSeconds": {
       "type": "number",
       "title": "Review timeout",
-      "description": "Seconds before a review is treated as unverified (1–600).",
+      "description": "Seconds before a review is treated as unverified (1\u2013600).",
       "default": 120,
-      "required": false
-    },
-    "readOnlyMcpTools": {
-      "type": "string",
-      "title": "Read-only connector tools",
-      "description": "Comma-separated exact MCP tool names. Each call must also report isReadOnly=true; user permissions still apply.",
-      "default": "",
       "required": false
     },
     "reviewerEffort": {

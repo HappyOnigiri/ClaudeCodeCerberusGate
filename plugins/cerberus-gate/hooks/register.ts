@@ -1,5 +1,4 @@
 import {
-  allowedTool,
   CONTROL,
   correction,
   FAILED,
@@ -119,15 +118,19 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
   });
 }
 
-// This is the sole dynamic tool-call boundary, checked statically and by tool.call/tool.check hooks.
-async function callReviewTool($: EngineInterface, call: ReviewRequest): Promise<ToolCallResult> {
-  if (!allowedTool(call.tool, config)) return { deny: "Cerberus: unapproved review tool." };
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the engine validates each dynamic tool schema after the checked envelope and allow-list
+// The sole dynamic tool-call boundary forwards only tools advertised for this review.
+async function callReviewTool(
+  $: EngineInterface,
+  call: ReviewRequest,
+  tools: ReadonlySet<string>,
+): Promise<ToolCallResult> {
+  if (!tools.has(call.tool)) return { deny: "Cerberus: tool absent from review session." };
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the engine validates each dynamic tool schema after the checked envelope and session tool list
   return $.tool.call({ ...call.input, tool: call.tool } as ToolCallArgs);
 }
 
 const unverified = (): Verdict => ({ decision: "UNVERIFIED", findings: [] });
-// Cancellation must also release the main step while a read-only tool is still in flight.
+// Cancellation must also release the main step while an investigation tool is still in flight.
 async function cancellable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   let stop: () => void = () => {};
   const cancelled = new Promise<never>((_resolve, reject) => {
@@ -153,7 +156,8 @@ async function review(
   const signal = candidate.controller.signal;
   try {
     const started = await $.clock.now();
-    const tools = reviewTools(await $.tool.list(), reviewConfig);
+    const tools = reviewTools(await $.tool.list());
+    const names = new Set(tools.map((tool) => tool.name));
     const evidence: { tool: string; input: Record<string, unknown>; result: string }[] = [];
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const remaining = reviewConfig.reviewTimeoutMs - ((await $.clock.now()) - started);
@@ -189,12 +193,8 @@ async function review(
       }
       const call = toolRequest(response.text);
       if (call === undefined) return parseVerdict(response.text);
-      if (!tools.some((tool) => tool.name === call.tool) || !allowedTool(call.tool, reviewConfig))
-        return unverified();
-      const result = await cancellable(callReviewTool($, call), signal);
+      const result = await cancellable(callReviewTool($, call, names), signal);
       if (signal.aborted || result.deny !== undefined || result.isError) return unverified();
-      if (reviewConfig.mcpTools.includes(call.tool) && result.isReadOnly !== true)
-        return unverified();
       evidence.push({
         tool: call.tool,
         input: call.input,
@@ -425,12 +425,8 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
   if (next.origin.plugin !== "cerberus-gate") return next(e);
   if (e.tool === "TaskStop" && e.task_id !== undefined && gate.reviewers.has(e.task_id))
     return next(e);
-  if (
-    gate.active === undefined ||
-    gate.active.controller.signal.aborted ||
-    !allowedTool(e.tool, config)
-  )
-    return { deny: "Cerberus reviewer: only approved read-only tools are permitted." };
+  if (gate.active === undefined || gate.active.controller.signal.aborted)
+    return { deny: "Cerberus reviewer: no active review." };
   return next(e);
 };
 const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
@@ -448,15 +444,10 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
     gate.reviewers.has(e.input.task_id)
   )
     return next(e);
-  if (
-    gate.active === undefined ||
-    gate.active.controller.signal.aborted ||
-    !allowedTool(e.tool, config) ||
-    (config.mcpTools.includes(e.tool) && e.isReadOnly !== true)
-  )
+  if (gate.active === undefined || gate.active.controller.signal.aborted)
     return {
       decision: "deny",
-      reason: "Cerberus: connector calls must be explicitly allowed and read-only.",
+      reason: "Cerberus: no active review.",
     };
   return next(e);
 };
