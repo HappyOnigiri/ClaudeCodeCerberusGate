@@ -18,6 +18,20 @@ Node.js 24 以降と Claude Code 2.1.310 を使う。
 本体の TypeScript は Claude Code が直接読み込むため、配布用のビルド工程はない。
 型定義の更新は [型定義の手順](/types/README.md) に従う。
 
+## ローカルへのインストール
+
+`make install` で、作業ツリーの `plugins/cerberus-gate` を未コミットの変更も含めて常用の Claude Code にインストールする。
+ローカル marketplace `~/.claude/local-marketplaces/happyonigiri`（`happyonigiri-plugins`）へ実行時に読むファイルだけを複製し、`cerberus-gate@happyonigiri-plugins` としてユーザースコープに入れる。
+テスト、`tsconfig.json`、生成された型定義は複製しない。
+`CLAUDE_CONFIG_DIR` を設定していれば、その配下を使う。
+
+marketplace.json は watchdog など他のプラグインと共有するため、`cerberus-gate` の項目だけを差し替え、他の項目は残す。
+`claude plugin update` は `version` が同じ版を入れ替えないため、アンインストールしてから入れ直す。
+アンインストールで消える `/config` の設定値は、事前に読み取ってインストール後に戻す。
+
+反映には Claude Code の再起動が必要。
+リリース済みの状態に戻すときは `main` で `make install` を実行する。
+
 ## 検査
 
 `npm run check` をローカルと CI の共通の入口とする。
