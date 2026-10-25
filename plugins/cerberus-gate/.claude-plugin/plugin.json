@@ -32,14 +32,7 @@
       "type": "string",
       "title": "Reviewer effort",
       "description": "inherit uses the main answer effort. Model support may limit the effective effort.",
-      "options": [
-        "inherit",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ],
+      "options": ["inherit", "low", "medium", "high", "xhigh", "max"],
       "default": "inherit",
       "required": false
     },
@@ -59,7 +52,5 @@
     }
   },
   "types": "./types/index.d.ts",
-  "dependencies": [
-    "cerberus-gate-display"
-  ]
+  "dependencies": ["cerberus-gate-display"]
 }
