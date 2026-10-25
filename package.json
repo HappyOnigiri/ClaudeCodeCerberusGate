@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.plugins.json",
     "lines": "node scripts/check-lines.ts",
     "docs:check": "markdownlint-cli2 '**/*.md' '#node_modules/**' '#tmp/**'",
-    "validate": "claude plugin validate --strict plugins/cerberus-gate && claude plugin validate --strict plugins/cerberus-gate-display",
+    "validate": "claude plugin validate --strict . && claude plugin validate --strict plugins/cerberus-gate && claude plugin validate --strict plugins/cerberus-gate-display",
     "test": "claude plugin test plugins/cerberus-gate",
     "test:scripts": "node --test tests/*.test.ts",
     "check": "npm run fmt:check && npm run lint && npm run typecheck && npm run lines && npm run check:review-inputs && npm run check:architecture && npm run check:suppressions && npm run docs:check && npm run lint:workflows && npm run lint:shell && npm run lint:unused && npm run validate && npm run test && npm run test:coverage",
@@ -21,7 +21,9 @@
     "lint:shell": "node scripts/quality/native.ts shell",
     "lint:unused": "knip",
     "test:coverage": "node scripts/quality/coverage.ts",
-    "check:review-inputs": "node scripts/review-inputs.ts --check"
+    "check:review-inputs": "node scripts/review-inputs.ts --check",
+    "migrate": "node scripts/migrate.ts",
+    "test:distribution": "node scripts/distribution-probe.ts"
   },
   "devDependencies": {
     "@types/markdown-it": "14.2.0",

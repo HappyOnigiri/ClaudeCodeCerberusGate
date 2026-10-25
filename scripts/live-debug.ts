@@ -28,9 +28,11 @@ const jsonl = async (path: string): Promise<DebugRecord[]> =>
     .filter(Boolean)
     .map((line) => JSON.parse(line));
 // Select this disposable workspace's session using the independently recorded host cwd.
-export async function verifyDebug(work: string, artifacts: string) {
+export async function verifyDebug(work: string, artifacts: string, installedConfig?: string) {
   const expected = await realpath(work);
-  const roots = [join(work, "config"), process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")];
+  const roots = installedConfig
+    ? [installedConfig]
+    : [join(work, "config"), process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")];
   const report = [];
   for (const config of roots) {
     const root = await realpath(join(config, "cerberus-gate/debug")).catch(() => undefined);

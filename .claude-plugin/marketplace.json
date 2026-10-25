@@ -1,0 +1,22 @@
+{
+  "name": "cerberus-gate",
+  "owner": {
+    "name": "HappyOnigiri",
+    "url": "https://github.com/HappyOnigiri"
+  },
+  "plugins": [
+    {
+      "name": "cerberus-gate",
+      "source": "./plugins/cerberus-gate",
+      "description": "Review final answers using session tools under instructions prohibiting side effects, and route corrections to the main agent."
+    },
+    {
+      "name": "cerberus-gate-display",
+      "source": "./plugins/cerberus-gate-display",
+      "description": "Collapse Cerberus Gate control prompts in the terminal, keeping their body available in the detailed transcript."
+    }
+  ],
+  "metadata": {
+    "description": "Cerberus Gate answer review and control prompt display plugins."
+  }
+}

@@ -16,18 +16,19 @@ Claude Code の最終回答を、表示する前に審査するプラグイン�
 
 ## インストール
 
-**Claude Code 2.1.310**、**Node.js 24 以降**、**Git**、**make** が必要です。
+**Claude Code 2.1.310**、**Node.js 24 以降** が必要です。
 対象は Claude Code の対話セッションで、非対話の `claude -p` は対象外です。
 
-```sh
-git clone https://github.com/HappyOnigiri/ClaudeCodeCerberusGate.git
-cd ClaudeCodeCerberusGate
-make install
+Claude Code で次の2つを実行してください。
+
+```text
+/plugin marketplace add HappyOnigiri/ClaudeCodeCerberusGate
+/plugin install cerberus-gate@cerberus-gate
 ```
 
-審査用と描画用の2つのプラグインをユーザースコープにインストールします。
+審査用をインストールすると、依存する描画用も自動で導入されます。
 Claude Code を再起動すると有効になります。
-再インストールにも `make install` を使い、保存済みの設定を引き継ぎます。
+更新時は `/plugin marketplace update cerberus-gate` と `/plugin update cerberus-gate@cerberus-gate` を実行し、再起動してください。
 
 ## 使い方
 
@@ -58,6 +59,7 @@ Claude Code を再起動すると有効になります。
 
 ## 開発
 
+`make install` は開発用です。
 リポジトリから一時的に起動する場合は、インストールの代わりに次のコマンドを使ってください。
 
 ```sh

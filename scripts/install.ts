@@ -41,6 +41,29 @@ const readJson = async <T>(path: string, fallback: T): Promise<T> => {
   }
 };
 
+// Refuse before touching the shared marketplace or installed plugins.
+const initialSettings = await readJson<{ enabledPlugins?: Record<string, boolean> }>(
+  join(config, "settings.json"),
+  {},
+);
+const initialPlugins: { id: string; enabled: boolean }[] = JSON.parse(
+  claude("plugin", "list", "--json"),
+);
+if (
+  entries.some((item) => {
+    const id = `${item.name}@cerberus-gate`;
+    return (
+      initialSettings.enabledPlugins?.[id] === true ||
+      initialPlugins.some((installed) => installed.id === id && installed.enabled)
+    );
+  })
+) {
+  console.error(
+    "Public Cerberus Gate is enabled. Use --plugin-dir for development instead of make install.",
+  );
+  process.exit(1);
+}
+
 // 実行時に読むファイルだけを置く。テストと生成された型定義は配布しない。
 for (const item of entries) {
   const source = resolve(root, "plugins", item.name);
