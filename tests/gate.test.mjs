@@ -242,12 +242,16 @@ test("draft is withheld; read-only reviewer approves the exact stored text once"
   const h = harness();
   await h.prompt("original request");
   assert.equal((await h.step()).text, WAITING);
-  assert.deepEqual(h.events.agents[0].tools, ["Read"]);
+  assert.deepEqual(h.events.agents[0].tools, ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]);
+  for (const tool of ["Grep", "Glob"]) {
+    assert.equal((await h.fire("tool.check", { agentId: "review-1", tool })).decision, "allow");
+    assert.equal((await h.fire("tool.call", { agentId: "review-1", tool })).result, "read result");
+  }
   assert.equal(
     (await h.fire("tool.call", { agentId: "review-1", tool: "Write" })).deny.includes("read-only"),
     true,
   );
-  assert.deepEqual(h.events.calls, []);
+  assert.deepEqual(h.events.calls, ["Grep", "Glob"]);
   const review = await h.step({ agentId: "review-1", text: '{"decision":"PASS","findings":[]}' });
   assert.ok(!review.text.includes("PASS"));
   await h.fire("turn.complete", { agentId: "review-1", reason: "answer", answer: "hidden" });

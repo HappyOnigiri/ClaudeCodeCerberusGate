@@ -9,7 +9,7 @@ const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceA
 await mkdir(report, { recursive: true });
 const cases = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["pass", "revise", "unverified", "cancel", "reload-work", "reload-review"];
+  : ["pass", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"];
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -28,7 +28,11 @@ const submit = async (session, text) => {
 };
 const summary = [];
 for (const mode of cases) {
-  if (!["pass", "revise", "unverified", "cancel", "reload-work", "reload-review"].includes(mode))
+  if (
+    !["pass", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"].includes(
+      mode,
+    )
+  )
     throw new Error(`Unknown case ${mode}`);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
@@ -77,6 +81,7 @@ for (const mode of cases) {
     `
  let first=true;
  export const register=on=>{
+  on('agent.spawn',async($,e,next)=>next(${JSON.stringify(mode)}==='search' ? {...e,prompt:e.prompt+'\\nBefore deciding, use Glob to find **/fact.txt and Grep to search for stable in fact.txt. Both searches are required evidence.'} : e));
   on('turn.step',async function*($,e,next){
    if(e.agentId && ${JSON.stringify(mode)}==='reload-review' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
     await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','review');
@@ -125,6 +130,8 @@ for (const mode of cases) {
     "default",
     "--allowedTools",
     "Read",
+    "Grep",
+    "Glob",
     "SubagentHandback",
     "--plugin-dir",
     plugin,
@@ -233,7 +240,7 @@ for (const mode of cases) {
         break;
       }
       if (
-        (mode === "pass" || mode === "revise" || mode.startsWith("reload-")) &&
+        (mode === "pass" || mode === "search" || mode === "revise" || mode.startsWith("reload-")) &&
         /⏺\s+stable\b/u.test(latest)
       ) {
         passed = true;
@@ -249,6 +256,7 @@ for (const mode of cases) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       const expected = {
         pass: "検証済みの本文を公開しました。",
+        search: "検証済みの本文を公開しました。",
         revise: "修正を依頼しました",
         unverified: "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
@@ -303,6 +311,13 @@ for (const mode of cases) {
     for (const name of await readdir(artifacts))
       if (name.startsWith("step-"))
         steps.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+    if (mode === "search") {
+      const tools = steps
+        .filter((s) => s.event.agentId)
+        .flatMap((s) => s.result.toolUses.map((t) => t.name));
+      for (const tool of ["Grep", "Glob"])
+        if (!tools.includes(tool)) throw new Error(`Reviewer did not use ${tool}`);
+    }
     const rawVerdicts = steps
       .flatMap((s) => [
         ...(s.result.toolUses ?? []),
