@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export function inspect(text) {
+export function inspect(text: string) {
   const count = text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0;
   const header = text.split("\n").slice(
     0,
@@ -17,7 +17,7 @@ export function inspect(text) {
   return { level: count >= 600 ? "warning" : "ok", count, reason: allowed ? marker.trim() : "" };
 }
 
-export async function check(root) {
+export async function check(root: string) {
   let errors = 0;
   for (const directory of ["plugins", "scripts"]) {
     for (const entry of await readdir(resolve(root, directory), {
@@ -26,7 +26,7 @@ export async function check(root) {
     })) {
       if (
         !entry.isFile() ||
-        !/\.(?:[cm]?js|tsx?)$/u.test(entry.name) ||
+        !/\.(?:[cm]?[jt]s|tsx)$/u.test(entry.name) ||
         /(?:\.test\.|\.d\.ts$)/u.test(entry.name)
       )
         continue;
@@ -42,6 +42,6 @@ export async function check(root) {
   }
   return errors;
 }
-if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? "")).href) {
   if (await check(process.cwd())) process.exitCode = 1;
 }

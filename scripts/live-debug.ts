@@ -1,12 +1,34 @@
+interface DebugRecord {
+  kind: string;
+  path: string;
+  instanceId: string;
+  event: string;
+  sequence: number;
+  sessionId: string;
+  batch: number;
+  bytes: number;
+  lines: number;
+  data: {
+    cwd: string;
+    request: { prompt: string; system: string };
+    operationId: string;
+    elapsedMs: number;
+    reason: unknown;
+  };
+}
 import { readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { expand } from "../plugins/cerberus-gate/hooks/session-log.mjs";
+import { expand } from "../plugins/cerberus-gate/hooks/session-log.mts";
 
-const jsonl = async (path) =>
-  (await readFile(path, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+const jsonl = async (path: string): Promise<DebugRecord[]> =>
+  (await readFile(path, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 // Select this disposable workspace's session using the independently recorded host cwd.
-export async function verifyDebug(work, artifacts) {
+export async function verifyDebug(work: string, artifacts: string) {
   const expected = await realpath(work);
   const roots = [join(work, "config"), process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")];
   const report = [];
@@ -58,7 +80,7 @@ export async function verifyDebug(work, artifacts) {
             )
               throw new Error("Material boundary mismatch");
             const rendered = expand(source, session);
-            for (const name of ["users", "history"])
+            for (const name of ["users", "history"] as const)
               if (
                 (await readFile(join(materialPath, "..", name + ".txt"), "utf8")) !== rendered[name]
               )

@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { register } from "../plugins/cerberus-gate/hooks/register.ts";
 import {
   FAILED,
   REVIEW_PROMPT,
@@ -12,321 +11,9 @@ import {
   withNote,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
-const verdict = (decision = "PASS", findings = []) => JSON.stringify({ decision, findings });
-const deferred = () => {
-  let resolve;
-  const promise = new Promise((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-};
-function harness(
-  options = {},
-  version = "2.1.310",
-  host = { states: new Map(), reviewers: [] },
-  registerHook = register,
-) {
-  const handlers = new Map();
-  const events = {
-    prompts: [],
-    statuses: [],
-    toasts: [],
-    calls: [],
-    models: [],
-    timers: [],
-    commands: [],
-    inputs: [],
-    debug: [],
-  };
-  const replies = [];
-  let draft = "UNPUBLISHED DRAFT";
-  let time = 0;
-  const controller = new AbortController();
-  let callResult = { result: "read result", text: "fact.txt:1 stable", isReadOnly: true };
-  let promptFailure = false;
-  let permission = "allow";
-  let readOnly = true;
-  let prepareMaterial = async () => ({});
-  const matches = (m, e) =>
-    Object.entries(m).every(([k, v]) =>
-      v instanceof RegExp ? typeof e[k] === "string" && v.test(e[k]) : v === e[k],
-    );
-  registerHook((name, ...args) => {
-    const [matcher, handler] = args.length === 1 ? [{}, args[0]] : args;
-    const entry = { matcher, handler };
-    handlers.set(name, [...(handlers.get(name) ?? []), entry]);
-    return {
-      catch(fn) {
-        entry.failure = fn;
-      },
-    };
-  }, options);
-  const engine = {
-    plugin: { root: "/plugin" },
-    process: {
-      run: async (argv, processOptions) => {
-        if (argv[1].endsWith("/debug-log.mjs")) {
-          const input = JSON.parse(processOptions.stdin);
-          events.debug.push(...(input.records ?? []));
-          return {
-            exitCode: 0,
-            stdout: JSON.stringify({
-              directory: "/debug/session",
-              events: "/debug/session/events.jsonl",
-              index: "/debug/session/index.jsonl",
-            }),
-          };
-        }
-        if (argv[2] === "release") {
-          events.released = true;
-          return { exitCode: 0 };
-        }
-        await prepareMaterial();
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            directory: "/private/review",
-            users: "/private/review/users.txt",
-            history: "/private/review/history.txt",
-            source: "/private/review/source.jsonl",
-          }),
-        };
-      },
-    },
-    ui: {
-      toast(text, toastOptions) {
-        events.toasts.push({ text, options: toastOptions });
-      },
-      status(value) {
-        events.statuses.push(value);
-      },
-      open: async (pane) => {
-        events.pane = pane;
-        return { isPlaced: true };
-      },
-      close: async () => {
-        events.closed = true;
-      },
-      resolve: () => ({ Select: (props) => props, Text: (props) => props }),
-    },
-    config: {
-      set: async (setting) => {
-        events.setting = setting;
-        return { value: setting.value };
-      },
-    },
-    state: {
-      get: async (ref) => ({ value: structuredClone(host.states.get(ref.key)) }),
-      set: async (ref, value) => {
-        host.states.set(ref.key, structuredClone(value));
-        return { isSet: true, version: 1 };
-      },
-    },
-    turn: { abort: async () => fire("turn.abort", {}) },
-    command: {
-      register: async (spec) => {
-        events.commands.push(spec);
-        return {};
-      },
-    },
-    session: {
-      id: async () => "session",
-      cwd: async () => "/project",
-      version: async () => ({ version, base: version }),
-    },
-    model: {
-      complete: async (request, callOptions) => {
-        events.models.push({ request, options: callOptions });
-        const reply = replies.length ? replies.shift() : verdict();
-        if (typeof reply === "function") return reply(request, callOptions);
-        return { isAnswered: true, text: reply, usage: {} };
-      },
-    },
-    tool: {
-      list: async () =>
-        ["Read", "Write", "Bash", "mcp__notes__search", "mcp__notes__write"].map((name) => ({
-          name,
-          description: name,
-          mcp: name.startsWith("mcp__"),
-        })),
-      call: async (e) => fire("tool.call", e, "cerberus-gate"),
-    },
-    agent: { list: async () => host.reviewers },
-    prompt: {
-      submit: async (e) => {
-        if (promptFailure) throw new Error("queue unavailable");
-        const result = await fire("prompt.submit", {
-          ...e,
-          wait: false,
-          origin: { kind: "plugin", name: "cerberus-gate" },
-        });
-        events.prompts.push(result);
-        return result;
-      },
-    },
-    clock: {
-      now: async () => time,
-      after: (ms, fn) => {
-        const timer = {
-          ms,
-          fn,
-          cancelled: false,
-          cancel() {
-            this.cancelled = true;
-          },
-        };
-        events.timers.push(timer);
-        return timer;
-      },
-    },
-  };
-  const core = async (name, e, origin) => {
-    if (name === "prompt.submit") return { text: e.text, context: e.context };
-    if (name === "tool.check") return { decision: permission };
-    if (name === "tool.call") {
-      const check = await fire(
-        "tool.check",
-        { tool: e.tool, input: e, ...(readOnly ? { isReadOnly: true } : {}) },
-        origin,
-      );
-      if (check.decision !== "allow") return { deny: check.decision };
-      events.calls.push(e.tool);
-      events.inputs.push(e);
-      return typeof callResult === "function" ? callResult(e) : callResult;
-    }
-    return {};
-  };
-  async function fire(name, e, origin = "engine") {
-    const chain = (handlers.get(name) ?? []).filter((h) => matches(h.matcher, e));
-    const invoke = async (i) => {
-      const entry = chain[i];
-      if (!entry) return core(name, e, origin);
-      const next = (arg) => {
-        e = arg;
-        return invoke(i + 1);
-      };
-      Object.assign(next, { signal: controller.signal, origin: { plugin: origin } });
-      try {
-        return await entry.handler(engine, e, next);
-      } catch (error) {
-        if (entry.failure) return entry.failure(engine, e, next);
-        throw error;
-      }
-    };
-    return invoke(0);
-  }
-  async function step({
-    agentId,
-    text = draft,
-    tools = [],
-    stopReason = "end_turn",
-    fail = false,
-    model = "haiku",
-    effort,
-  } = {}) {
-    const e = {
-      turnId: "t",
-      index: 0,
-      model,
-      effort,
-      messageCount: 1,
-      ...(agentId ? { agentId } : {}),
-    };
-    const chain = (handlers.get("turn.step") ?? []).filter((h) => matches(h.matcher, e));
-    const invoke = (i) => {
-      const entry = chain[i];
-      if (!entry)
-        return (async function* () {
-          yield { kind: "text", index: 0, text };
-          if (fail) throw new Error("stream failure");
-          for (const t of tools) yield { kind: "tool", index: 1, id: "tool-1", name: t.name };
-          yield { kind: "stop", stopReason, usage: null };
-          return { ...e, answer: text, toolUses: tools, stopReason, usage: null };
-        })();
-      const next = () => {
-        const iterator = invoke(i + 1);
-        let finish;
-        const result = new Promise((resolve) => {
-          finish = resolve;
-        });
-        return {
-          result,
-          async *[Symbol.asyncIterator]() {
-            let r;
-            while (!(r = await iterator.next()).done) yield r.value;
-            finish(r.value);
-            return r.value;
-          },
-        };
-      };
-      Object.assign(next, { signal: controller.signal, origin: { plugin: "engine" } });
-      return (async function* () {
-        try {
-          return yield* entry.handler(engine, e, next);
-        } catch (error) {
-          if (entry.failure) return yield* entry.failure(engine, e, next);
-          throw error;
-        }
-      })();
-    };
-    const chunks = [],
-      stream = invoke(0);
-    let r;
-    while (!(r = await stream.next()).done) chunks.push(r.value);
-    return {
-      text: chunks
-        .filter((c) => c.kind === "text")
-        .map((c) => c.text)
-        .join(""),
-      chunks,
-      result: r.value,
-    };
-  }
-  return {
-    events,
-    host,
-    unload: () => controller.abort(),
-    flushCorrections: async () => {
-      for (const timer of events.timers.filter((t) => t.ms === 0 && !t.cancelled)) {
-        timer.cancel();
-        await timer.fn();
-      }
-    },
-    replies,
-    engine,
-    step,
-    fire,
-    prompt: (text) => fire("prompt.submit", { text, origin: { kind: "composer" }, wait: false }),
-    setDraft: (text) => {
-      draft = text;
-    },
-    setCall: (value) => {
-      callResult = value;
-    },
-    setPermission: (value) => {
-      permission = value;
-    },
-    setReadOnly: (value) => {
-      readOnly = value;
-    },
-    setPreparation: (read) => {
-      prepareMaterial = read;
-    },
-    failPrompt: () => {
-      promptFailure = true;
-    },
-    advance: (ms) => {
-      time += ms;
-    },
-  };
-}
-const started = async (h) => {
-  await h.fire("session.start", { isInteractive: true });
-  await h.prompt("original request");
-};
-const tick = () => new Promise((resolve) => setImmediate(resolve));
+import { harness, verdict, deferred, started, tick } from "./helpers/gate-harness.ts";
 
-test("PASS returns the exact held answer in the original step without a prompt", async () => {
+void test("PASS returns the exact held answer in the original step without a prompt", async () => {
   const h = harness();
   await started(h);
   h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }), verdict());
@@ -335,20 +22,23 @@ test("PASS returns the exact held answer in the original step without a prompt",
   assert.equal(result.result.turnId, "t");
   assert.deepEqual(h.events.calls, ["Read"]);
   assert.equal(h.events.prompts.length, 0);
-  assert.ok(h.events.models[1].request.prompt.includes("fact.txt:1 stable"));
-  const tools = JSON.parse(h.events.models[0].request.prompt).tools;
+  assert.ok(h.events.models[1]!.request.prompt.includes("fact.txt:1 stable"));
+  const tools = JSON.parse(h.events.models[0]!.request.prompt).tools;
   assert.deepEqual(
-    tools.map((t) => t.name),
+    tools.map((t: { name: string; inputType: string }) => t.name),
     ["Read", "Write", "Bash", "mcp__notes__search", "mcp__notes__write"],
   );
-  assert.match(tools.find((t) => t.name === "Bash").inputType, /command: string/u);
-  assert.match(h.events.models[0].request.system, /Never modify files/u);
+  assert.match(
+    tools.find((t: { name: string; inputType: string }) => t.name === "Bash").inputType,
+    /command: string/u,
+  );
+  assert.match(h.events.models[0]!.request.system, /Never modify files/u);
   assert.equal(h.events.statuses.at(-1), undefined);
   assert.ok(!h.events.statuses.includes(""));
-  assert.ok(h.events.timers[0].cancelled);
+  assert.ok(h.events.timers[0]!.cancelled);
 });
 
-test("REVISE exposes findings in its prompt but keeps the draft in hidden context", async () => {
+void test("REVISE exposes findings in its prompt but keeps the draft in hidden context", async () => {
   const h = harness();
   await started(h);
   h.replies.push(verdict("REVISE", ["fact.txt:1 contradicts the draft"]));
@@ -359,7 +49,7 @@ test("REVISE exposes findings in its prompt but keeps the draft in hidden contex
   assert.ok(h.events.statuses.includes(WAITING));
   await h.flushCorrections();
   assert.equal(h.events.prompts.length, 1);
-  const sent = h.events.prompts[0];
+  const sent = h.events.prompts[0]!;
   assert.doesNotMatch(sent.text, /UNPUBLISHED/u);
   assert.match(sent.text, /指摘と根拠:[\s\S]*fact.txt:1 contradicts the draft/u);
   assert.ok(sent.context.join("").includes("UNPUBLISHED DRAFT"));
@@ -369,7 +59,7 @@ test("REVISE exposes findings in its prompt but keeps the draft in hidden contex
   assert.equal(h.events.prompts.length, 1);
 });
 
-test("malformed verdicts, denied tools and spoofed envelope fields never pass or execute", async () => {
+void test("malformed verdicts, denied tools and spoofed envelope fields never pass or execute", async () => {
   for (const response of [
     "PASS",
     '{"decision":"PASS","findings":["error"]}',
@@ -396,7 +86,7 @@ test("malformed verdicts, denied tools and spoofed envelope fields never pass or
   }
 });
 
-test("session CLI and MCP calls do not require read-only stamps; host denials stand", async () => {
+void test("session CLI and MCP calls do not require read-only stamps; host denials stand", async () => {
   for (const tool of ["Bash", "mcp__notes__search"]) {
     for (const permission of ["allow", "deny"]) {
       const h = harness({
@@ -419,14 +109,14 @@ test("session CLI and MCP calls do not require read-only stamps; host denials st
         permission === "allow" ? "UNPUBLISHED DRAFT" : withNote(UNVERIFIED, "UNPUBLISHED DRAFT"),
       );
       assert.deepEqual(h.events.calls, permission === "allow" ? [tool] : []);
-      if (permission === "allow") assert.match(h.events.models[1].request.prompt, /CLI evidence/u);
+      if (permission === "allow") assert.match(h.events.models[1]!.request.prompt, /CLI evidence/u);
     }
   }
   const plain = harness();
   assert.equal((await plain.fire("tool.call", { tool: "Write" })).result, "read result");
 });
 
-test("timeout aborts the model and shows the original text without another prompt", async () => {
+void test("timeout aborts the model and shows the original text without another prompt", async () => {
   const h = harness();
   await started(h);
   h.replies.push(
@@ -439,9 +129,9 @@ test("timeout aborts the model and shows the original text without another promp
   );
   const running = h.step();
   await tick();
-  await h.events.timers[0].fn();
+  await h.events.timers[0]!.fn();
   assert.equal((await running).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
-  assert.ok(h.events.models[0].options.signal.aborted);
+  assert.ok(h.events.models[0]!.options.signal.aborted);
   assert.deepEqual(h.events.prompts, []);
   assert.match(
     (await h.fire("command.run", { command: "cgate", args: "history" })).text,
@@ -449,7 +139,7 @@ test("timeout aborts the model and shows the original text without another promp
   );
 });
 
-test("timeout releases a pending read and ignores its later result", async () => {
+void test("timeout releases a pending read and ignores its later result", async () => {
   const h = harness();
   await started(h);
   const held = deferred();
@@ -457,14 +147,14 @@ test("timeout releases a pending read and ignores its later result", async () =>
   h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
   const running = h.step();
   await tick();
-  await h.events.timers[0].fn();
+  await h.events.timers[0]!.fn();
   assert.equal((await running).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
   held.resolve({ result: "late" });
   await tick();
   assert.equal(h.events.models.length, 1);
 });
 
-test("revision cap shows a note; correction delivery failure is reported without exposing findings", async () => {
+void test("revision cap shows a note; correction delivery failure is reported without exposing findings", async () => {
   const cap = harness({ maxRevisions: 0 });
   await started(cap);
   cap.replies.push(verdict("REVISE", ["SECRET FINDING"]));
@@ -486,7 +176,7 @@ test("revision cap shows a note; correction delivery failure is reported without
   );
 });
 
-test("new prompt, abort, cancel and session end invalidate an in-flight review", async () => {
+void test("new prompt, abort, cancel and session end invalidate an in-flight review", async () => {
   for (const event of ["prompt", "turn.abort", "cancel", "session.end"]) {
     const h = harness();
     await started(h);
@@ -497,14 +187,14 @@ test("new prompt, abort, cancel and session end invalidate an in-flight review",
     if (event === "prompt") await h.prompt("new request");
     else if (event === "cancel") await h.fire("command.run", { command: "cgate", args: "cancel" });
     else await h.fire(event, {});
-    assert.ok(h.events.models[0].options.signal.aborted);
+    assert.ok(h.events.models[0]!.options.signal.aborted);
     held.resolve({ isAnswered: true, text: verdict() });
     assert.equal((await running).text, "");
     assert.deepEqual(h.events.prompts, []);
   }
 });
 
-test("round, evidence and deadline limits never approve an incomplete review", async () => {
+void test("round, evidence and deadline limits never approve an incomplete review", async () => {
   const loop = harness();
   await started(loop);
   for (let i = 0; i < 16; i++)
@@ -528,7 +218,7 @@ test("round, evidence and deadline limits never approve an incomplete review", a
   assert.equal((await deadline.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
 });
 
-test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
+void test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
   const h = harness();
   await started(h);
   assert.ok(
@@ -550,7 +240,7 @@ test("tool steps, unrelated subagents and unsupported environments bypass review
   assert.equal(headless.events.models.length, 0);
 });
 
-test("truncated answers and stream failures show only that step's text", async () => {
+void test("truncated answers and stream failures show only that step's text", async () => {
   const h = harness();
   await started(h);
   assert.equal(
@@ -564,7 +254,7 @@ test("truncated answers and stream failures show only that step's text", async (
   assert.equal((await empty.step({ fail: true, text: "" })).text, NO_DRAFT);
 });
 
-test("session log works during review, shows findings without the draft and clears at session end", async () => {
+void test("session log works during review, shows findings without the draft and clears at session end", async () => {
   const h = harness();
   await started(h);
   assert.ok(h.events.commands.some((c) => c.name === "cgate" && c.immediate));
@@ -595,7 +285,7 @@ test("session log works during review, shows findings without the draft and clea
   );
 });
 
-test("cancellation while preparing session material does not start a reviewer", async () => {
+void test("cancellation while preparing session material does not start a reviewer", async () => {
   const h = harness();
   await started(h);
   const held = deferred();
@@ -609,7 +299,7 @@ test("cancellation while preparing session material does not start a reviewer", 
   assert.deepEqual(h.events.prompts, []);
 });
 
-test("a newer request or cancel invalidates a scheduled correction before dispatch", async () => {
+void test("a newer request or cancel invalidates a scheduled correction before dispatch", async () => {
   for (const cancel of [false, true]) {
     const h = harness();
     await started(h);
@@ -622,7 +312,7 @@ test("a newer request or cancel invalidates a scheduled correction before dispat
   }
 });
 
-test("reviewer model override and a shrinking total deadline are passed to the completion API", async () => {
+void test("reviewer model override and a shrinking total deadline are passed to the completion API", async () => {
   const h = harness({ reviewerModel: "haiku", reviewTimeoutSeconds: 10 });
   await started(h);
   h.replies.push(() => {
@@ -643,7 +333,7 @@ test("reviewer model override and a shrinking total deadline are passed to the c
   );
 });
 
-test("unlisted tools are not invented or forwarded", async () => {
+void test("unlisted tools are not invented or forwarded", async () => {
   const h = harness();
   await started(h);
   h.replies.push(JSON.stringify({ tool: "Glob", input: { pattern: "**/fact.txt" } }));
@@ -652,7 +342,7 @@ test("unlisted tools are not invented or forwarded", async () => {
 });
 
 let reloadSerial = 0;
-async function reload(h, options = {}) {
+async function reload(h: ReturnType<typeof harness>, options = {}) {
   h.unload();
   const fresh = await import(`../plugins/cerberus-gate/hooks/register.ts?reload=${++reloadSerial}`);
   const next = harness(options, "2.1.310", h.host, fresh.register);
@@ -660,7 +350,7 @@ async function reload(h, options = {}) {
   return next;
 }
 
-test("reload during work restores the request and reviews without a restart prompt", async () => {
+void test("reload during work restores the request and reviews without a restart prompt", async () => {
   const h = harness();
   await started(h);
   await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
@@ -668,18 +358,18 @@ test("reload during work restores the request and reviews without a restart prom
   await next.flushCorrections();
   assert.equal(next.events.prompts.length, 0);
   assert.equal((await next.step()).text, "UNPUBLISHED DRAFT");
-  assert.equal(JSON.parse(next.events.models[0].request.prompt).request, "original request");
-  assert.equal(next.host.states.get("recovery").pending, false);
+  assert.equal(JSON.parse(next.events.models[0]!.request.prompt).request, "original request");
+  assert.equal(next.host.states.get("recovery")!.pending, false);
 });
 
-test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
+void test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
   const h = harness();
   await started(h);
   const held = deferred();
   h.replies.push(() => held.promise);
   const running = h.step({ text: "PRIVATE OLD DRAFT" });
   await tick();
-  const saved = h.host.states.get("recovery");
+  const saved = h.host.states.get("recovery")!;
   assert.equal(saved.pending, true);
   assert.doesNotMatch(JSON.stringify(saved), /PRIVATE OLD DRAFT/u);
   h.host.reviewers.push({
@@ -692,7 +382,7 @@ test("reload during review restarts without restoring a private draft or accepti
   await next.flushCorrections();
   assert.deepEqual(next.events.calls, ["TaskStop"]);
   assert.equal(next.events.prompts.length, 1);
-  assert.match(next.events.prompts[0].context.join(""), /original request/u);
+  assert.match(next.events.prompts[0]!.context.join(""), /original request/u);
   assert.ok(
     (
       await next.fire("prompt.submit", {
@@ -705,10 +395,10 @@ test("reload during review restarts without restoring a private draft or accepti
   held.resolve({ isAnswered: true, text: verdict() });
   assert.equal((await running).text, "");
   assert.equal((await next.step({ text: "FRESH DRAFT" })).text, "FRESH DRAFT");
-  assert.equal(next.host.states.get("recovery").pending, false);
+  assert.equal(next.host.states.get("recovery")!.pending, false);
 });
 
-test("reload preserves correction counts across queued and accepted correction prompts", async () => {
+void test("reload preserves correction counts across queued and accepted correction prompts", async () => {
   for (const accepted of [false, true]) {
     const h = harness({ maxRevisions: 2 });
     await started(h);
@@ -717,7 +407,7 @@ test("reload preserves correction counts across queued and accepted correction p
     if (accepted) await h.flushCorrections();
     const next = await reload(h);
     await next.flushCorrections();
-    assert.equal(next.host.states.get("recovery").revisions, 1);
+    assert.equal(next.host.states.get("recovery")!.revisions, 1);
     assert.doesNotMatch(
       JSON.stringify(next.host.states.get("recovery")),
       /PRIVATE FINDING|UNPUBLISHED DRAFT/u,
@@ -731,7 +421,7 @@ test("reload preserves correction counts across queued and accepted correction p
   }
 });
 
-test("published, unverified, cancelled, aborted and ended sessions do not auto-restart on reload", async () => {
+void test("published, unverified, cancelled, aborted and ended sessions do not auto-restart on reload", async () => {
   for (const event of ["publish", "unverified", "cancel", "turn.abort", "session.end"]) {
     const h = harness();
     await started(h);
@@ -742,11 +432,11 @@ test("published, unverified, cancelled, aborted and ended sessions do not auto-r
     const next = await reload(h);
     await next.flushCorrections();
     assert.equal(next.events.prompts.length, 0, event);
-    if (event === "session.end") assert.equal(next.host.states.get("recovery").prompt, "");
+    if (event === "session.end") assert.equal(next.host.states.get("recovery")!.prompt, "");
   }
 });
 
-test("new requests supersede a queued reload restart and failed restart delivery clears pending state", async () => {
+void test("new requests supersede a queued reload restart and failed restart delivery clears pending state", async () => {
   const h = harness();
   await started(h);
   h.replies.push(verdict("REVISE", ["finding"]));
@@ -756,31 +446,31 @@ test("new requests supersede a queued reload restart and failed restart delivery
   await next.flushCorrections();
   assert.equal(next.events.prompts.length, 0);
   assert.equal((await next.step({ text: "new answer" })).text, "new answer");
-  assert.equal(JSON.parse(next.events.models[0].request.prompt).request, "new request");
+  assert.equal(JSON.parse(next.events.models[0]!.request.prompt).request, "new request");
   next.replies.push(verdict("REVISE", ["finding"]));
   await next.step();
   const again = await reload(next);
   again.failPrompt();
   await again.flushCorrections();
-  assert.equal(again.host.states.get("recovery").pending, false);
+  assert.equal(again.host.states.get("recovery")!.pending, false);
   assert.match(
     (await again.fire("command.run", { command: "cgate", args: "history" })).text,
     /再開に失敗/u,
   );
 });
 
-test("reviewer model and effort inherit the answer step or use independent overrides", async () => {
+void test("reviewer model and effort inherit the answer step or use independent overrides", async () => {
   for (const [options, expectedModel, expectedEffort] of [
     [{}, "haiku", "high"],
     [{ reviewerModel: "sonnet" }, "sonnet", "high"],
     [{ reviewerEffort: "low" }, "haiku", "low"],
     [{ reviewerModel: "opus", reviewerEffort: "max" }, "opus", "max"],
-  ]) {
+  ] as const) {
     const h = harness(options);
     await h.prompt("request");
     await h.step({ effort: "high" });
-    assert.equal(h.events.models[0].request.model, expectedModel);
-    assert.equal(h.events.models[0].request.effort, expectedEffort);
+    assert.equal(h.events.models[0]!.request.model, expectedModel);
+    assert.equal(h.events.models[0]!.request.effort, expectedEffort);
   }
   assert.equal(readConfig({}).reviewerEffort, "inherit");
   for (const effort of ["inherit", "low", "medium", "high", "xhigh", "max"])
@@ -790,15 +480,15 @@ test("reviewer model and effort inherit the answer step or use independent overr
   const h = harness();
   await h.prompt("request");
   await h.step();
-  assert.equal(h.events.models[0].request.effort, undefined);
+  assert.equal(h.events.models[0]!.request.effort, undefined);
   await h.step({ effort: 10 });
-  assert.equal(h.events.models[1].request.effort, undefined);
+  assert.equal(h.events.models[1]!.request.effort, undefined);
 });
 
-test("model picker saves model then effort and preserves both across repeated selections", async () => {
+void test("model picker saves model then effort and preserves both across repeated selections", async () => {
   const h = harness({ reviewerModel: "custom-model", reviewerEffort: "low" });
   await h.fire("command.run", { command: "cgate", args: "model" });
-  assert.equal(h.events.pane.id, "reviewer-model");
+  assert.equal(h.events.pane!.id, "reviewer-model");
   const picker = await h.fire("ui.render", {
     component: "Pane",
     requestId: "reviewer-model",
@@ -813,7 +503,7 @@ test("model picker saves model then effort and preserves both across repeated se
   await picker.onSelect("fable");
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerModel", value: "fable" });
   assert.equal(h.events.closed, true);
-  assert.equal(h.events.pane.id, "reviewer-effort");
+  assert.equal(h.events.pane!.id, "reviewer-effort");
   const effort = await h.fire("ui.render", {
     component: "Pane",
     requestId: "reviewer-effort",
@@ -828,19 +518,19 @@ test("model picker saves model then effort and preserves both across repeated se
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerEffort", value: "high" });
   await h.prompt("request");
   await h.step();
-  assert.equal(h.events.models[0].request.model, "fable");
-  assert.equal(h.events.models[0].request.effort, "high");
+  assert.equal(h.events.models[0]!.request.model, "fable");
+  assert.equal(h.events.models[0]!.request.effort, "high");
   await picker.onSelect("sonnet");
   await h.step();
-  assert.equal(h.events.models[1].request.model, "sonnet");
-  assert.equal(h.events.models[1].request.effort, "high");
+  assert.equal(h.events.models[1]!.request.model, "sonnet");
+  assert.equal(h.events.models[1]!.request.effort, "high");
   await effort.onSelect("inherit");
   await h.step({ effort: "medium" });
-  assert.equal(h.events.models[2].request.model, "sonnet");
-  assert.equal(h.events.models[2].request.effort, "medium");
+  assert.equal(h.events.models[2]!.request.model, "sonnet");
+  assert.equal(h.events.models[2]!.request.effort, "medium");
 });
 
-test("a denied or failed model save preserves the previous reviewer model", async () => {
+void test("a denied or failed model save preserves the previous reviewer model", async () => {
   for (const fails of [false, true]) {
     const h = harness();
     h.engine.config.set = async () => {
@@ -856,11 +546,11 @@ test("a denied or failed model save preserves the previous reviewer model", asyn
     assert.equal(h.events.closed, undefined);
     await h.prompt("request");
     await h.step();
-    assert.equal(h.events.models[0].request.model, "haiku");
+    assert.equal(h.events.models[0]!.request.model, "haiku");
   }
 });
 
-test("a denied or failed effort save preserves the saved model and previous effort", async () => {
+void test("a denied or failed effort save preserves the saved model and previous effort", async () => {
   for (const fails of [false, true]) {
     const h = harness({ reviewerEffort: "low" });
     const model = await h.fire("ui.render", {
@@ -883,12 +573,12 @@ test("a denied or failed effort save preserves the saved model and previous effo
     assert.equal(h.events.closed, undefined);
     await h.prompt("request");
     await h.step();
-    assert.equal(h.events.models[0].request.model, "sonnet");
-    assert.equal(h.events.models[0].request.effort, "low");
+    assert.equal(h.events.models[0]!.request.model, "sonnet");
+    assert.equal(h.events.models[0]!.request.effort, "low");
   }
 });
 
-test("temporary settings notifications leave a pending review status intact", async () => {
+void test("temporary settings notifications leave a pending review status intact", async () => {
   const h = harness();
   await h.prompt("request");
   const pending = deferred();
@@ -902,19 +592,19 @@ test("temporary settings notifications leave a pending review status intact", as
   });
   await picker.onSelect("sonnet");
   assert.equal(h.events.statuses.at(-1), WAITING);
-  assert.match(h.events.toasts.at(-1).text, /sonnet/);
-  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 3000);
+  assert.match(h.events.toasts.at(-1)!.text, /sonnet/);
+  assert.equal(h.events.toasts.at(-1)!.options.timeoutMs, 3000);
   h.engine.config.set = async () => ({ deny: "locked" });
   await picker.onSelect("opus");
   assert.equal(h.events.statuses.at(-1), WAITING);
-  assert.match(h.events.toasts.at(-1).text, /保存できませんでした/);
-  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 3000);
+  assert.match(h.events.toasts.at(-1)!.text, /保存できませんでした/);
+  assert.equal(h.events.toasts.at(-1)!.options.timeoutMs, 3000);
   pending.resolve({ isAnswered: true, text: verdict() });
   await step;
   assert.equal(h.events.statuses.at(-1), undefined);
 });
 
-async function chooseEnabled(h, argument, scope) {
+async function chooseEnabled(h: ReturnType<typeof harness>, argument: string, scope: string) {
   await h.fire("command.run", { command: "cgate", args: argument });
   const picker = await h.fire("ui.render", {
     component: "Pane",
@@ -922,13 +612,13 @@ async function chooseEnabled(h, argument, scope) {
     surface: "terminal",
   });
   await picker.onSelect(scope);
-  return { text: h.events.toasts.at(-1).text };
+  return { text: h.events.toasts.at(-1)!.text };
 }
 
-test("enabled commands persist defaults and session overrides take precedence", async () => {
+void test("enabled commands persist defaults and session overrides take precedence", async () => {
   const h = harness();
   await h.prompt("request");
-  const command = (args) => h.fire("command.run", { command: "cgate", args });
+  const command = (args: string) => h.fire("command.run", { command: "cgate", args });
   assert.match((await chooseEnabled(h, "off", "saved")).text, /off \(saved\)/u);
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.enabled", value: false });
   assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
@@ -943,7 +633,7 @@ test("enabled commands persist defaults and session overrides take precedence", 
   assert.match((await command("")).text, /on \(saved\)/u);
 });
 
-test("session override survives reload without changing saved settings", async () => {
+void test("session override survives reload without changing saved settings", async () => {
   const h = harness({ enabled: false });
   await chooseEnabled(h, "on", "session");
   assert.equal(h.events.setting, undefined);
@@ -954,7 +644,7 @@ test("session override survives reload without changing saved settings", async (
   );
 });
 
-test("failed persistence preserves current enabled state and override", async () => {
+void test("failed persistence preserves current enabled state and override", async () => {
   for (const result of [{ deny: "policy" }, { value: "false" }, new Error("failed")]) {
     const h = harness();
     await chooseEnabled(h, "off", "session");
@@ -970,7 +660,7 @@ test("failed persistence preserves current enabled state and override", async ()
   }
 });
 
-test("disabling during review cancels the held answer and stale verdict", async () => {
+void test("disabling during review cancels the held answer and stale verdict", async () => {
   const h = harness();
   await h.prompt("request");
   const held = deferred();
@@ -984,17 +674,17 @@ test("disabling during review cancels the held answer and stale verdict", async 
   assert.equal(h.events.prompts.length, 0);
 });
 
-test("enabled configuration accepts only booleans", () => {
+void test("enabled configuration accepts only booleans", () => {
   assert.equal(readConfig({}).enabled, true);
   assert.equal(readConfig({ enabled: false }).enabled, false);
   assert.throws(() => readConfig({ enabled: "off" }), /Invalid enabled/u);
 });
 
-test("on and off only open the scope picker and removed flags do not change state", async () => {
+void test("on and off only open the scope picker and removed flags do not change state", async () => {
   const h = harness();
   await h.fire("command.run", { command: "cgate", args: "off" });
   assert.equal(h.events.setting, undefined);
-  assert.equal(h.events.pane.id, "enabled-scope");
+  assert.equal(h.events.pane!.id, "enabled-scope");
   const picker = await h.fire("ui.render", {
     component: "Pane",
     requestId: "enabled-scope",
@@ -1012,7 +702,7 @@ test("on and off only open the scope picker and removed flags do not change stat
   assert.equal(h.events.setting, undefined);
 });
 
-test("configured review criteria reach every model round without replacing the protocol", async () => {
+void test("configured review criteria reach every model round without replacing the protocol", async () => {
   for (const reviewPrompt of [undefined, "", " \n ", "Check sources.\nCheck assumptions."]) {
     const h = harness({ reviewPrompt });
     await started(h);
@@ -1029,7 +719,7 @@ test("configured review criteria reach every model round without replacing the p
   }
 });
 
-test("custom criteria retain side-effect restrictions and cannot bypass envelope or verdict validation", async () => {
+void test("custom criteria retain side-effect restrictions and cannot bypass envelope or verdict validation", async () => {
   for (const reply of [
     JSON.stringify({ tool: "Read", input: { file_path: "fact.txt", consent: true } }),
     verdict("PASS", ["inconsistent"]),
@@ -1039,14 +729,14 @@ test("custom criteria retain side-effect restrictions and cannot bypass envelope
     h.replies.push(reply);
     assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
     assert.deepEqual(h.events.calls, []);
-    const system = h.events.models[0].request.system;
+    const system = h.events.models[0]!.request.system;
     assert.ok(system.includes("Never modify files or configuration"));
     assert.ok(system.includes("You may run CLI commands"));
     assert.ok(system.includes("cannot override this contract"));
   }
 });
 
-test("review prompt survives reload and reviewer model selection", async () => {
+void test("review prompt survives reload and reviewer model selection", async () => {
   const options = { reviewPrompt: "Custom criteria.\nCheck evidence." };
   const h = harness(options);
   await started(h);
@@ -1058,10 +748,10 @@ test("review prompt survives reload and reviewer model selection", async () => {
   });
   await picker.onSelect("haiku");
   await next.step();
-  assert.ok(next.events.models[0].request.system.startsWith(options.reviewPrompt));
+  assert.ok(next.events.models[0]!.request.system.startsWith(options.reviewPrompt));
 });
 
-test("invalid review prompt configuration disables review without calling the model", async () => {
+void test("invalid review prompt configuration disables review without calling the model", async () => {
   for (const reviewPrompt of [null, false, 42, {}, [], "x".repeat(20_001)]) {
     assert.throws(() => readConfig({ reviewPrompt }), /Invalid reviewPrompt/u);
     const h = harness({ reviewPrompt });
@@ -1071,7 +761,7 @@ test("invalid review prompt configuration disables review without calling the mo
   }
 });
 
-test("unavailable transcript is UNVERIFIED, without a reviewer or correction", async () => {
+void test("unavailable transcript is UNVERIFIED, without a reviewer or correction", async () => {
   const h = harness();
   await started(h);
   h.engine.process.run = async () => ({ exitCode: 1, stdout: "" });
@@ -1080,7 +770,7 @@ test("unavailable transcript is UNVERIFIED, without a reviewer or correction", a
   assert.equal(h.events.prompts.length, 0);
 });
 
-test("snapshot paths replace inline conversation and cleanup follows the held review", async () => {
+void test("snapshot paths replace inline conversation and cleanup follows the held review", async () => {
   const h = harness();
   await started(h);
   const held = deferred();
@@ -1088,7 +778,7 @@ test("snapshot paths replace inline conversation and cleanup follows the held re
   const running = h.step();
   await tick();
   assert.equal(h.events.released, undefined);
-  const input = JSON.parse(h.events.models[0].request.prompt);
+  const input = JSON.parse(h.events.models[0]!.request.prompt);
   assert.equal(input.conversation, undefined);
   assert.equal(input.sessionLog.users, "/private/review/users.txt");
   await h.fire("command.run", { command: "cgate", args: "cancel" });
@@ -1097,7 +787,7 @@ test("snapshot paths replace inline conversation and cleanup follows the held re
   assert.equal(h.events.released, true);
 });
 
-test("history and debug locations respond during an in-flight review without leaking bodies", async () => {
+void test("history and debug locations respond during an in-flight review without leaking bodies", async () => {
   const h = harness();
   await started(h);
   const pending = deferred();
@@ -1112,14 +802,14 @@ test("history and debug locations respond during an in-flight review without lea
   }
   pending.resolve({ isAnswered: true, text: verdict() });
   await running;
-  const start = h.events.debug.find((e) => e.event === "model.start");
-  const end = h.events.debug.find((e) => e.event === "model.complete");
+  const start = h.events.debug.find((e) => e.event === "model.start")!;
+  const end = h.events.debug.find((e) => e.event === "model.complete")!;
   assert.equal(start.data.operationId, end.data.operationId);
   assert.match(start.data.request.prompt, /UNPUBLISHED DRAFT/u);
   assert.equal(end.data.response.text, verdict());
 });
 
-test("diagnostics distinguish malformed, contradictory and explicit unverified replies from API exceptions", async () => {
+void test("diagnostics distinguish malformed, contradictory and explicit unverified replies from API exceptions", async () => {
   for (const [reply, event, reason] of [
     ["{bad", "review.failed", "invalid_json"],
     [verdict("UNVERIFIED"), "verdict.parsed", "explicit_unverified"],
@@ -1136,7 +826,7 @@ test("diagnostics distinguish malformed, contradictory and explicit unverified r
       "review.failed",
       "tool_control_denied",
     ],
-  ]) {
+  ] as const) {
     const h = harness();
     await started(h);
     h.replies.push(reply);
@@ -1148,13 +838,13 @@ test("diagnostics distinguish malformed, contradictory and explicit unverified r
   }
 });
 
-test("debug append failures and helper timeouts leave PASS publication intact and expose save state", async () => {
+void test("debug append failures and helper timeouts leave PASS publication intact and expose save state", async () => {
   for (const fails of [false, true]) {
     const h = harness();
     await started(h);
     const run = h.engine.process.run;
     h.engine.process.run = async (argv, options) => {
-      if (argv[1].endsWith("/debug-log.mjs")) {
+      if (argv[1]!.endsWith("/debug-log.mts")) {
         assert.equal(options.timeoutMs, 1000);
         if (fails) throw new Error("helper timeout");
         return { exitCode: 1, stderr: "disk failure" };
@@ -1170,7 +860,7 @@ test("debug append failures and helper timeouts leave PASS publication intact an
   }
 });
 
-test("cancelled review tail is retained for a live command, with sequence and terminal cause intact", async () => {
+void test("cancelled review tail is retained for a live command, with sequence and terminal cause intact", async () => {
   const h = harness();
   await started(h);
   const held = deferred();
@@ -1196,7 +886,7 @@ test("cancelled review tail is retained for a live command, with sequence and te
   );
 });
 
-test("late cancelled model results wait for a live dispatch after a new request", async () => {
+void test("late cancelled model results wait for a live dispatch after a new request", async () => {
   const h = harness();
   await started(h);
   const held = deferred();

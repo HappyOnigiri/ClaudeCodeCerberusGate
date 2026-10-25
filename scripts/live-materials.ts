@@ -1,8 +1,13 @@
+interface Evidence {
+  tool: string;
+  input: { file_path?: string; path?: string };
+  result: string;
+}
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-const decisionOf = (text) => {
+const decisionOf = (text: string) => {
   try {
     return JSON.parse(text).decision;
   } catch {
@@ -11,7 +16,7 @@ const decisionOf = (text) => {
 };
 
 // Audit the real review inputs, returned evidence and lifecycle independently of the TUI.
-export async function verifyMaterials(records, artifacts, mode) {
+export async function verifyMaterials(records: string[], artifacts: string, mode: string) {
   if (mode === "missing-log" && records.some((entry) => /^review-\d+\.json$/u.test(entry)))
     throw new Error("Unavailable log started a reviewer");
   const snapshots = new Map();
@@ -24,7 +29,8 @@ export async function verifyMaterials(records, artifacts, mode) {
     if (
       decisionOf(review.result.text) === "PASS" &&
       !input.evidence.some(
-        (e) => e.tool === "Read" && e.input.file_path === input.sessionLog.users && e.result.length,
+        (e: Evidence) =>
+          e.tool === "Read" && e.input.file_path === input.sessionLog.users && e.result.length,
       )
     )
       throw new Error("Reviewer passed without reading user history");
@@ -67,7 +73,7 @@ export async function verifyMaterials(records, artifacts, mode) {
     if (
       !reviews.some((r) =>
         JSON.parse(r.request.prompt.split("\n")[0]).evidence.some(
-          (e) =>
+          (e: Evidence) =>
             (e.input.file_path?.endsWith("history.txt") || e.input.path?.endsWith("history.txt")) &&
             e.result.includes("export const LIMIT = 7"),
         ),

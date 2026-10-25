@@ -12,6 +12,16 @@ hook は worktree 共通の Git ディレクトリに置き、異なる既存 ho
 `core.hooksPath` は変更しない。
 設定済みなら、その hook から共通 Git ディレクトリへ処理を引き継ぐ必要がある。
 
+## TypeScript の実行と型検査
+
+開発スクリプトと Node テストは `.ts`、同梱の Node ヘルパーは `.mts` で記述する。
+ヘルパーはプラグイン単体で配布されるため、親の `package.json` に依存せず ES Modules として動く拡張子を使う。
+Node.js 24 以上の型除去で直接実行し、ビルドは挟まない。
+`enum` など変換が必要な構文は `erasableSyntaxOnly` で禁止する。
+
+`npm run typecheck` は全コードを検査した後、ホスト内のコードを Node の型定義なしでも検査する。
+全体の設定は [tsconfig.json](/tsconfig.json)、ホスト用は [tsconfig.plugins.json](/tsconfig.plugins.json) を参照する。
+
 ## 常用環境へのインストール
 
 `make install` は未コミット変更を含む作業ツリーの審査・描画用プラグインを常用の Claude Code へ入れる。
@@ -40,13 +50,13 @@ Mods の動作に関わる変更後は静的検査・スタブテストだけで
 npm run test:live
 ```
 
-[live-probe.mjs](/scripts/live-probe.mjs) は使い捨ての作業フォルダとプラグイン複製を用意し、`--plugin-dir` で対話セッションを起動する。
+[live-probe.ts](/scripts/live-probe.ts) は使い捨ての作業フォルダとプラグイン複製を用意し、`--plugin-dir` で対話セッションを起動する。
 作成したフォルダの信頼確認だけを通し、自身の tmux セッションを終了する。
 常用設定・プラグインは変更しない。
 テスト用 Mod で異常応答や待機状態を作り、製品コードには試験用の合格判定を入れない。
 
 特定ケースは `npm run test:live -- pass` のように指定する。
-ケースの検査内容を変えるときは、スクリプトと [live-materials.mjs](/scripts/live-materials.mjs) を確認する。
+ケースの検査内容を変えるときは、スクリプトと [live-materials.ts](/scripts/live-materials.ts) を確認する。
 変更した公開条件・権限境界も実地で確認する。
 既定の送信キーは Ctrl+Enter。
 Enter で送信する環境では `CERBERUS_SUBMIT=enter npm run test:live` を使う。
@@ -56,5 +66,5 @@ CLI の実行成功は全 MCP 接続の検証を意味しない。
 対応バージョンを上げる際は型定義・CI の固定値・実地検証を合わせて更新する。
 
 詳細ログの検証では `/cgate log` の絶対パスを開き、開始・完了・失敗の操作 ID・入力・生応答を照合する。
-[live-debug.mjs](/scripts/live-debug.mjs) が索引から各インスタンス・審査資料を列挙し、順序・相関 ID・権限・資料内容を照合する。
+[live-debug.ts](/scripts/live-debug.ts) が索引から各インスタンス・審査資料を列挙し、順序・相関 ID・権限・資料内容を照合する。
 通常画面と `/cgate history` には依頼・原稿・生応答・例外詳細が出ないことを検査する。

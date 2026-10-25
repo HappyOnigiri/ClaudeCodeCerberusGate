@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { diagnostic, parse, sources } from "./source.mjs";
+import { diagnostic, parse, sources } from "./source.ts";
 
-export function inspect(file, text) {
+export function inspect(file: string, text: string) {
   const errors = [];
   for (const comment of parse(file, text).comments) {
     const value = comment.value
@@ -13,9 +13,9 @@ export function inspect(file, text) {
       value,
     );
     if (!match) continue;
-    const [rules, ...reason] = match[2].split(/\s+--\s*/u);
+    const [rules, ...reason] = match[2]!.split(/\s+--\s*/u);
     if (
-      !/^\s*[\w@/-]+(?:\s*,\s*[\w@/-]+)*\s*$/u.test(rules) ||
+      !/^\s*[\w@/-]+(?:\s*,\s*[\w@/-]+)*\s*$/u.test(rules ?? "") ||
       (match[1] !== "enable" && !reason.join(" -- ").trim())
     ) {
       errors.push(
@@ -31,7 +31,7 @@ export function inspect(file, text) {
   }
   return errors;
 }
-if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? "")).href) {
   const errors = (await sources(process.cwd())).flatMap(({ file, text }) => inspect(file, text));
   errors.forEach((e) => console.error(e));
   if (errors.length) process.exitCode = 1;

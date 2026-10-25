@@ -1,6 +1,6 @@
 {
   "gitignore": true,
-  "customRules": ["./scripts/quality/docs.mjs"],
+  "customRules": ["./scripts/quality/docs.ts"],
   "config": {
     "MD013": false,
     "MD052": true,

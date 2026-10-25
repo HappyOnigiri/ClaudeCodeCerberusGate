@@ -1,7 +1,8 @@
+import type { Rule } from "markdownlint";
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-export default {
+const rule: Rule = {
   names: ["CG001", "repository-docs"],
   description: "Repository links and docs index must be complete",
   tags: ["repository"],
@@ -22,19 +23,19 @@ export default {
       for (const child of token.children ?? []) {
         const url =
           child.type === "link_open"
-            ? child.attrGet("href")
+            ? child.attrs?.find(([name]) => name === "href")?.[1]
             : child.type === "image"
-              ? child.attrGet("src")
+              ? child.attrs?.find(([name]) => name === "src")?.[1]
               : undefined;
         if (!url || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/iu.test(url)) continue;
         try {
-          const path = decodeURIComponent(url.split(/[?#]/u)[0]);
+          const path = decodeURIComponent(url.split(/[?#]/u)[0]!);
           if (!path) continue;
           const target = resolve(
             path.startsWith("/") ? root : dirname(file),
             path.replace(/^\//u, ""),
           );
-          const within = (p) => {
+          const within = (p: string) => {
             const rel = relative(root, p);
             return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
           };
@@ -42,7 +43,10 @@ export default {
             throw new Error("missing or outside repository");
           if (inIndex) indexed.add(target);
         } catch (error) {
-          onError({ lineNumber: token.lineNumber, detail: `${url}: ${error.message}` });
+          onError({
+            lineNumber: token.lineNumber,
+            detail: `${url}: ${error instanceof Error ? error.message : String(error)}`,
+          });
         }
       }
     }
@@ -60,3 +64,5 @@ export default {
     }
   },
 };
+
+export default rule;
