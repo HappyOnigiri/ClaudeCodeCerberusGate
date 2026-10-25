@@ -30,6 +30,9 @@ Claude Code で次の2つを実行してください。
 Claude Code を再起動すると有効になります。
 更新時は `/plugin marketplace update cerberus-gate` と `/plugin update cerberus-gate@cerberus-gate` を実行し、再起動してください。
 
+リリース済みのバージョンと変更内容は [Releases](https://github.com/HappyOnigiri/ClaudeCodeCerberusGate/releases) で確認できます。
+採番と日次・手動リリースの手順は [開発と検証](/docs/development.md#バージョンとリリース) を参照してください。
+
 ## 使い方
 
 インストール後は、普段どおり Claude Code に依頼してください。

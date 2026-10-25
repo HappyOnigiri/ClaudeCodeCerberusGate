@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "リリースするバージョン（空なら bump で判定）"
+        required: false
+        type: string
+      bump:
+        description: "バージョンの上げ方（version 指定時は無視）"
+        required: false
+        default: auto
+        type: choice
+        options: [auto, major, minor, patch]
+  schedule:
+    - cron: "17 18 * * *" # 毎日 03:17 JST
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Select release inputs
+        id: inputs
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_BUMP: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          # 手動作成のリリース PR を、翌日の定期実行で自動マージしない。
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            OPEN_RELEASES=$(gh pr list --repo "$GH_REPO" --base main --state open \
+              --limit 200 --json headRefName \
+              --jq '[.[] | select(.headRefName | test("^release/v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | length')
+            if [ "$OPEN_RELEASES" -ne 0 ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "リリース PR が開いているため、定期実行をスキップしました。" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+
+          BUMP="$RELEASE_BUMP"
+          if [ -n "$RELEASE_VERSION" ]; then
+            BUMP="none"
+          elif [ "$BUMP" = "auto" ]; then
+            RELEASES=$(gh release list --repo "$GH_REPO" --exclude-drafts \
+              --exclude-pre-releases --limit 1 --json tagName --jq 'length')
+            if [ "$RELEASES" -eq 0 ]; then
+              BUMP="patch"
+              echo "初回リリースは manifest のバージョンから patch を上げます。" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - uses: HappyOnigiri/ReleaseActions/actions/prepare-release@fd04fd72ec3a3d69f08db6e19dd8b1c618dc2235
+        id: prepare
+        if: steps.inputs.outputs.skip != 'true'
+        with:
+          version: ${{ inputs.version }}
+          bump: ${{ steps.inputs.outputs.bump }}
+          skip-if-no-changes: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+          version-bump-type: json
+          json-version-files: |
+            plugins/cerberus-gate/.claude-plugin/plugin.json
+            plugins/cerberus-gate-display/.claude-plugin/plugin.json
+          github-token: ${{ secrets.GH_TOKEN }}
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: steps.prepare.outputs.pr-number != ''
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Format release manifests
+        if: steps.prepare.outputs.pr-number != ''
+        env:
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx --no-install oxfmt \
+            plugins/cerberus-gate/.claude-plugin/plugin.json \
+            plugins/cerberus-gate-display/.claude-plugin/plugin.json
+          if ! git diff --quiet -- \
+            plugins/cerberus-gate/.claude-plugin/plugin.json \
+            plugins/cerberus-gate-display/.claude-plugin/plugin.json; then
+            git add -- plugins/cerberus-gate/.claude-plugin/plugin.json \
+              plugins/cerberus-gate-display/.claude-plugin/plugin.json
+            git commit -m "chore: リリース用manifestの書式を統一"
+            git push origin "HEAD:refs/heads/release/v${RELEASE_VERSION}"
+          fi
+
+      - name: Enable auto-merge for scheduled releases
+        if: github.event_name == 'schedule' && steps.prepare.outputs.pr-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_PR: ${{ steps.prepare.outputs.pr-number }}
+        run: gh pr merge "$RELEASE_PR" --repo "$GH_REPO" --auto --squash
