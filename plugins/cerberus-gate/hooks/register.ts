@@ -145,7 +145,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
         ? "検証済みの本文を公開しました。"
         : "未検証の本文を注記付きで表示しました。",
     );
-    $.ui.status("");
+    $.ui.status(undefined);
     yield { kind: "text", index: 0, text: action.text };
     yield { kind: "stop", stopReason: "end_turn", usage: null };
     return resultOf(e, action.text);
@@ -236,7 +236,7 @@ const stepFailure: Hook<"turn.step"> = async function* ($, e) {
   gate.delivery = undefined;
   gate.action = undefined;
   timer?.cancel();
-  $.ui.status("");
+  $.ui.status(undefined);
   const shown = text.trim() ? withNote(FAILED, text) : NO_DRAFT;
   yield { kind: "text", index: 0, text: shown };
   yield { kind: "stop", stopReason: "end_turn", usage: null };
