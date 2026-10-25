@@ -65,6 +65,22 @@ test("architecture permits current registration and rejects forbidden dependenci
     [],
   );
 });
+test("architecture permits only the guarded dynamic read-tool boundary", () => {
+  const source = `function callReviewTool($: EngineInterface,call:ReviewRequest) {
+    if(!allowedTool(call.tool,config)) return {deny:"unapproved"};
+    return $.tool.call({...call.input,tool:call.tool} as ToolCallArgs);
+  }`;
+  assert.deepEqual(architecture(registration, source), []);
+  for (const altered of [
+    source.replace('if(!allowedTool(call.tool,config)) return {deny:"unapproved"};', ""),
+    source.replace("!allowedTool(call.tool,config)", "allowedTool(call.tool,config)"),
+    source.replace('{deny:"unapproved"}', "{}"),
+    source.replace("callReviewTool", "unguarded"),
+    source.replace("...call.input,tool:call.tool", "tool:call.tool,...call.input"),
+    source.replace("...call.input,tool:call.tool", '...call.input,tool:call.tool,consent:"spoof"'),
+  ])
+    assert.ok(architecture(registration, altered).length, altered);
+});
 test("source discovery and parsing fail closed", async (t) => {
   const path = await fixture(t);
   await mkdir(join(path, "plugins"));
@@ -213,7 +229,7 @@ test("Verdict, delivery modes and phases cannot grow silently", async (t) => {
     await writeFile(
       join(path, "hooks/state.ts"),
       mode === "delivery"
-        ? original.replace('mode: "publish"', 'mode: "added" | "publish"')
+        ? original.replace('export type Mode = "publish"', 'export type Mode = "added" | "publish"')
         : mode === "phase"
           ? original.replace('phase: "idle" as Phase', 'phase: "unknown" as Phase') +
             '\nconst state = createState(); state.phase = "invalid";\n'

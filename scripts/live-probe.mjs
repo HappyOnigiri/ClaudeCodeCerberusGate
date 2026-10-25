@@ -9,7 +9,7 @@ const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceA
 await mkdir(report, { recursive: true });
 const cases = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["pass", "search", "revise", "unverified", "cancel"];
+  : ["pass", "search", "revise", "unverified", "cancel", "slow", "timeout"];
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -28,7 +28,7 @@ const submit = async (session, text) => {
 };
 const summary = [];
 for (const mode of cases) {
-  if (!["pass", "search", "revise", "unverified", "cancel"].includes(mode))
+  if (!["pass", "search", "revise", "unverified", "cancel", "slow", "timeout"].includes(mode))
     throw new Error(`Unknown case ${mode}`);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
@@ -57,9 +57,8 @@ for (const mode of cases) {
   await writeFile(
     join(fixture, "hooks/register.ts"),
     `
- let first=true;
+ let first=true,review=0,prompts=0,tools=0;
  export const register=on=>{
-  on('agent.spawn',async($,e,next)=>next(${JSON.stringify(mode)}==='search' ? {...e,prompt:e.prompt+'\\nBefore deciding, use Glob to find **/fact.txt and Grep to search for stable in fact.txt. Both searches are required evidence.'} : e));
   on('turn.step',async function*($,e,next){
    if(!e.agentId && first && ${JSON.stringify(mode)}==='revise'){
     first=false;
@@ -67,15 +66,29 @@ for (const mode of cases) {
     yield {kind:'text',index:0,text};yield {kind:'stop',stopReason:'end_turn',usage:null};
     return {turnId:e.turnId,index:e.index,answer:text,toolUses:[],stopReason:'end_turn',usage:null};
    }
-   if(e.agentId && ${JSON.stringify(mode)}==='cancel')await $.clock.sleep(7000);
-   if(e.agentId && ${JSON.stringify(mode)}==='unverified'){
-    yield {kind:'text',index:0,text:'INVALID_REVIEW'};yield {kind:'stop',stopReason:'end_turn',usage:null};
-    return {turnId:e.turnId,index:e.index,answer:'INVALID_REVIEW',toolUses:[],stopReason:'end_turn',usage:null};
-   }
    const stream=next(e);const pieces=[];for await(const c of stream){pieces.push(c);yield c;}
    const result=await stream.result;
    await $.fs.write(${JSON.stringify(artifacts)}+'/step-'+(e.agentId??'main')+'-'+e.turnId+'-'+e.index+'.json',JSON.stringify({event:e,result,pieces}));
    return result;
+  });
+  on('prompt.submit',async($,e,next)=>{
+   await $.fs.write(${JSON.stringify(artifacts)}+'/prompt-'+(++prompts)+'.json',JSON.stringify(e));return next(e);
+  });
+  on('model.complete',async($,e,next)=>{
+   const index=++review;
+   await $.fs.write(${JSON.stringify(artifacts)}+'/review-start-'+index+'.json',JSON.stringify({at:Date.now(),request:e}));
+   if(['cancel','timeout'].includes(${JSON.stringify(mode)}))await $.clock.sleep(7000);
+   if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
+   if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
+   const result=${JSON.stringify(mode)}==='unverified'
+    ? {value:{isAnswered:true,text:'INVALID_REVIEW',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
+    : await next(e);
+   await $.fs.write(${JSON.stringify(artifacts)}+'/review-'+index+'.json',JSON.stringify({request:e,result:result.value,at:Date.now()}));
+   return result;
+  });
+  on('tool.call',async($,e,next)=>{
+   const result=await next(e);
+   await $.fs.write(${JSON.stringify(artifacts)}+'/tool-'+(++tools)+'.json',JSON.stringify({tool:e.tool,origin:next.origin,result}));return result;
   });
   on('turn.complete',async($,e,next)=>{
    await $.fs.write(${JSON.stringify(artifacts)}+'/complete-'+e.turnId+'.json',JSON.stringify(e));return next(e);
@@ -86,6 +99,38 @@ for (const mode of cases) {
  };
  `,
   );
+  const delay = join(work, "delay");
+  if (mode === "slow") {
+    await mkdir(join(delay, ".claude-plugin"), { recursive: true });
+    await mkdir(join(delay, "hooks"));
+    await writeFile(
+      join(delay, ".claude-plugin/plugin.json"),
+      JSON.stringify({
+        name: "cerberus-probe-delay",
+        version: "0.0.1",
+        description: "Slow review fixture",
+      }),
+    );
+    await writeFile(
+      join(delay, "hooks/hooks.json"),
+      JSON.stringify({ modules: ["./register.ts"] }),
+    );
+    await writeFile(
+      join(delay, "hooks/register.ts"),
+      `export const register=on=>on('model.complete',async($,e,next)=>{await $.clock.sleep(6000);return next(e);});`,
+    );
+  }
+  if (mode === "timeout") {
+    const path = join(plugin, "hooks/register.ts");
+    const source = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      source.replace(
+        "config = readConfig(options)",
+        "config = readConfig({...options, reviewTimeoutSeconds:1})",
+      ),
+    );
+  }
   await writeFile(join(work, "fact.txt"), "The release channel is stable.\n");
   const session = `cerberus-${mode}-${process.pid}`;
   const args = [
@@ -103,6 +148,7 @@ for (const mode of cases) {
     plugin,
     "--plugin-dir",
     fixture,
+    ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
     "project,local",
     "--strict-mcp-config",
@@ -158,20 +204,12 @@ for (const mode of cases) {
       await writeFile(join(artifacts, "screen.txt"), latest);
       if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
         throw new Error("Private draft or verdict leaked to the TUI");
-      if (/\berror\b|hook skipped|hook failed/iu.test(latest)) throw new Error("Hook error in TUI");
+      if (/\berror\b|hook skipped|hook failed|hooks module did not load/iu.test(latest))
+        throw new Error("Hook error in TUI");
       if (mode === "cancel" && !cancelled && latest.includes("回答を検証中です。")) {
         await submit(session, "/cgate log");
-        const logDeadline = Date.now() + 10_000;
-        let pendingLogSeen = false;
-        while (Date.now() < logDeadline) {
-          const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
-          if (screen.includes("このセッションのログ（時刻は UTC）")) {
-            pendingLogSeen = true;
-            break;
-          }
-          await pause(250);
-        }
-        if (!pendingLogSeen) throw new Error("Pending review log not observed");
+        // The command runs immediately but its transcript row may wait for the held turn's flush.
+        // Cancel before waiting for that row, so the review is still in flight.
         await submit(session, "/cgate cancel");
         cancelled = true;
         await pause(8500);
@@ -182,7 +220,7 @@ for (const mode of cases) {
         break;
       }
       if (
-        mode === "unverified" &&
+        (mode === "unverified" || mode === "timeout") &&
         latest.includes("未検証の本文をそのまま表示します") &&
         /\bstable\b/u.test(latest)
       ) {
@@ -190,7 +228,7 @@ for (const mode of cases) {
         break;
       }
       if (
-        (mode === "pass" || mode === "search" || mode === "revise") &&
+        (mode === "pass" || mode === "search" || mode === "revise" || mode === "slow") &&
         /⏺\s+stable\b/u.test(latest)
       ) {
         passed = true;
@@ -207,6 +245,8 @@ for (const mode of cases) {
       const expected = {
         pass: "検証済みの本文を公開しました。",
         search: "検証済みの本文を公開しました。",
+        slow: "検証済みの本文を公開しました。",
+        timeout: "タイムアウト",
         revise: "修正を依頼しました",
         unverified: "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
@@ -237,31 +277,59 @@ for (const mode of cases) {
       if (!screen.includes("このセッションのログはありません。"))
         throw new Error("Session log survived /clear");
     }
+    if (mode === "cancel" && !latest.includes("審査 #1: 開始"))
+      throw new Error("Pending review log not observed");
     if (mode === "cancel" && /⏺\s+stable\b/u.test(latest))
       throw new Error("Cancelled answer published");
     if ((await readFile(join(work, "fact.txt"), "utf8")) !== "The release channel is stable.\n")
       throw new Error("Evidence modified");
-    const steps = [];
-    for (const name of await readdir(artifacts))
-      if (name.startsWith("step-"))
-        steps.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
-    if (mode === "search") {
-      const tools = steps
-        .filter((s) => s.event.agentId)
-        .flatMap((s) => s.result.toolUses.map((t) => t.name));
-      for (const tool of ["Grep", "Glob"])
-        if (!tools.includes(tool)) throw new Error(`Reviewer did not use ${tool}`);
+    const records = await readdir(artifacts);
+    const verdicts = [];
+    const origins = [];
+    for (const name of records) {
+      if (/^review-\d+\.json$/u.test(name)) {
+        const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
+        verdicts.push(review.result.text ?? "");
+      }
+      if (name.startsWith("prompt-"))
+        origins.push(JSON.parse(await readFile(join(artifacts, name), "utf8")).origin);
     }
-    const rawVerdicts = steps
-      .flatMap((s) => [
-        ...(s.result.toolUses ?? []),
-        { name: "SubagentHandback", input: { message: s.result.answer } },
-      ])
-      .filter((t) => t.name === "SubagentHandback")
-      .map((t) => t.input.message);
-    if (mode === "revise" && !rawVerdicts.some((v) => v.includes("REVISE")))
+    const pluginPrompts = origins.filter(
+      (origin) => origin.kind === "plugin" && origin.name === "cerberus-gate",
+    ).length;
+    if (mode === "revise" && !verdicts.some((v) => v.includes('"REVISE"')))
       throw new Error("No real reviewer REVISE verdict observed");
-    summary.push({ case: mode, status: "PASS", workspace: work });
+    const revisions = verdicts.filter((text) => {
+      try {
+        return JSON.parse(text).decision === "REVISE";
+      } catch {
+        return false;
+      }
+    }).length;
+    if (mode === "revise" ? revisions < 1 || pluginPrompts !== revisions : pluginPrompts !== 0)
+      throw new Error(`Unexpected control prompt count: ${pluginPrompts}`);
+    if (mode === "search") {
+      const calls = [];
+      for (const name of records.filter((entry) => entry.startsWith("tool-")))
+        calls.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+      for (const tool of ["Grep", "Glob"])
+        if (
+          !calls.some(
+            (call) =>
+              call.tool === tool &&
+              call.origin.plugin === "cerberus-gate" &&
+              call.result.deny === undefined &&
+              !call.result.isError,
+          )
+        )
+          throw new Error(`Reviewer did not use ${tool}`);
+    }
+    if (mode === "slow") {
+      const start = JSON.parse(await readFile(join(artifacts, "review-start-1.json"), "utf8"));
+      const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
+      if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");
+    }
+    summary.push({ case: mode, status: "PASS", workspace: work, pluginPrompts });
     console.log(`PASS ${mode}`);
   } catch (error) {
     if (started)

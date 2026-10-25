@@ -36,7 +36,15 @@ describe("review contract", () => {
   test("a new user request invalidates an in-flight review", () => {
     const state = createState();
     reset(state, "old");
-    const candidate = { token: 1, epoch: state.epoch, text: "draft", context: "", rawReview: "" };
+    const candidate = {
+      token: 1,
+      turnId: "t",
+      epoch: state.epoch,
+      text: "draft",
+      context: "",
+      controller: new AbortController(),
+      timedOut: false,
+    };
     state.active = candidate;
     expect(current(state, candidate)).toBe(true);
     reset(state, "new");
