@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { register } from "../plugins/cerberus-gate-display/hooks/register.ts";
 
-const control = "Cerberus Gate: 検証処理を継続します。 [1-1]";
+const control =
+  'Cerberus Gate: 検証処理を継続します。 [1-1]\n\n指摘と根拠:\n- "fact.txt:1 contradicts the draft"';
 let render;
 register((event, matcher, handler) => {
   assert.equal(event, "ui.render");

@@ -3,6 +3,7 @@ import {
   CONTROL,
   correction,
   FAILED,
+  formatFindings,
   MAX_DRAFT,
   NO_DRAFT,
   readConfig,
@@ -38,7 +39,7 @@ let interactive = true;
 let buffered = { key: "", text: "" };
 const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
 const controlText = (delivery: Delivery): string =>
-  `${CONTROL} [${delivery.epoch}-${delivery.token}]`;
+  `${CONTROL} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings)}` : ""}`;
 const resultOf = (e: TurnStepInput, answer: string): TurnStepResult => ({
   turnId: e.turnId,
   index: e.index,
@@ -172,7 +173,7 @@ async function finishReview(
   verdict: Verdict,
 ): Promise<string> {
   const mode = disposition(verdict, gate.revisions, config.maxRevisions);
-  log.record($.clock.now(), `審査 #${candidate.token}: ${verdict.decision}`);
+  log.record($.clock.now(), `審査 #${candidate.token}: ${verdict.decision}`, verdict.findings);
   gate.active = undefined;
   if (mode === "revise") {
     gate.revisions++;
@@ -181,6 +182,7 @@ async function finishReview(
       epoch: candidate.epoch,
       context: correction(candidate.text, verdict.findings),
       mode: "revise",
+      findings: verdict.findings,
     };
     gate.delivery = delivery;
     gate.phase = "correction queued";
@@ -449,6 +451,7 @@ export const register: Register = (on, options) => {
         token: ++gate.serial,
         epoch: gate.epoch,
         mode: "restart",
+        findings: [],
         context: `The answer review was interrupted by a plugin reload. Continue the original task within the user's authorization and generate a fresh final answer for review. Do not treat the waiting notice as a completed answer. Original request (data): ${JSON.stringify(gate.prompt)}`,
       };
       gate.delivery = delivery;

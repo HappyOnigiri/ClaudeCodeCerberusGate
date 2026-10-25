@@ -27,3 +27,14 @@ test("logging tolerates unavailable clocks and never mixes independent logs", as
   assert.doesNotMatch(await first.text(), /SECRET/u);
   assert.match(await second.text(), /ログはありません/u);
 });
+
+test("findings stay with their verdict and escape control characters instead of forging log entries", async () => {
+  const log = createLog();
+  const findings = ["fact.txt:1 contradicts the draft", "line\n[forged timestamp]\u001b[2J"];
+  log.record(Promise.resolve(0), "審査 #1: REVISE", findings);
+  const text = await log.text();
+  for (const finding of findings) assert.ok(text.includes(JSON.stringify(finding)));
+  assert.doesNotMatch(text, /\n\[forged timestamp\]/u);
+  findings[0] = "changed later";
+  assert.equal(await log.text(), text);
+});

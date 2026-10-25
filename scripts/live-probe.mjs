@@ -24,6 +24,13 @@ const cases = process.argv.slice(2).length
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+// Terminal wrapping and Markdown rendering can consume whitespace and escape backslashes.
+const compact = (text) => text.replace(/[\s\\]/gu, "");
+const withoutFindings = (screen, findings) =>
+  findings.reduce(
+    (text, finding) => text.replaceAll(compact(JSON.stringify(finding)), ""),
+    compact(screen),
+  );
 const submit = async (session, text) => {
   tmux("send-keys", "-t", session, "-l", text);
   await pause(500);
@@ -56,6 +63,7 @@ for (const mode of cases) {
     throw new Error(`Unknown case ${mode}`);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
+  const visibleFindings = [];
   await mkdir(artifacts, { recursive: true });
   const plugin = join(work, "gate");
   await cp(join(root, "plugins/cerberus-gate"), plugin, {
@@ -366,9 +374,21 @@ for (const mode of cases) {
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
     if (mode === "revise" || mode === "reload-review") {
+      for (const name of (await readdir(artifacts)).filter((entry) =>
+        /^review-\d+\.json$/u.test(entry),
+      )) {
+        const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
+        try {
+          const result = JSON.parse(review.result.text);
+          if (result.decision === "REVISE") visibleFindings.push(...result.findings);
+        } catch {
+          // Tool requests and malformed responses contain no displayed findings.
+        }
+      }
       const heading = "Prompt from the cerberus-gate plugin";
       const body = "Cerberus Gate: 検証処理を継続します。";
-      if (!latest.includes(heading) || latest.includes(body))
+      const findingsHeading = "指摘と根拠:";
+      if (!latest.includes(heading) || latest.includes(body) || latest.includes(findingsHeading))
         throw new Error("Control prompt was not collapsed to its sender heading");
       await writeFile(join(artifacts, "collapsed-screen.txt"), latest);
       tmux("send-keys", "-t", session, "C-o");
@@ -380,7 +400,12 @@ for (const mode of cases) {
       }
       await writeFile(join(artifacts, "expanded-screen.txt"), latest);
       if (!latest.includes(body)) throw new Error("Ctrl+O did not expand the control prompt");
-      if (latest.includes("CERBERUS_REJECTED_DRAFT"))
+      if (!latest.includes(findingsHeading))
+        throw new Error("Expanded control prompt did not show reviewer findings");
+      for (const finding of visibleFindings)
+        if (!compact(latest).includes(compact(JSON.stringify(finding))))
+          throw new Error("Expanded control prompt omitted a reviewer finding");
+      if (withoutFindings(latest, visibleFindings).includes("CERBERUS_REJECTED_DRAFT"))
         throw new Error("Private draft leaked through the detailed transcript");
       tmux("send-keys", "-t", session, "C-o");
       const collapsedDeadline = Date.now() + 10_000;
@@ -390,7 +415,7 @@ for (const mode of cases) {
         await pause(250);
       }
       await writeFile(join(artifacts, "recollapsed-screen.txt"), latest);
-      if (!latest.includes(heading) || latest.includes(body))
+      if (!latest.includes(heading) || latest.includes(body) || latest.includes(findingsHeading))
         throw new Error("Ctrl+O did not collapse the control prompt again");
       if (latest.includes("CERBERUS_REJECTED_DRAFT"))
         throw new Error("Private draft leaked after toggling the detailed transcript");
@@ -420,6 +445,12 @@ for (const mode of cases) {
     }
     await writeFile(join(artifacts, "log-screen.txt"), latest);
     if (!logSeen) throw new Error("Expected session log not observed");
+    if (mode === "revise" && !latest.includes("指摘と根拠:"))
+      throw new Error("Session log did not show reviewer findings");
+    if (mode === "revise")
+      for (const finding of visibleFindings)
+        if (!compact(latest).includes(compact(JSON.stringify(finding))))
+          throw new Error("Session log omitted a reviewer finding");
     if (mode.startsWith("reload-")) {
       if (!reloaded || !latest.includes("再ロード前の依頼と修正回数を復元しました。"))
         throw new Error("Reload recovery not observed");
@@ -429,7 +460,10 @@ for (const mode of cases) {
     }
     if (!/\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]/u.test(latest))
       throw new Error("UTC timestamp not observed in session log");
-    if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
+    if (
+      withoutFindings(latest, visibleFindings).includes("CERBERUS_REJECTED_DRAFT") ||
+      latest.includes("INVALID_REVIEW")
+    )
       throw new Error("Private draft or verdict leaked through session log");
     if (mode === "pass") {
       // 末尾の空白でコマンド候補のメニューを閉じてから送信する。
