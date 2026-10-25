@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+branch=$(git symbolic-ref --quiet --short HEAD) || {
+  # detached HEAD にはブランチ名がないため、main の判定対象から外す。
+  git rev-parse --verify HEAD >/dev/null
+  exit 0
+}
+
+if [ "$branch" = main ]; then
+  echo 'Error: main への直接コミットは禁止です。作業ブランチでコミットし、PR を作成してください。' >&2
+  exit 1
+fi
