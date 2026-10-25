@@ -256,10 +256,9 @@ for (const mode of cases) {
     if (mode === "model") {
       await submit(session, "/cgate model");
       await pause(1000);
-      await writeFile(
-        join(artifacts, "model-picker.txt"),
-        tmux("capture-pane", "-p", "-t", session, "-S", "-200"),
-      );
+      const modelScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-200");
+      await writeFile(join(artifacts, "model-picker.txt"), modelScreen);
+      if (!modelScreen.includes("fable")) throw new Error("Fable model option did not appear");
       tmux("send-keys", "-t", session, "Down", "Enter");
       const savedDeadline = Date.now() + 15_000;
       let saved;

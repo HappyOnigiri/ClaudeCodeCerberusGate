@@ -492,9 +492,9 @@ export const register: Register = (on, options) => {
     return Select({
       key: "reviewer-model",
       label: "検査用モデル",
-      options: [...new Set(["inherit", "haiku", "sonnet", "opus", config.reviewerModel])].map(
-        (value) => ({ value }),
-      ),
+      options: [
+        ...new Set(["inherit", "haiku", "sonnet", "opus", "fable", config.reviewerModel]),
+      ].map((value) => ({ value })),
       value: config.reviewerModel,
       autoFocus: true,
       onSelect: async (value) => {
