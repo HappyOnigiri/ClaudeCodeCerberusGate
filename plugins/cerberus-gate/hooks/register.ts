@@ -72,7 +72,7 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
     } else {
       log.record($.clock.now(), "修正依頼の送信に失敗したため、本文を表示できませんでした。");
       $.ui.toast("Cerberus Gate: 修正依頼の送信に失敗したため、本文を表示できませんでした。", {
-        timeoutMs: 5000,
+        timeoutMs: 3000,
       });
     }
   });
@@ -504,7 +504,7 @@ export const register: Register = (on, options) => {
           const result = await $.config.set({ key: "cerberus-gate.reviewerModel", value });
           if (result.deny !== undefined) {
             $.ui.toast(`Cerberus Gate: モデルを保存できませんでした。${result.deny}`, {
-              timeoutMs: 5000,
+              timeoutMs: 3000,
             });
             return;
           }
@@ -514,7 +514,7 @@ export const register: Register = (on, options) => {
             reviewerEffort: config.reviewerEffort,
           });
           $.ui.toast(`Cerberus Gate: 検査用モデルを ${config.reviewerModel} に設定しました。`, {
-            timeoutMs: 5000,
+            timeoutMs: 3000,
           });
           await $.ui.close({ id: "reviewer-model" });
           await $.ui.open({
@@ -524,7 +524,7 @@ export const register: Register = (on, options) => {
             closeOnEscape: true,
           });
         } catch {
-          $.ui.toast("Cerberus Gate: モデルを保存できませんでした。", { timeoutMs: 5000 });
+          $.ui.toast("Cerberus Gate: モデルを保存できませんでした。", { timeoutMs: 3000 });
         }
       },
     });
@@ -546,7 +546,7 @@ export const register: Register = (on, options) => {
           const result = await $.config.set({ key: "cerberus-gate.reviewerEffort", value });
           if (result.deny !== undefined) {
             $.ui.toast(`Cerberus Gate: effort を保存できませんでした。${result.deny}`, {
-              timeoutMs: 5000,
+              timeoutMs: 3000,
             });
             return;
           }
@@ -556,11 +556,11 @@ export const register: Register = (on, options) => {
             reviewerEffort: result.value,
           });
           $.ui.toast(`Cerberus Gate: 検査用 effort を ${config.reviewerEffort} に設定しました。`, {
-            timeoutMs: 5000,
+            timeoutMs: 3000,
           });
           await $.ui.close({ id: "reviewer-effort" });
         } catch {
-          $.ui.toast("Cerberus Gate: effort を保存できませんでした。", { timeoutMs: 5000 });
+          $.ui.toast("Cerberus Gate: effort を保存できませんでした。", { timeoutMs: 3000 });
         }
       },
     });

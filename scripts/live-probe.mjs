@@ -302,7 +302,7 @@ for (const mode of cases) {
       const before = tmux("capture-pane", "-p", "-t", session);
       await writeFile(join(artifacts, "notice-before.txt"), before);
       if (!before.includes(notice)) throw new Error("Temporary notice was not displayed");
-      await pause(5500);
+      await pause(3500);
       const after = tmux("capture-pane", "-p", "-t", session);
       await writeFile(join(artifacts, "notice-after.txt"), after);
       if (after.includes(notice)) throw new Error("Temporary notice did not expire");
@@ -322,7 +322,7 @@ for (const mode of cases) {
       await writeFile(join(artifacts, "screen.txt"), latest);
       if (mode === "slow" && latest.includes("回答を検証中です。")) {
         reviewingSince ??= Date.now();
-        if (Date.now() - reviewingSince > 5500) {
+        if (Date.now() - reviewingSince > 3500) {
           persistentReview = true;
           await writeFile(join(artifacts, "persistent-review.txt"), latest);
         }
@@ -508,7 +508,7 @@ for (const mode of cases) {
           throw new Error(`Reviewer did not use ${tool}`);
     }
     if (mode === "slow") {
-      if (!persistentReview) throw new Error("Review status did not persist beyond five seconds");
+      if (!persistentReview) throw new Error("Review status did not persist beyond three seconds");
       const start = JSON.parse(await readFile(join(artifacts, "review-start-1.json"), "utf8"));
       const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
       if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");

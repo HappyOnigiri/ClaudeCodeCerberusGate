@@ -856,12 +856,12 @@ test("temporary settings notifications leave a pending review status intact", as
   await picker.onSelect("sonnet");
   assert.equal(h.events.statuses.at(-1), WAITING);
   assert.match(h.events.toasts.at(-1).text, /sonnet/);
-  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 5000);
+  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 3000);
   h.engine.config.set = async () => ({ deny: "locked" });
   await picker.onSelect("opus");
   assert.equal(h.events.statuses.at(-1), WAITING);
   assert.match(h.events.toasts.at(-1).text, /保存できませんでした/);
-  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 5000);
+  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 3000);
   pending.resolve({ isAnswered: true, text: verdict() });
   await step;
   assert.equal(h.events.statuses.at(-1), undefined);
