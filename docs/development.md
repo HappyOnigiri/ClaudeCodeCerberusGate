@@ -78,28 +78,34 @@ CI の共通検査には認証・モデル呼び出しを要求しない。
 ルートの package.json と marketplace にはバージョンを重複定義しない。
 
 [Release ワークフロー](/.github/workflows/release.yml) は毎日 03:17 JST の定期実行と手動実行に対応する。
-定期実行では、前回 GitHub Release の公開日時以降に main へマージされた PR から採番する。
+定期実行と手動の `automatic: true` は同じ自動運用を使い、前回 GitHub Release の公開日時以降に main へマージされた PR から採番する。
 main への直接 push はこの判定の対象に含めない。
 
-| 対象 PR                                                                 | 採番・終了条件                                     |
-| ----------------------------------------------------------------------- | -------------------------------------------------- |
-| `feat:` を含む                                                          | minor を上げる                                     |
-| `fix / perf / refactor / chore / ci / docs / build / style / test` のみ | patch を上げる                                     |
-| `!` 付きタイトル、または本文に `BREAKING CHANGE:`                       | 停止し、手動で major または version を指定する     |
-| リリース PR を除いた対象がない                                          | 定期実行は正常終了でスキップ、手動の auto はエラー |
-| prefix を判定できない、API エラー、manifest の不備・バージョン不一致    | エラーで停止する                                   |
+| 対象 PR                                                                 | 採番・終了条件                                           |
+| ----------------------------------------------------------------------- | -------------------------------------------------------- |
+| `feat:` を含む                                                          | minor を上げる                                           |
+| `fix / perf / refactor / chore / ci / docs / build / style / test` のみ | patch を上げる                                           |
+| `!` 付きタイトル、または本文に `BREAKING CHANGE:`                       | 停止し、手動で major または version を指定する           |
+| リリース PR を除いた対象がない                                          | 自動運用は正常終了でスキップ、通常の手動の auto はエラー |
+| prefix を判定できない、API エラー、manifest の不備・バージョン不一致    | エラーで停止する                                         |
 
 公開済みの通常 Release がない場合、auto は manifest の現在の番号から patch を上げて初回を準備する。
 現在の `0.1.1` を起点とする初回は `0.1.2` になる。
 手動の version 指定時は、manifest の現在の番号より大きい値を使う。
 
-定期実行はリリース PR を作成し、自動マージを設定する。
+自動運用はリリース PR を作成し、自動マージを設定する。
 採番後の manifest をリポジトリの書式に整え、差分があれば同じリリース PR に追加してから自動マージを設定する。
-未マージの `release/vX.Y.Z` PR がある日は新しいリリースの準備をスキップする。
-手動で作ったリリース PR を、翌日の定期実行が自動マージの対象にすることもない。
-手動実行では version の直接指定、または auto / major / minor / patch を指定し、人が PR をマージする。
+未マージの `release/vX.Y.Z` PR がある場合、自動運用は新しいリリースの準備をスキップする。
+通常の手動運用で作ったリリース PR を、自動運用が自動マージの対象にすることもない。
+手動実行の `automatic` は既定で `false` とし、通常は人が PR をマージする。
+`automatic: true` を選ぶと、日次実行を待たずに自動マージ・公開までの経路を起動できる。
+version の直接指定と auto / major / minor / patch の指定は、どちらの手動運用でも使える。
 手動実行で既存の定期リリース PR を更新する場合、自動マージの設定は GitHub 上で確認・解除する。
 準備処理は共通の concurrency グループで直列化する。
+
+```sh
+gh workflow run release.yml --ref main -f automatic=true -f bump=auto
+```
 
 [Publish Release ワークフロー](/.github/workflows/publish-release.yml) は、同一リポジトリのリリース PR が main へマージされた後に動く。
 マージコミットにタグ `vX.Y.Z` を付け、PR 本文をノートにした GitHub Release を公開する。

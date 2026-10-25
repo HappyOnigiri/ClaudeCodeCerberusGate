@@ -3,6 +3,11 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      automatic:
+        description: "日次実行と同じ自動運用（変更なしのスキップ・自動マージ）"
+        required: false
+        default: false
+        type: boolean
       version:
         description: "リリースするバージョン（空なら bump で判定）"
         required: false
@@ -29,6 +34,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      AUTOMATIC_RELEASE: ${{ github.event_name == 'schedule' || inputs.automatic }}
     steps:
       - name: Select release inputs
         id: inputs
@@ -41,14 +48,14 @@ jobs:
           set -euo pipefail
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-          # 手動作成のリリース PR を、翌日の定期実行で自動マージしない。
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+          # 手動作成のリリース PR を、自動運用で自動マージしない。
+          if [ "$AUTOMATIC_RELEASE" = "true" ]; then
             OPEN_RELEASES=$(gh pr list --repo "$GH_REPO" --base main --state open \
               --limit 200 --json headRefName \
               --jq '[.[] | select(.headRefName | test("^release/v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | length')
             if [ "$OPEN_RELEASES" -ne 0 ]; then
               echo "skip=true" >> "$GITHUB_OUTPUT"
-              echo "リリース PR が開いているため、定期実行をスキップしました。" >> "$GITHUB_STEP_SUMMARY"
+              echo "リリース PR が開いているため、自動運用をスキップしました。" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
           fi
@@ -72,7 +79,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           bump: ${{ steps.inputs.outputs.bump }}
-          skip-if-no-changes: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+          skip-if-no-changes: ${{ env.AUTOMATIC_RELEASE }}
           version-bump-type: json
           json-version-files: |
             plugins/cerberus-gate/.claude-plugin/plugin.json
@@ -104,8 +111,8 @@ jobs:
             git push origin "HEAD:refs/heads/release/v${RELEASE_VERSION}"
           fi
 
-      - name: Enable auto-merge for scheduled releases
-        if: github.event_name == 'schedule' && steps.prepare.outputs.pr-number != ''
+      - name: Enable auto-merge for automatic releases
+        if: env.AUTOMATIC_RELEASE == 'true' && steps.prepare.outputs.pr-number != ''
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GH_REPO: ${{ github.repository }}
