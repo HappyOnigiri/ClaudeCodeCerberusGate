@@ -14,5 +14,9 @@
     "types": ["claude-code", "claude-code-tools"],
     "allowImportingTsExtensions": true
   },
-  "include": ["plugins/cerberus-gate/hooks", "plugins/cerberus-gate/tests"]
+  "include": [
+    "plugins/cerberus-gate/hooks",
+    "plugins/cerberus-gate/tests",
+    "plugins/cerberus-gate/types"
+  ]
 }

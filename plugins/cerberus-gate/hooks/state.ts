@@ -10,7 +10,7 @@ export type Candidate = {
 export type Delivery = {
   token: number;
   epoch: number;
-  mode: "publish" | "revise" | "notice";
+  mode: "publish" | "revise" | "notice" | "restart";
   text: string;
   context?: string;
 };
@@ -46,7 +46,7 @@ export function disposition(
   verdict: Verdict,
   revisions: number,
   max: number,
-): "publish" | "revise" | "notice" {
+): "publish" | "revise" | "notice" | "restart" {
   if (verdict.decision === "PASS") return "publish";
   return verdict.decision === "REVISE" && revisions < max ? "revise" : "notice";
 }
