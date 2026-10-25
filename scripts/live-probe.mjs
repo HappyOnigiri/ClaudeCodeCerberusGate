@@ -1,3 +1,4 @@
+import { verifyDebug } from "./live-debug.mjs";
 import { verifyMaterials } from "./live-materials.mjs";
 import { randomBytes } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
@@ -43,7 +44,7 @@ const decisionOf = (text) => {
     return undefined;
   }
 };
-const compact = (text) => text.replace(/[\s\\`]/gu, "");
+const compact = (text) => text.replace(/[\s\\`*]/gu, "");
 const withoutFindings = (screen, findings) =>
   findings.reduce(
     (text, finding) => text.replaceAll(compact(JSON.stringify(finding)), ""),
@@ -242,8 +243,8 @@ for (const mode of cases) {
   });
   on('tool.call',async($,e,next)=>{
    const result=await next(e);
-   if(e.tool==='Read' && !e.agentId && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
-    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');await $.clock.sleep(7000);
+   if(e.tool==='Read' && !e.agentId && next.origin.plugin!=='cerberus-gate' && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
+    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');for(let wait=0;wait<100 && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reload-confirmed'));wait++)await $.clock.sleep(250);
    }
    await $.fs.write(${JSON.stringify(artifacts)}+'/tool-'+(++tools)+'.json',JSON.stringify({tool:e.tool,input:e,origin:next.origin,result}));return result;
   });
@@ -556,12 +557,19 @@ for (const mode of cases) {
         }
         reloaded = true;
       }
+      if (
+        reloaded &&
+        mode === "reload-work" &&
+        latest.includes("options changed") &&
+        latest.includes("reloaded")
+      )
+        await writeFile(join(artifacts, "reload-confirmed"), "yes");
       if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
         throw new Error("Private draft or verdict leaked to the TUI");
       if (/\berror\b|hook skipped|hook failed|hooks module did not load/iu.test(latest))
         throw new Error("Hook error in TUI");
       if (mode === "cancel" && !cancelled && latest.includes("回答を検証中です。")) {
-        await submit(session, "/cgate log");
+        await submit(session, "/cgate history");
         // The command runs immediately but its transcript row may wait for the held turn's flush.
         // Cancel before waiting for that row, so the review is still in flight.
         await submit(session, "/cgate cancel");
@@ -674,7 +682,7 @@ for (const mode of cases) {
       if (latest.includes("CERBERUS_REJECTED_DRAFT"))
         throw new Error("Private draft leaked after toggling the detailed transcript");
     }
-    await submit(session, "/cgate log");
+    await submit(session, "/cgate history");
     const logDeadline = Date.now() + 15_000;
     let logSeen = false;
     while (Date.now() < logDeadline) {
@@ -736,7 +744,7 @@ for (const mode of cases) {
         if (Date.now() >= clearDeadline) throw new Error("/clear did not end the session");
         await pause(250);
       }
-      await submit(session, "/cgate log");
+      await submit(session, "/cgate history");
       const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "clear-screen.txt"), screen);
       if (!screen.includes("このセッションのログはありません。"))
@@ -905,6 +913,28 @@ for (const mode of cases) {
       const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
       if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");
     }
+    const debugReport = await verifyDebug(work, artifacts);
+    await submit(session, "/cgate log");
+    let debugScreen = "";
+    const debugDeadline = Date.now() + 15_000;
+    while (Date.now() < debugDeadline) {
+      debugScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+      if (
+        debugReport.some((entry) =>
+          compact(debugScreen).includes(compact(entry.directory + "/index.jsonl")),
+        )
+      )
+        break;
+      await pause(250);
+    }
+    await writeFile(join(artifacts, "debug-location-screen.txt"), debugScreen);
+    if (
+      !debugScreen.includes("保存済み") ||
+      !debugReport.some((entry) =>
+        compact(debugScreen).includes(compact(entry.directory + "/index.jsonl")),
+      )
+    )
+      throw new Error("Debug command did not display persisted absolute paths");
     summary.push({ case: mode, status: "PASS", workspace: work, pluginPrompts, restartPrompts });
     console.log(`PASS ${mode}`);
   } catch (error) {

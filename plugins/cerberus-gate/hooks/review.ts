@@ -78,3 +78,32 @@ export function reviewTools(
     inputType: tool.mcp ? undefined : BUILTIN_INPUTS[tool.name],
   }));
 }
+
+export function reviewFailureReason(
+  stage: string,
+  error: unknown,
+  aborted: boolean,
+  timedOut: boolean,
+): string {
+  if (aborted) return timedOut ? "timeout" : "cancelled";
+  if (stage !== "parse") return `${stage}_exception`;
+  if (error instanceof SyntaxError) return "invalid_json";
+  return error instanceof Error && error.message === "Reserved reviewer tool argument"
+    ? "tool_control_denied"
+    : "invalid_tool_request";
+}
+
+// Cancellation must also release the main step while an investigation tool is still in flight.
+export async function cancellable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  let stop: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    stop = () => reject(new Error("Review stopped"));
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+  });
+  try {
+    return await Promise.race([operation, cancelled]);
+  } finally {
+    signal.removeEventListener("abort", stop);
+  }
+}

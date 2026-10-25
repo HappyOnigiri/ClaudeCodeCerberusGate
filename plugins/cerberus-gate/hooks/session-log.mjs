@@ -1,3 +1,5 @@
+import { safeValue } from "./debug.ts";
+import { preserve } from "./debug-log.mjs";
 import {
   open,
   mkdtemp,
@@ -101,7 +103,7 @@ async function sweep() {
       await release(directory).catch(() => undefined);
   }
 }
-export async function snapshot(sourcePath, sessionId, request) {
+export async function snapshot(sourcePath, sessionId, request, debug) {
   const handle = await open(sourcePath, "r");
   let source;
   try {
@@ -126,7 +128,7 @@ export async function snapshot(sourcePath, sessionId, request) {
     await writeFile(join(directory, files[0]), source, { mode: 0o600, flag: "wx" });
     await writeFile(join(directory, files[1]), rendered.history, { mode: 0o600 });
     await writeFile(join(directory, files[2]), rendered.users, { mode: 0o600 });
-    return {
+    const material = {
       directory,
       sourcePath,
       sessionId,
@@ -136,6 +138,21 @@ export async function snapshot(sourcePath, sessionId, request) {
       history: join(directory, files[1]),
       users: join(directory, files[2]),
     };
+    if (debug) {
+      try {
+        material.debug = await preserve(debug, material, {
+          "source.jsonl": source,
+          "history.txt": rendered.history,
+          "users.txt": rendered.users,
+        });
+      } catch (error) {
+        material.debug = {
+          state: "failed",
+          error: safeValue(error),
+        };
+      }
+    }
+    return material;
   } catch (error) {
     await release(directory);
     throw error;
@@ -153,10 +170,23 @@ if (
       await sweep();
       let material;
       const deadline = Date.now() + 5000;
+      let attempt = 0;
       while (material === undefined) {
         try {
-          material = await snapshot(await locate(input.sessionId), input.sessionId, input.request);
+          material = await snapshot(
+            await locate(input.sessionId),
+            input.sessionId,
+            input.request,
+            input.debug,
+          );
         } catch (error) {
+          console.error(
+            JSON.stringify({
+              event: "material.retry",
+              attempt: ++attempt,
+              error: safeValue(error),
+            }),
+          );
           if (Date.now() >= deadline) throw error;
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
@@ -164,7 +194,13 @@ if (
       console.log(JSON.stringify(material));
     } else if (process.argv[2] === "release") await release(input.directory);
     else throw new Error("Unknown operation");
-  } catch {
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "material.failed",
+        error: safeValue(error),
+      }),
+    );
     process.exitCode = 1;
   }
 }

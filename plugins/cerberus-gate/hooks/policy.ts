@@ -60,7 +60,7 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
   };
 }
 
-export function parseVerdict(text: string): Verdict {
+export function diagnoseVerdict(text: string): { verdict: Verdict; reason: string } {
   try {
     const data: unknown = JSON.parse(text.trim());
     if (typeof data !== "object" || data === null || !("decision" in data) || !("findings" in data))
@@ -80,9 +80,20 @@ export function parseVerdict(text: string): Verdict {
     )
       throw new Error("inconsistent");
     const strings = findings.filter((f: unknown): f is string => typeof f === "string");
-    return { decision, findings: strings };
-  } catch {
-    return { decision: "UNVERIFIED", findings: [] };
+    return {
+      verdict: { decision, findings: strings },
+      reason: decision === "UNVERIFIED" ? "explicit_unverified" : "valid",
+    };
+  } catch (error) {
+    return {
+      verdict: { decision: "UNVERIFIED", findings: [] },
+      reason:
+        error instanceof SyntaxError
+          ? "invalid_json"
+          : error instanceof Error
+            ? error.message
+            : "invalid_verdict",
+    };
   }
 }
 
@@ -102,4 +113,8 @@ export function correction(draft: string, findings: readonly string[]): string {
 
 export function formatFindings(findings: readonly string[]): string {
   return `指摘と根拠:\n${findings.map((finding) => `- ${JSON.stringify(finding)}`).join("\n")}`;
+}
+
+export function parseVerdict(text: string): Verdict {
+  return diagnoseVerdict(text).verdict;
 }
