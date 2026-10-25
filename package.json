@@ -1,0 +1,28 @@
+{
+  "name": "claude-code-cerberus-gate",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "lint": "oxlint --type-aware",
+    "typecheck": "tsc --noEmit",
+    "lines": "node scripts/check-lines.mjs",
+    "docs:check": "markdownlint-cli2 '**/*.md' '#node_modules/**' '#tmp/**'",
+    "validate": "claude plugin validate --strict plugins/cerberus-gate",
+    "test": "claude plugin test plugins/cerberus-gate",
+    "test:scripts": "node --test tests/*.test.mjs",
+    "check": "npm run fmt:check && npm run lint && npm run typecheck && npm run lines && npm run docs:check && npm run validate && npm run test && npm run test:scripts",
+    "test:live": "node scripts/live-probe.mjs"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "0.23.2",
+    "oxfmt": "0.74.0",
+    "oxlint": "1.89.0",
+    "oxlint-tsgolint": "7.0.2005",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
