@@ -4,14 +4,14 @@
     "plugins/cerberus-gate/hooks/register.ts",
     "plugins/cerberus-gate-display/hooks/register.ts",
     "plugins/cerberus-gate/tests/*.test.ts",
-    "tests/*.test.mjs",
-    "scripts/install.mjs"
+    "tests/*.test.ts",
+    "scripts/install.ts"
   ],
   "project": [
     "plugins/**/*.ts",
-    "plugins/**/*.mjs",
-    "scripts/**/*.mjs",
-    "tests/**/*.mjs",
+    "plugins/**/*.mts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
     "types/**/*.d.ts"
   ],
   "ignoreDependencies": ["claude-code", "claude-code/testing"],

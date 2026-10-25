@@ -1,3 +1,5 @@
+import type { TestContext } from "node:test";
+import type { SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, cp, rm, realpath } from "node:fs/promises";
@@ -6,32 +8,39 @@ import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { lint } from "markdownlint/sync";
 import MarkdownIt from "markdown-it";
-import { inspect as architecture, check } from "../scripts/quality/architecture.mjs";
-import { inspect as suppressions } from "../scripts/quality/suppressions.mjs";
-import docs from "../scripts/quality/docs.mjs";
-import { binary, verify } from "../scripts/quality/native.mjs";
-import { coverage } from "../scripts/quality/coverage.mjs";
-import { parse, sources } from "../scripts/quality/source.mjs";
+import { inspect as architecture, check } from "../scripts/quality/architecture.ts";
+import { inspect as suppressions } from "../scripts/quality/suppressions.ts";
+import docs from "../scripts/quality/docs.ts";
+import { binary, verify } from "../scripts/quality/native.ts";
+import { coverage } from "../scripts/quality/coverage.ts";
+import { parse, sources } from "../scripts/quality/source.ts";
 
 const root = process.cwd();
 const registration = "plugins/cerberus-gate/hooks/register.ts";
 const displayRegistration = "plugins/cerberus-gate-display/hooks/register.ts";
-const run = (file, args, options = {}) => spawnSync(file, args, { encoding: "utf8", ...options });
-async function fixture(t) {
+const run = (
+  file: string,
+  args: string[],
+  options:
+    | SpawnSyncOptionsWithStringEncoding
+    | Omit<SpawnSyncOptionsWithStringEncoding, "encoding"> = {},
+) => spawnSync(file, args, { encoding: "utf8", ...options });
+async function fixture(t: TestContext) {
   const path = await mkdtemp(join(tmpdir(), "cerberus-quality-"));
   t.after(() => rm(path, { recursive: true, force: true }));
   return realpath(path);
 }
-test("architecture permits current registration and rejects forbidden dependencies and API indirection", async () => {
+void test("architecture permits current registration and rejects forbidden dependencies and API indirection", async () => {
   assert.deepEqual(await check(root), []);
   assert.ok(
     architecture(
-      "plugins/cerberus-gate/hooks/session-log.mjs",
+      "plugins/cerberus-gate/hooks/session-log.mts",
       'import { rm } from "node:fs/promises";',
     ).length,
   );
   for (const source of [
     'import x from "node:fs";',
+    'type Fs = import("node:fs");',
     'export * from "./register.ts";',
     'export * from "./register";',
     'import x from "./register.js";',
@@ -40,14 +49,14 @@ test("architecture permits current registration and rejects forbidden dependenci
     "const x = import(name);",
     'import type { EngineInterface } from "claude-code";',
     'const x = require("node:fs");',
-    'import { snapshot } from "./session-log.mjs";',
+    'import { snapshot } from "./session-log.mts";',
   ])
     assert.ok(architecture("plugins/cerberus-gate/hooks/pure.ts", source).length, source);
   for (const source of [
     '$.fs.write("file", "text");',
     '$.process.run(["sh", "-c", "touch file"], {});',
     '$.process.run(["node", `${$.plugin.root}/hooks/other.mjs`, "create"], {});',
-    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "create"], {cwd: "/"});',
+    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mts`, "create"], {cwd: "/"});',
     '$.process.spawn({argv:["node"]});',
     '$["tool"].list();',
     "const call = $.tool.call;",
@@ -91,7 +100,7 @@ test("architecture permits current registration and rejects forbidden dependenci
     [],
   );
 });
-test("architecture permits only the session-guarded dynamic tool boundary", () => {
+void test("architecture permits only the session-guarded dynamic tool boundary", () => {
   const source = `function callReviewTool($: EngineInterface,call:ReviewRequest,tools:ReadonlySet<string>) {
     if(!tools.has(call.tool)) return {deny:"unapproved"};
     return $.tool.call({...call.input,tool:call.tool} as ToolCallArgs);
@@ -107,7 +116,7 @@ test("architecture permits only the session-guarded dynamic tool boundary", () =
   ])
     assert.ok(architecture(registration, altered).length, altered);
 });
-test("display registration can import host types but cannot call APIs or import runtime modules", () => {
+void test("display registration can import host types but cannot call APIs or import runtime modules", () => {
   assert.deepEqual(
     architecture(displayRegistration, 'import type { Register } from "claude-code";'),
     [],
@@ -116,7 +125,7 @@ test("display registration can import host types but cannot call APIs or import 
     '$.fs.write("file", "text");',
     '$.process.run(["sh", "-c", "touch file"], {});',
     '$.process.run(["node", `${$.plugin.root}/hooks/other.mjs`, "create"], {});',
-    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "create"], {cwd: "/"});',
+    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mts`, "create"], {cwd: "/"});',
     '$.process.spawn({argv:["node"]});',
     "$.session.messages();",
     'import { Register } from "claude-code";',
@@ -125,14 +134,24 @@ test("display registration can import host types but cannot call APIs or import 
   ])
     assert.ok(architecture(displayRegistration, source).length, source);
 });
-test("source discovery and parsing fail closed", async (t) => {
+void test("source discovery and parsing fail closed", async (t) => {
   const path = await fixture(t);
   await mkdir(join(path, "plugins"));
   await assert.rejects(sources(path, ["plugins"]), /no source files/u);
   await assert.rejects(check(path), /no source files/u);
   assert.throws(() => parse("broken.ts", "const = ;"), /parse:/u);
+  await writeFile(
+    join(path, "plugins/runtime.mts"),
+    'import { writeFile } from "node:fs/promises";',
+  );
+  const discovered = await sources(path, ["plugins"]);
+  assert.deepEqual(
+    discovered.map(({ file }) => file),
+    ["plugins/runtime.mts"],
+  );
+  assert.match((await check(path)).join("\n"), /runtime\.mts.*dependency-boundary/u);
 });
-test("suppression directives require named rules and reasons in line and block comments", () => {
+void test("suppression directives require named rules and reasons in line and block comments", () => {
   for (const source of [
     "// oxlint-disable\n",
     "/* eslint-disable no-console */",
@@ -148,7 +167,7 @@ test("suppression directives require named rules and reasons in line and block c
   ])
     assert.deepEqual(suppressions("x.js", source), [], source);
 });
-test("Oxlint rejects unused suppressions and excessive complexity", async (t) => {
+void test("Oxlint rejects unused suppressions and excessive complexity", async (t) => {
   const path = await fixture(t);
   await writeFile(
     join(path, "unused.js"),
@@ -170,11 +189,11 @@ test("Oxlint rejects unused suppressions and excessive complexity", async (t) =>
   assert.equal(complexity.status, 1, complexity.stdout + complexity.stderr);
   assert.match(complexity.stdout + complexity.stderr, /complexity/u);
 });
-test("docs rules resolve inline, encoded and reference links and require the docs index", async (t) => {
+void test("docs rules resolve inline, encoded and reference links and require the docs index", async (t) => {
   const path = await fixture(t);
   await mkdir(join(path, "docs"));
   await writeFile(join(path, "docs/a b.md"), "# Target\n");
-  const inspect = (name, text) =>
+  const inspect = (name: string, text: string) =>
     Object.values(
       lint({
         strings: { [join(path, name)]: text },
@@ -209,7 +228,7 @@ test("docs rules resolve inline, encoded and reference links and require the doc
     "",
   );
 });
-test("real native tools reject invalid workflow and shell fixtures", async (t) => {
+void test("real native tools reject invalid workflow and shell fixtures", async (t) => {
   const path = await fixture(t);
   await writeFile(
     join(path, "bad.yml"),
@@ -228,7 +247,7 @@ test("real native tools reject invalid workflow and shell fixtures", async (t) =
   assert.match(shell.stdout + shell.stderr, /bad.sh:\d+.*SC/u);
   assert.throws(() => verify(Buffer.from("corrupt"), "0".repeat(64)), /SHA-256 mismatch/u);
 });
-test("Knip reports unused files, exports and dependencies without hiding undeclared imports", async (t) => {
+void test("Knip reports unused files, exports and dependencies without hiding undeclared imports", async (t) => {
   const path = await fixture(t);
   await writeFile(
     join(path, "package.json"),
@@ -254,14 +273,19 @@ test("Knip reports unused files, exports and dependencies without hiding undecla
   for (const name of ["dead.js", "unused", "oxc-parser", "undeclared-fixture"])
     assert.ok((result.stdout + result.stderr).includes(name), result.stdout + result.stderr);
 });
-test("Verdict, delivery modes and phases cannot grow silently", async (t) => {
+void test("Verdict, delivery modes and phases cannot grow silently", async (t) => {
   const path = await fixture(t);
   await cp("plugins/cerberus-gate/hooks", join(path, "hooks"), { recursive: true });
   const original = await readFile(join(path, "hooks/state.ts"), "utf8");
   const policy = await readFile(join(path, "hooks/policy.ts"), "utf8");
   const config = JSON.parse(await readFile("tsconfig.json", "utf8"));
+  Object.assign(
+    config.compilerOptions,
+    JSON.parse(await readFile("tsconfig.plugins.json", "utf8")).compilerOptions,
+  );
   config.compilerOptions.typeRoots = [resolve("types")];
-  config.include = ["hooks"];
+  await cp("plugins/cerberus-gate/types", join(path, "types"), { recursive: true });
+  config.include = ["hooks/*.ts", "types"];
   await writeFile(join(path, "tsconfig.json"), JSON.stringify(config));
   for (const mode of ["verdict", "delivery", "phase"]) {
     await writeFile(
@@ -290,7 +314,7 @@ test("Verdict, delivery modes and phases cannot grow silently", async (t) => {
     );
   }
 });
-test("coverage propagates test failures and generates an LCOV report on success", async (t) => {
+void test("coverage propagates test failures and generates an LCOV report on success", async (t) => {
   const path = await fixture(t);
   await writeFile(
     join(path, "bad.test.mjs"),
@@ -306,10 +330,10 @@ test("coverage propagates test failures and generates an LCOV report on success"
   assert.throws(() => coverage([], join(path, "empty.info")), /no Node tests/u);
 });
 
-test("native checks reject empty targets and missing tools", async (t) => {
+void test("native checks reject empty targets and missing tools", async (t) => {
   const path = await fixture(t);
   await mkdir(join(path, "scripts"));
-  const script = resolve("scripts/quality/native.mjs");
+  const script = resolve("scripts/quality/native.ts");
   const empty = run(process.execPath, [script, "shell"], { cwd: path });
   assert.notEqual(empty.status, 0);
   assert.match(empty.stderr, /targets: no scripts/u);

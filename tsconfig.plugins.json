@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "typeRoots": ["./types"],
+    "types": ["claude-code", "claude-code-tools"]
+  },
+  "include": [
+    "plugins/cerberus-gate/hooks/*.ts",
+    "plugins/cerberus-gate-display/hooks/*.ts",
+    "plugins/cerberus-gate/tests",
+    "plugins/cerberus-gate/types"
+  ]
+}

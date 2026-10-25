@@ -18,22 +18,22 @@ Mutation testing と実行・集計・スコア判定などの関連機構は導
 ## 依存境界と Mods API
 
 本体の API 操作は `plugins/cerberus-gate/hooks/register.ts` に集約する。
-許可 API・引数・import の静的な制約は [architecture.mjs](/scripts/quality/architecture.mjs) を正とし、変更時は次の境界を維持する。
+許可 API・引数・import の静的な制約は [architecture.ts](/scripts/quality/architecture.ts) を正とし、変更時は次の境界を維持する。
 
 | 対象                                   | 依存・操作の境界                                                                                                           |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | 本体の `hooks/register.ts`             | hooks 内のモジュールと `claude-code` の型 import                                                                           |
 | その他の本体モジュール                 | hooks 内だけ。登録用モジュールと Node ヘルパーへの import は禁止                                                           |
-| `hooks/session-log.mjs`                | 検証資料に必要な Node 組み込み関数と `debug-log.mjs`・`debug.ts` の import を例外とする                                    |
-| `hooks/debug-log.mjs`                  | 専用保存に必要な Node 組み込み関数の名前付き import、自プラグインの `plugin.json` と `debug.ts` の import だけを例外とする |
+| `hooks/session-log.mts`                | 検証資料に必要な Node 組み込み関数と `debug-log.mts`・`debug.ts` の import を例外とする                                    |
+| `hooks/debug-log.mts`                  | 専用保存に必要な Node 組み込み関数の名前付き import、自プラグインの `plugin.json` と `debug.ts` の import だけを例外とする |
 | 描画用プラグインの `hooks/register.ts` | `claude-code` の型 import だけ。実行時依存とエンジン API 呼び出しは禁止                                                    |
 
 ヘルパーは標準 JSONL を読み取り専用で開き、書き込みは自身の私有一時ディレクトリと専用デバッグ領域内に限定する。
-`session-log.mjs` から `debug-log.mjs` への依存は、生成した3資料の保存に限って認める。
+`session-log.mts` から `debug-log.mts` への依存は、生成した3資料の保存に限って認める。
 原文・業務ファイルの不変性と対象外削除の拒否をテストで確認する。
 
 - `process.run` は `node`、同梱ヘルパー、操作の3引数だけ。
-  `session-log.mjs` は `create`・`release`、`debug-log.mjs` は `initialize`・`append` に限定する。オプションは `stdin`・`timeoutMs` のみとし、任意コマンド・shell・環境変数・cwd の変更を許可しない。
+  `session-log.mts` は `create`・`release`、`debug-log.mts` は `initialize`・`append` に限定する。オプションは `stdin`・`timeoutMs` のみとし、任意コマンド・shell・環境変数・cwd の変更を許可しない。
 - 状態の保存・設定の変更は自分のプラグインの用途に限定し、他のプラグインやホスト全体へ権限を広げない。
 - 静的な `tool.call` は `TaskStop`、エージェント登録・起動は既存レビュアーだけ。対象をリテラルか一意な定数から解決できなければ拒否する。
 - モデルが選ぶツール呼び出しは `callReviewTool` に集約し、提示済みの一覧と照合して検査済みの引数だけを転送する。実行時の `tool.call`・`tool.check` は審査継続中かを確認し、制御フィールドを拒否して通常の権限判定を通す。

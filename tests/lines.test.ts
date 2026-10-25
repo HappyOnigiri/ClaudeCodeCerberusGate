@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inspect } from "../scripts/check-lines.mjs";
-test("physical line boundaries and justified exceptions", () => {
+import { inspect } from "../scripts/check-lines.ts";
+void test("physical line boundaries and justified exceptions", () => {
   assert.equal(inspect("").count, 0);
   assert.equal(inspect("x\nx").count, 2);
   assert.equal(inspect("x\n".repeat(599)).level, "ok");

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-test("install deploys both plugins, keeps other marketplace entries and restores reviewer options", async (t) => {
+void test("install deploys both plugins, keeps other marketplace entries and restores reviewer options", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-install-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const root = join(work, "source tree");
@@ -15,7 +15,7 @@ test("install deploys both plugins, keeps other marketplace entries and restores
   const manifest = join(marketplace, ".claude-plugin/marketplace.json");
   const log = join(work, "calls.jsonl");
   const plugins = ["cerberus-gate", "cerberus-gate-display"];
-  const id = (name) => `${name}@happyonigiri-plugins`;
+  const id = (name: string) => `${name}@happyonigiri-plugins`;
   const options = {
     reviewerModel: "haiku",
     reviewerEffort: "low",
@@ -72,7 +72,7 @@ if (args.join(' ') === 'plugin list --json') console.log(JSON.stringify(${JSON.s
     '#!/bin/sh\nif [ "$1" = "rev-parse" ]; then echo abc123; fi\n',
     { mode: 0o755 },
   );
-  const result = spawnSync(process.execPath, [resolve("scripts/install.mjs")], {
+  const result = spawnSync(process.execPath, [resolve("scripts/install.ts")], {
     cwd: root,
     env: {
       ...process.env,
@@ -86,12 +86,15 @@ if (args.join(' ') === 'plugin list --json') console.log(JSON.stringify(${JSON.s
   const entries = JSON.parse(await readFile(manifest, "utf8")).plugins;
   assert.equal(entries.length, 3);
   assert.deepEqual(
-    entries.find((entry) => entry.name === "watchdog"),
+    entries.find((entry: { name: string }) => entry.name === "watchdog"),
     other,
   );
-  const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
+  const calls = (await readFile(log, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
   for (const name of plugins) {
-    assert.equal(entries.filter((entry) => entry.name === name).length, 1);
+    assert.equal(entries.filter((entry: { name: string }) => entry.name === name).length, 1);
     assert.ok(
       calls.some(
         ({ args }) => args.join(" ") === `plugin uninstall --keep-data --scope user ${id(name)}`,
