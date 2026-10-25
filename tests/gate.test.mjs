@@ -756,11 +756,11 @@ test("model picker saves model then effort and preserves both across repeated se
   assert.equal(picker.value, "custom-model");
   assert.deepEqual(
     picker.options.map((o) => o.value),
-    ["inherit", "haiku", "sonnet", "opus", "custom-model"],
+    ["inherit", "haiku", "sonnet", "opus", "fable", "custom-model"],
   );
   assert.equal(h.events.setting, undefined);
-  await picker.onSelect("haiku");
-  assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerModel", value: "haiku" });
+  await picker.onSelect("fable");
+  assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerModel", value: "fable" });
   assert.equal(h.events.closed, true);
   assert.equal(h.events.pane.id, "reviewer-effort");
   const effort = await h.fire("ui.render", {
@@ -777,7 +777,7 @@ test("model picker saves model then effort and preserves both across repeated se
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerEffort", value: "high" });
   await h.prompt("request");
   await h.step();
-  assert.equal(h.events.models[0].request.model, "haiku");
+  assert.equal(h.events.models[0].request.model, "fable");
   assert.equal(h.events.models[0].request.effort, "high");
   await picker.onSelect("sonnet");
   await h.step();
