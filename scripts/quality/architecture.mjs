@@ -22,6 +22,7 @@ const api = new Set([
   "tool.list",
   "tool.call",
   "ui.status",
+  "ui.toast",
   "model.complete",
   "turn.abort",
 ]);
