@@ -71,6 +71,49 @@ npm run migrate
 個別の検査コマンドは [package.json](/package.json) を参照する。
 CI の共通検査には認証・モデル呼び出しを要求しない。
 
+## バージョンとリリース
+
+審査用・描画用の `plugins/*/.claude-plugin/plugin.json` の `version` を同じ番号で管理する。
+番号は `X.Y.Z` 形式とし、リリース PR で両方を更新する。
+ルートの package.json と marketplace にはバージョンを重複定義しない。
+
+[Release ワークフロー](/.github/workflows/release.yml) は毎日 03:17 JST の定期実行と手動実行に対応する。
+定期実行では、前回 GitHub Release の公開日時以降に main へマージされた PR から採番する。
+main への直接 push はこの判定の対象に含めない。
+
+| 対象 PR                                                                 | 採番・終了条件                                     |
+| ----------------------------------------------------------------------- | -------------------------------------------------- |
+| `feat:` を含む                                                          | minor を上げる                                     |
+| `fix / perf / refactor / chore / ci / docs / build / style / test` のみ | patch を上げる                                     |
+| `!` 付きタイトル、または本文に `BREAKING CHANGE:`                       | 停止し、手動で major または version を指定する     |
+| リリース PR を除いた対象がない                                          | 定期実行は正常終了でスキップ、手動の auto はエラー |
+| prefix を判定できない、API エラー、manifest の不備・バージョン不一致    | エラーで停止する                                   |
+
+公開済みの通常 Release がない場合、auto は manifest の現在の番号から patch を上げて初回を準備する。
+現在の `0.1.1` を起点とする初回は `0.1.2` になる。
+手動の version 指定時は、manifest の現在の番号より大きい値を使う。
+
+定期実行はリリース PR を作成し、自動マージを設定する。
+採番後の manifest をリポジトリの書式に整え、差分があれば同じリリース PR に追加してから自動マージを設定する。
+未マージの `release/vX.Y.Z` PR がある日は新しいリリースの準備をスキップする。
+手動で作ったリリース PR を、翌日の定期実行が自動マージの対象にすることもない。
+手動実行では version の直接指定、または auto / major / minor / patch を指定し、人が PR をマージする。
+手動実行で既存の定期リリース PR を更新する場合、自動マージの設定は GitHub 上で確認・解除する。
+準備処理は共通の concurrency グループで直列化する。
+
+[Publish Release ワークフロー](/.github/workflows/publish-release.yml) は、同一リポジトリのリリース PR が main へマージされた後に動く。
+マージコミットにタグ `vX.Y.Z` を付け、PR 本文をノートにした GitHub Release を公開する。
+成功したリリースのブランチは削除する。
+共通 Action はコミット SHA で固定し、更新時は入力・採番規則・公開対象を確認する。
+
+### GitHub 側の事前設定
+
+- repository secret の `GH_TOKEN` に、ブランチの push・PR 作成・ラベル作成・Release 公開が可能な PAT を登録する。
+  `GITHUB_TOKEN` に置き換えると後続の PR / マージイベントの CI が起動しないため、PAT を使う。
+- リポジトリの自動マージと squash merge を有効にする。
+- main の保護ルールで CI の `checks` を必須チェックにする。
+  自動マージを有効にするだけでは CI の成功待ちを保証できない。
+
 ## 実地検証
 
 Mods の動作に関わる変更後は静的検査・スタブテストだけで完了とせず、認証済み Claude Code と tmux で実地検証する。
