@@ -1,7 +1,5 @@
 export type CerberusRecovery = {
   sessionEnabled?: boolean;
-  picker?: "enabled-scope" | "reviewer-model" | "reviewer-effort";
-  pendingEnabled?: boolean;
   prompt: string;
   epoch: number;
   serial: number;

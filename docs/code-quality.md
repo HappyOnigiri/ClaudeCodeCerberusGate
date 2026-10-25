@@ -36,7 +36,7 @@
 描画用プラグインの `plugins/cerberus-gate-display/hooks/register.ts` は `claude-code` の型 import だけを許可し、実行時の依存とエンジン API の呼び出しは許可しない。
 生成型、テスト、検証スクリプト内の文字列 fixture は依存境界の検査対象外とする。
 
-許可する API は次の20種類とする。
+許可する API は次の21種類とする。
 
 - `agent.list/register/spawn`
 - `clock.now/after`
@@ -48,7 +48,7 @@
 - `session.messages/version`
 - `state.get/set`（自分の再ロード復元用の状態のみ）
 - `tool.list/call`
-- `ui.status/toast/invalidate/resolve`
+- `ui.status/toast/open/close/resolve`
 
 `state.get/set` の対象は `plugin: "cerberus-gate", key: "recovery"` に限定する。
 `tool.call` の静的な対象は `TaskStop`、エージェント登録・起動は既存のレビュアーだけに限定する。

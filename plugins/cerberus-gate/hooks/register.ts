@@ -36,12 +36,6 @@ let config: Config = readConfig({});
 let configured = true;
 let interactive = true;
 let pendingEnabled: boolean | undefined;
-let picker: "enabled-scope" | "reviewer-model" | "reviewer-effort" | undefined;
-async function showPicker($: EngineInterface, value: typeof picker): Promise<void> {
-  picker = value;
-  await saveRecovery($, gate);
-  $.ui.invalidate("ui.render");
-}
 const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
 const status = (): string =>
   `Cerberus Gate: ${enabled() ? "on" : "off"} (${gate.sessionEnabled === undefined ? "saved" : "session"}); ${gate.phase}; corrections=${gate.revisions}`;
@@ -58,18 +52,8 @@ const resultOf = (e: TurnStepInput, answer: string): TurnStepResult => ({
   usage: null,
 });
 
-async function saveRecovery(
-  $: EngineInterface,
-  state: GateState,
-  selection = { picker, pendingEnabled },
-): Promise<void> {
-  await $.state.set(
-    { plugin: "cerberus-gate", key: "recovery" },
-    {
-      ...snapshotRecovery(state),
-      ...selection,
-    },
-  );
+async function saveRecovery($: EngineInterface, state: GateState): Promise<void> {
+  await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, snapshotRecovery(state));
 }
 
 async function applyEnabled($: EngineInterface, desired: boolean | undefined, persist: boolean) {
@@ -478,7 +462,6 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
 export const register: Register = (on, options) => {
   gate.sessionEnabled = undefined;
   pendingEnabled = undefined;
-  picker = undefined;
   log.clear();
   configured = true;
   try {
@@ -493,10 +476,10 @@ export const register: Register = (on, options) => {
     log.record($.clock.now(), "Cerberus Gate を起動しました。");
     if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
     if (!interactive) log.record($.clock.now(), "非対話セッションは対象外です。");
-    const recovery = (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value;
-    const pending = restoreRecovery(gate, recovery);
-    picker = recovery?.picker;
-    pendingEnabled = recovery?.pendingEnabled;
+    const pending = restoreRecovery(
+      gate,
+      (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value,
+    );
     if (gate.prompt) log.record($.clock.now(), "再ロード前の依頼と修正回数を復元しました。");
     for (const agent of await $.agent.list()) {
       if (agent.type !== REVIEWER || agent.spawnedBy !== "cerberus-gate") continue;
@@ -529,16 +512,25 @@ export const register: Register = (on, options) => {
     const argument = e.args.trim();
     if (argument === "on" || argument === "off") {
       pendingEnabled = argument === "on";
-      await showPicker($, "enabled-scope");
+      await $.ui.open({
+        id: "enabled-scope",
+        title: "有効・無効の適用範囲",
+        focus: true,
+        closeOnEscape: true,
+      });
       return {};
     }
     if (argument === "reset") {
       pendingEnabled = undefined;
-      await showPicker($, undefined);
       return { text: (await applyEnabled($, undefined, false)).text };
     }
     if (argument === "model") {
-      await showPicker($, "reviewer-model");
+      await $.ui.open({
+        id: "reviewer-model",
+        title: "検査用モデル・effort",
+        focus: true,
+        closeOnEscape: true,
+      });
       return {};
     }
     if (argument === "log") return { text: await log.text() };
@@ -555,93 +547,87 @@ export const register: Register = (on, options) => {
     }
     return { text: status() };
   });
-  on("ui.render", { component: "AbovePrompt" }, ($, e, next) => {
-    if (picker === undefined || e.surface === "mobile" || e.props.hasSurvey) return next(e);
-    const { Box, Text, Select } = $.ui.resolve(e);
-    const renderSelect = (props: Parameters<typeof Select>[0]) => {
-      let cancelValue = "__cancel";
-      while (props.options.some((option) => option.value === cancelValue)) cancelValue += "_";
-      return Box({
-        flexDirection: "column",
-        children: [
-          Text({ children: "Ctrl+X → Tab で選択、↑↓ と Enter で決定。Esc で入力欄へ戻る。" }),
-          Select({
-            ...props,
-            options: [...props.options, { value: cancelValue, label: "キャンセル" }],
-            onSelect: async (value, event) => {
-              if (value === cancelValue) {
-                pendingEnabled = undefined;
-                await showPicker($, undefined);
-              } else return props.onSelect(value, event);
-            },
-          }),
-        ],
-      });
-    };
-    if (picker === "enabled-scope") {
-      const desired = pendingEnabled;
-      if (desired === undefined) return next(e);
-      return renderSelect({
-        key: `enabled-scope-${desired}`,
-        label: `回答検証を${desired ? "有効" : "無効"}にする範囲`,
-        options: [
-          { value: "session", label: "このセッションだけ" },
-          { value: "saved", label: "設定に保存（次回以降も適用）" },
-        ],
-        value: "session",
-        autoFocus: true,
-        onSelect: async (value) => {
-          if (pendingEnabled !== desired || (value !== "session" && value !== "saved")) return;
-          pendingEnabled = undefined;
-          await showPicker($, undefined);
-          const result = await applyEnabled($, desired, value === "saved");
-          $.ui.toast(result.text, { timeoutMs: 3000 });
-          if (!result.ok) {
-            pendingEnabled = desired;
-            await showPicker($, "enabled-scope");
-          }
-        },
+  on("ui.render", { component: "Pane", requestId: "enabled-scope" }, ($, e) => {
+    const desired = pendingEnabled;
+    if (e.surface === "mobile" || desired === undefined) {
+      const { Text } = $.ui.resolve(e);
+      return Text({
+        children: "ターミナルで /cgate on または /cgate off を実行して適用範囲を選んでください。",
       });
     }
-    if (picker === "reviewer-model") {
-      return renderSelect({
-        key: "reviewer-model",
-        label: "検査用モデル",
-        options: [
-          ...new Set(["inherit", "haiku", "sonnet", "opus", "fable", config.reviewerModel]),
-        ].map((value) => ({ value })),
-        value: config.reviewerModel,
-        autoFocus: true,
-        onSelect: async (value) => {
-          try {
-            await saveRecovery($, gate, { picker: "reviewer-effort", pendingEnabled: undefined });
-            const result = await $.config.set({ key: "cerberus-gate.reviewerModel", value });
-            if (result.deny !== undefined) {
-              await showPicker($, "reviewer-model");
-              $.ui.toast(`Cerberus Gate: モデルを保存できませんでした。${result.deny}`, {
-                timeoutMs: 3000,
-              });
-              return;
-            }
-            config = readConfig({
-              ...options,
-              enabled: config.enabled,
-              reviewerModel: result.value,
-              reviewerEffort: config.reviewerEffort,
-            });
-            $.ui.toast(`Cerberus Gate: 検査用モデルを ${config.reviewerModel} に設定しました。`, {
+    const { Select } = $.ui.resolve(e);
+    return Select({
+      key: `enabled-scope-${desired}`,
+      label: `回答検証を${desired ? "有効" : "無効"}にする範囲`,
+      options: [
+        { value: "session", label: "このセッションだけ" },
+        { value: "saved", label: "設定に保存（次回以降も適用）" },
+      ],
+      value: "session",
+      autoFocus: true,
+      onSelect: async (value) => {
+        if (pendingEnabled !== desired || (value !== "session" && value !== "saved")) return;
+        const result = await applyEnabled($, desired, value === "saved");
+        $.ui.toast(result.text, { timeoutMs: 3000 });
+        if (result.ok) {
+          pendingEnabled = undefined;
+          await $.ui.close({ id: "enabled-scope" });
+        }
+      },
+    });
+  });
+  on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
+    if (e.surface === "mobile") {
+      const { Text } = $.ui.resolve(e);
+      return Text({ children: "検査用モデル・effort は /config で変更してください。" });
+    }
+    const { Select } = $.ui.resolve(e);
+    return Select({
+      key: "reviewer-model",
+      label: "検査用モデル",
+      options: [
+        ...new Set(["inherit", "haiku", "sonnet", "opus", "fable", config.reviewerModel]),
+      ].map((value) => ({ value })),
+      value: config.reviewerModel,
+      autoFocus: true,
+      onSelect: async (value) => {
+        try {
+          const result = await $.config.set({ key: "cerberus-gate.reviewerModel", value });
+          if (result.deny !== undefined) {
+            $.ui.toast(`Cerberus Gate: モデルを保存できませんでした。${result.deny}`, {
               timeoutMs: 3000,
             });
-            await showPicker($, "reviewer-effort");
-          } catch {
-            await showPicker($, "reviewer-model");
-            $.ui.toast("Cerberus Gate: モデルを保存できませんでした。", { timeoutMs: 3000 });
+            return;
           }
-        },
-      });
+          config = readConfig({
+            ...options,
+            enabled: config.enabled,
+            reviewerModel: result.value,
+            reviewerEffort: config.reviewerEffort,
+          });
+          $.ui.toast(`Cerberus Gate: 検査用モデルを ${config.reviewerModel} に設定しました。`, {
+            timeoutMs: 3000,
+          });
+          await $.ui.close({ id: "reviewer-model" });
+          await $.ui.open({
+            id: "reviewer-effort",
+            title: "検査用 effort",
+            focus: true,
+            closeOnEscape: true,
+          });
+        } catch {
+          $.ui.toast("Cerberus Gate: モデルを保存できませんでした。", { timeoutMs: 3000 });
+        }
+      },
+    });
+  });
+  on("ui.render", { component: "Pane", requestId: "reviewer-effort" }, ($, e) => {
+    if (e.surface === "mobile") {
+      const { Text } = $.ui.resolve(e);
+      return Text({ children: "検査用 effort は /config で変更してください。" });
     }
-
-    return renderSelect({
+    const { Select } = $.ui.resolve(e);
+    return Select({
       key: "reviewer-effort",
       label: `検査用 effort（モデル: ${config.reviewerModel}）`,
       options: ["inherit", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value })),
@@ -649,10 +635,8 @@ export const register: Register = (on, options) => {
       autoFocus: true,
       onSelect: async (value) => {
         try {
-          await saveRecovery($, gate, { picker: undefined, pendingEnabled: undefined });
           const result = await $.config.set({ key: "cerberus-gate.reviewerEffort", value });
           if (result.deny !== undefined) {
-            await showPicker($, "reviewer-effort");
             $.ui.toast(`Cerberus Gate: effort を保存できませんでした。${result.deny}`, {
               timeoutMs: 3000,
             });
@@ -667,9 +651,8 @@ export const register: Register = (on, options) => {
           $.ui.toast(`Cerberus Gate: 検査用 effort を ${config.reviewerEffort} に設定しました。`, {
             timeoutMs: 3000,
           });
-          await showPicker($, undefined);
+          await $.ui.close({ id: "reviewer-effort" });
         } catch {
-          await showPicker($, "reviewer-effort");
           $.ui.toast("Cerberus Gate: effort を保存できませんでした。", { timeoutMs: 3000 });
         }
       },
@@ -699,7 +682,6 @@ export const register: Register = (on, options) => {
     reset(gate, "");
     gate.sessionEnabled = undefined;
     pendingEnabled = undefined;
-    await showPicker($, undefined);
     await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);
     return next(e);
   });

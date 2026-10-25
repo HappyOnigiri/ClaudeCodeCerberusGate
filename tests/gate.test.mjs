@@ -67,14 +67,14 @@ function harness(
       status(value) {
         events.statuses.push(value);
       },
-      invalidate: () => {
-        events.invalidated = true;
+      open: async (pane) => {
+        events.pane = pane;
+        return { isPlaced: true };
       },
-      resolve: () => ({
-        Box: (props) => props.children.at(-1),
-        Select: (props) => props,
-        Text: (props) => props,
-      }),
+      close: async () => {
+        events.closed = true;
+      },
+      resolve: () => ({ Select: (props) => props, Text: (props) => props }),
     },
     config: {
       set: async (setting) => {
@@ -751,32 +751,31 @@ test("reviewer model and effort inherit the answer step or use independent overr
 test("model picker saves model then effort and preserves both across repeated selections", async () => {
   const h = harness({ reviewerModel: "custom-model", reviewerEffort: "low" });
   await h.fire("command.run", { command: "cgate", args: "model" });
-  assert.equal(h.events.invalidated, true);
+  assert.equal(h.events.pane.id, "reviewer-model");
   const picker = await h.fire("ui.render", {
-    component: "AbovePrompt",
-    props: { hasSurvey: false },
+    component: "Pane",
     requestId: "reviewer-model",
     surface: "terminal",
   });
   assert.equal(picker.value, "custom-model");
   assert.deepEqual(
     picker.options.map((o) => o.value),
-    ["inherit", "haiku", "sonnet", "opus", "fable", "custom-model", "__cancel"],
+    ["inherit", "haiku", "sonnet", "opus", "fable", "custom-model"],
   );
   assert.equal(h.events.setting, undefined);
   await picker.onSelect("fable");
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerModel", value: "fable" });
-
+  assert.equal(h.events.closed, true);
+  assert.equal(h.events.pane.id, "reviewer-effort");
   const effort = await h.fire("ui.render", {
-    component: "AbovePrompt",
-    props: { hasSurvey: false },
+    component: "Pane",
     requestId: "reviewer-effort",
     surface: "terminal",
   });
   assert.equal(effort.value, "low");
   assert.deepEqual(
     effort.options.map((o) => o.value),
-    ["inherit", "low", "medium", "high", "xhigh", "max", "__cancel"],
+    ["inherit", "low", "medium", "high", "xhigh", "max"],
   );
   await effort.onSelect("high");
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerEffort", value: "high" });
@@ -801,23 +800,13 @@ test("a denied or failed model save preserves the previous reviewer model", asyn
       if (fails) throw new Error("save failed");
       return { deny: "locked" };
     };
-    await h.fire("command.run", { command: "cgate", args: "model" });
     const picker = await h.fire("ui.render", {
-      component: "AbovePrompt",
-      props: { hasSurvey: false },
+      component: "Pane",
       requestId: "reviewer-model",
       surface: "terminal",
     });
     await picker.onSelect("opus");
-    assert.ok(
-      (
-        await h.fire("ui.render", {
-          component: "AbovePrompt",
-          surface: "terminal",
-          props: { hasSurvey: false },
-        })
-      ).options,
-    );
+    assert.equal(h.events.closed, undefined);
     await h.prompt("request");
     await h.step();
     assert.equal(h.events.models[0].request.model, "haiku");
@@ -827,34 +816,24 @@ test("a denied or failed model save preserves the previous reviewer model", asyn
 test("a denied or failed effort save preserves the saved model and previous effort", async () => {
   for (const fails of [false, true]) {
     const h = harness({ reviewerEffort: "low" });
-    await h.fire("command.run", { command: "cgate", args: "model" });
     const model = await h.fire("ui.render", {
-      component: "AbovePrompt",
-      props: { hasSurvey: false },
+      component: "Pane",
       requestId: "reviewer-model",
       surface: "terminal",
     });
     await model.onSelect("sonnet");
+    h.events.closed = undefined;
     h.engine.config.set = async () => {
       if (fails) throw new Error("save failed");
       return { deny: "locked" };
     };
     const effort = await h.fire("ui.render", {
-      component: "AbovePrompt",
-      props: { hasSurvey: false },
+      component: "Pane",
       requestId: "reviewer-effort",
       surface: "terminal",
     });
     await effort.onSelect("high");
-    assert.ok(
-      (
-        await h.fire("ui.render", {
-          component: "AbovePrompt",
-          surface: "terminal",
-          props: { hasSurvey: false },
-        })
-      ).options,
-    );
+    assert.equal(h.events.closed, undefined);
     await h.prompt("request");
     await h.step();
     assert.equal(h.events.models[0].request.model, "sonnet");
@@ -869,10 +848,8 @@ test("temporary settings notifications leave a pending review status intact", as
   h.replies.push(() => pending.promise);
   const step = h.step();
   while (!h.events.models.length) await new Promise((r) => setImmediate(r));
-  await h.fire("command.run", { command: "cgate", args: "model" });
   const picker = await h.fire("ui.render", {
-    component: "AbovePrompt",
-    props: { hasSurvey: false },
+    component: "Pane",
     requestId: "reviewer-model",
     surface: "terminal",
   });
@@ -893,8 +870,7 @@ test("temporary settings notifications leave a pending review status intact", as
 async function chooseEnabled(h, argument, scope) {
   await h.fire("command.run", { command: "cgate", args: argument });
   const picker = await h.fire("ui.render", {
-    component: "AbovePrompt",
-    props: { hasSurvey: false },
+    component: "Pane",
     requestId: "enabled-scope",
     surface: "terminal",
   });
@@ -971,16 +947,15 @@ test("on and off only open the scope picker and removed flags do not change stat
   const h = harness();
   await h.fire("command.run", { command: "cgate", args: "off" });
   assert.equal(h.events.setting, undefined);
-  assert.equal(h.events.invalidated, true);
+  assert.equal(h.events.pane.id, "enabled-scope");
   const picker = await h.fire("ui.render", {
-    component: "AbovePrompt",
-    props: { hasSurvey: false },
+    component: "Pane",
     requestId: "enabled-scope",
     surface: "terminal",
   });
   assert.deepEqual(
     picker.options.map((o) => o.value),
-    ["session", "saved", "__cancel"],
+    ["session", "saved"],
   );
   assert.match((await h.fire("command.run", { command: "cgate", args: "" })).text, /on \(saved\)/u);
   assert.match(
@@ -988,68 +963,4 @@ test("on and off only open the scope picker and removed flags do not change stat
     /使い方/u,
   );
   assert.equal(h.events.setting, undefined);
-});
-
-test("bottom picker yields to surveys and cancellation preserves settings", async () => {
-  const h = harness();
-  const render = (hasSurvey = false) =>
-    h.fire("ui.render", { component: "AbovePrompt", surface: "terminal", props: { hasSurvey } });
-  assert.deepEqual(await render(), {});
-  for (const args of ["off", "model"]) {
-    await h.fire("command.run", { command: "cgate", args });
-    assert.deepEqual(await render(true), {});
-    const picker = await render();
-    await picker.onSelect("__cancel");
-    assert.deepEqual(await render(), {});
-    assert.equal(h.events.setting, undefined);
-  }
-});
-
-test("model save reload restores effort picker and effort save reload closes it", async () => {
-  const h = harness();
-  const render = (target) =>
-    target.fire("ui.render", {
-      component: "AbovePrompt",
-      surface: "terminal",
-      props: { hasSurvey: false },
-    });
-  await h.fire("command.run", { command: "cgate", args: "model" });
-  let next;
-  h.engine.config.set = async (setting) => {
-    next = await reload(h, { reviewerModel: setting.value });
-    return { value: setting.value };
-  };
-  await (await render(h)).onSelect("haiku");
-  assert.equal((await render(next)).key, "reviewer-effort");
-  let final;
-  next.engine.config.set = async (setting) => {
-    final = await reload(next, { reviewerModel: "haiku", reviewerEffort: setting.value });
-    return { value: setting.value };
-  };
-  await (await render(next)).onSelect("low");
-  assert.deepEqual(await render(final), {});
-});
-
-test("scope save reload closes the bottom picker without reopening it", async () => {
-  const h = harness();
-  await h.fire("command.run", { command: "cgate", args: "off" });
-  let next;
-  h.engine.config.set = async (setting) => {
-    next = await reload(h, { enabled: setting.value });
-    return { value: setting.value };
-  };
-  const render = (target) =>
-    target.fire("ui.render", {
-      component: "AbovePrompt",
-      surface: "terminal",
-      props: { hasSurvey: false },
-    });
-  await (await render(h)).onSelect("saved");
-  assert.deepEqual(await render(next), {});
-  const again = await reload(next, { enabled: false });
-  assert.deepEqual(await render(again), {});
-  assert.match(
-    (await again.fire("command.run", { command: "cgate", args: "" })).text,
-    /off \(saved\)/u,
-  );
 });
