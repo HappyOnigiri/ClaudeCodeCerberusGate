@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -247,7 +247,9 @@ for (const mode of cases) {
     "Grep",
     "Glob",
     "SubagentHandback",
-    ...(mode === "cli" ? ["Bash(git log:*)"] : []),
+    ...(mode === "cli"
+      ? ["Bash(git log:*)", "Bash(git -C " + (await realpath(work)) + " log:*)"]
+      : []),
     "--plugin-dir",
     plugin,
     "--plugin-dir",
