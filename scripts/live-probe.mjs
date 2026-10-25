@@ -318,11 +318,24 @@ for (const mode of cases) {
       if (after.includes(notice)) throw new Error("Temporary notice did not expire");
     }
     if (mode === "toggle") {
-      const checkCommand = async (command, expected) => {
+      const checkCommand = async (command, expected, scope) => {
         const before = tmux("capture-pane", "-p", "-t", session, "-S", "-1000").split(
           expected,
         ).length;
         await submit(session, command);
+        if (scope) {
+          const pickerDeadline = Date.now() + 10_000;
+          while (!tmux("capture-pane", "-p", "-t", session).includes("このセッションだけ")) {
+            if (Date.now() > pickerDeadline) throw new Error("Scope picker did not open");
+            await pause(250);
+          }
+          await writeFile(
+            join(artifacts, `scope-${scope}.txt`),
+            tmux("capture-pane", "-p", "-t", session),
+          );
+          if (scope === "saved") tmux("send-keys", "-t", session, "Down");
+          tmux("send-keys", "-t", session, "Enter");
+        }
         const until = Date.now() + 15_000;
         while (Date.now() < until) {
           const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
@@ -334,7 +347,7 @@ for (const mode of cases) {
         }
         throw new Error(`Command failed: ${command}`);
       };
-      await checkCommand("/cgate off", "off (saved)");
+      await checkCommand("/cgate off", "off (saved)", "saved");
       await pause(1500);
       const saved = JSON.parse(await readFile(settings, "utf8"));
       if (!Object.values(saved.pluginConfigs ?? {}).some((p) => p.options?.enabled === false))
@@ -347,12 +360,12 @@ for (const mode of cases) {
       }
       if ((await readdir(artifacts)).some((name) => /^review-/u.test(name)))
         throw new Error("Review ran while disabled");
-      await checkCommand("/cgate on --session", "on (session)");
+      await checkCommand("/cgate on", "on (session)", "session");
       const unchanged = JSON.parse(await readFile(settings, "utf8"));
       if (JSON.stringify(unchanged) !== JSON.stringify(saved))
         throw new Error("Session override changed settings");
-      await checkCommand("/cgate reset --session", "off (saved)");
-      await checkCommand("/cgate on", "on (saved)");
+      await checkCommand("/cgate reset", "off (saved)");
+      await checkCommand("/cgate on", "on (saved)", "saved");
       await pause(1500);
       const enabled = JSON.parse(await readFile(settings, "utf8"));
       if (!Object.values(enabled.pluginConfigs ?? {}).some((p) => p.options?.enabled === true))

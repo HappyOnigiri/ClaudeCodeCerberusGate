@@ -867,27 +867,38 @@ test("temporary settings notifications leave a pending review status intact", as
   assert.equal(h.events.statuses.at(-1), undefined);
 });
 
+async function chooseEnabled(h, argument, scope) {
+  await h.fire("command.run", { command: "cgate", args: argument });
+  const picker = await h.fire("ui.render", {
+    component: "Pane",
+    requestId: "enabled-scope",
+    surface: "terminal",
+  });
+  await picker.onSelect(scope);
+  return { text: h.events.toasts.at(-1).text };
+}
+
 test("enabled commands persist defaults and session overrides take precedence", async () => {
   const h = harness();
   await h.prompt("request");
   const command = (args) => h.fire("command.run", { command: "cgate", args });
-  assert.match((await command("off")).text, /off \(saved\)/u);
+  assert.match((await chooseEnabled(h, "off", "saved")).text, /off \(saved\)/u);
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.enabled", value: false });
   assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
   assert.equal(h.events.models.length, 0);
-  assert.match((await command("on --session")).text, /on \(session\)/u);
+  assert.match((await chooseEnabled(h, "on", "session")).text, /on \(session\)/u);
   await h.step();
   assert.equal(h.events.models.length, 1);
-  assert.match((await command("reset --session")).text, /off \(saved\)/u);
-  assert.match((await command("on")).text, /on \(saved\)/u);
-  assert.match((await command("off --session")).text, /off \(session\)/u);
+  assert.match((await command("reset")).text, /off \(saved\)/u);
+  assert.match((await chooseEnabled(h, "on", "saved")).text, /on \(saved\)/u);
+  assert.match((await chooseEnabled(h, "off", "session")).text, /off \(session\)/u);
   await h.fire("session.end", {});
   assert.match((await command("")).text, /on \(saved\)/u);
 });
 
 test("session override survives reload without changing saved settings", async () => {
   const h = harness({ enabled: false });
-  await h.fire("command.run", { command: "cgate", args: "on --session" });
+  await chooseEnabled(h, "on", "session");
   assert.equal(h.events.setting, undefined);
   const reloaded = await reload(h, { enabled: false });
   assert.match(
@@ -899,15 +910,12 @@ test("session override survives reload without changing saved settings", async (
 test("failed persistence preserves current enabled state and override", async () => {
   for (const result of [{ deny: "policy" }, { value: "false" }, new Error("failed")]) {
     const h = harness();
-    await h.fire("command.run", { command: "cgate", args: "off --session" });
+    await chooseEnabled(h, "off", "session");
     h.engine.config.set = async () => {
       if (result instanceof Error) throw result;
       return result;
     };
-    assert.match(
-      (await h.fire("command.run", { command: "cgate", args: "on" })).text,
-      /保存できません/u,
-    );
+    assert.match((await chooseEnabled(h, "on", "saved")).text, /保存できません/u);
     assert.match(
       (await h.fire("command.run", { command: "cgate", args: "" })).text,
       /off \(session\)/u,
@@ -922,10 +930,7 @@ test("disabling during review cancels the held answer and stale verdict", async 
   h.replies.push(() => held.promise);
   const running = h.step();
   await tick();
-  assert.match(
-    (await h.fire("command.run", { command: "cgate", args: "off --session" })).text,
-    /取り消しました/u,
-  );
+  assert.match((await chooseEnabled(h, "off", "session")).text, /取り消しました/u);
   held.resolve({ isAnswered: true, text: verdict("REVISE", ["private finding"]) });
   assert.equal((await running).text, "");
   await h.flushCorrections();
@@ -936,4 +941,26 @@ test("enabled configuration accepts only booleans", () => {
   assert.equal(readConfig({}).enabled, true);
   assert.equal(readConfig({ enabled: false }).enabled, false);
   assert.throws(() => readConfig({ enabled: "off" }), /Invalid enabled/u);
+});
+
+test("on and off only open the scope picker and removed flags do not change state", async () => {
+  const h = harness();
+  await h.fire("command.run", { command: "cgate", args: "off" });
+  assert.equal(h.events.setting, undefined);
+  assert.equal(h.events.pane.id, "enabled-scope");
+  const picker = await h.fire("ui.render", {
+    component: "Pane",
+    requestId: "enabled-scope",
+    surface: "terminal",
+  });
+  assert.deepEqual(
+    picker.options.map((o) => o.value),
+    ["session", "saved"],
+  );
+  assert.match((await h.fire("command.run", { command: "cgate", args: "" })).text, /on \(saved\)/u);
+  assert.match(
+    (await h.fire("command.run", { command: "cgate", args: "off --session" })).text,
+    /使い方/u,
+  );
+  assert.equal(h.events.setting, undefined);
 });
