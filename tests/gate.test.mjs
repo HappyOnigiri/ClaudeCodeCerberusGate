@@ -29,6 +29,7 @@ function harness(
   const events = {
     prompts: [],
     statuses: [],
+    toasts: [],
     calls: [],
     models: [],
     timers: [],
@@ -60,6 +61,9 @@ function harness(
   }, options);
   const engine = {
     ui: {
+      toast(text, toastOptions) {
+        events.toasts.push({ text, options: toastOptions });
+      },
       status(value) {
         events.statuses.push(value);
       },
@@ -835,4 +839,30 @@ test("a denied or failed effort save preserves the saved model and previous effo
     assert.equal(h.events.models[0].request.model, "sonnet");
     assert.equal(h.events.models[0].request.effort, "low");
   }
+});
+
+test("temporary settings notifications leave a pending review status intact", async () => {
+  const h = harness();
+  await h.prompt("request");
+  const pending = deferred();
+  h.replies.push(() => pending.promise);
+  const step = h.step();
+  while (!h.events.models.length) await new Promise((r) => setImmediate(r));
+  const picker = await h.fire("ui.render", {
+    component: "Pane",
+    requestId: "reviewer-model",
+    surface: "terminal",
+  });
+  await picker.onSelect("sonnet");
+  assert.equal(h.events.statuses.at(-1), WAITING);
+  assert.match(h.events.toasts.at(-1).text, /sonnet/);
+  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 3000);
+  h.engine.config.set = async () => ({ deny: "locked" });
+  await picker.onSelect("opus");
+  assert.equal(h.events.statuses.at(-1), WAITING);
+  assert.match(h.events.toasts.at(-1).text, /保存できませんでした/);
+  assert.equal(h.events.toasts.at(-1).options.timeoutMs, 3000);
+  pending.resolve({ isAnswered: true, text: verdict() });
+  await step;
+  assert.equal(h.events.statuses.at(-1), undefined);
 });

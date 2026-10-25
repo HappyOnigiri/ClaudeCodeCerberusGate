@@ -304,6 +304,14 @@ for (const mode of cases) {
       )
         throw new Error("Model and effort selections were not persisted to user settings");
       await writeFile(join(artifacts, "saved-settings.json"), JSON.stringify(saved, null, 2));
+      const notice = "Cerberus Gate: 検査用 effort を low に設定しました。";
+      const before = tmux("capture-pane", "-p", "-t", session);
+      await writeFile(join(artifacts, "notice-before.txt"), before);
+      if (!before.includes(notice)) throw new Error("Temporary notice was not displayed");
+      await pause(3500);
+      const after = tmux("capture-pane", "-p", "-t", session);
+      await writeFile(join(artifacts, "notice-after.txt"), after);
+      if (after.includes(notice)) throw new Error("Temporary notice did not expire");
     }
     await submit(
       session,
@@ -313,9 +321,18 @@ for (const mode of cases) {
     let cancelled = false;
     let passed = false;
     let latest = "";
+    let reviewingSince;
+    let persistentReview = false;
     while (Date.now() < deadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "screen.txt"), latest);
+      if (mode === "slow" && latest.includes("回答を検証中です。")) {
+        reviewingSince ??= Date.now();
+        if (Date.now() - reviewingSince > 3500) {
+          persistentReview = true;
+          await writeFile(join(artifacts, "persistent-review.txt"), latest);
+        }
+      }
       if (!reloaded && (await readdir(artifacts)).includes("reload-ready")) {
         await writeFile(join(artifacts, "reloaded"), "yes");
         if (mode === "reload-work") await writeFile(settings, reloadSettings(3));
@@ -527,6 +544,7 @@ for (const mode of cases) {
           throw new Error(`Reviewer did not use ${tool}`);
     }
     if (mode === "slow") {
+      if (!persistentReview) throw new Error("Review status did not persist beyond three seconds");
       const start = JSON.parse(await readFile(join(artifacts, "review-start-1.json"), "utf8"));
       const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
       if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");
