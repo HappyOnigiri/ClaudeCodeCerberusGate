@@ -7,7 +7,7 @@ MCP 接続固有の生成ファイルは含めない。
 対象バージョンを更新するときは、対話セッションで次を実行し、生成された同名ディレクトリをこの場所へ反映する。
 
 ```sh
-claude --model haiku --plugin-dir ./plugins/cerberus-gate
+claude --model haiku --plugin-dir ./plugins/cerberus-gate --plugin-dir ./plugins/cerberus-gate-display
 ```
 
 生成先は `plugins/cerberus-gate/.claude-plugin/types/`。

@@ -1,7 +1,7 @@
 {
   "name": "cerberus-gate",
   "displayName": "Cerberus Gate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Review final answers using session tools under instructions prohibiting side effects, and route corrections to the main agent.",
   "author": {
     "name": "HappyOnigiri"
@@ -51,5 +51,6 @@
       "required": false
     }
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "dependencies": ["cerberus-gate-display"]
 }

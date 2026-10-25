@@ -1,4 +1,5 @@
 import { verifyDebug } from "./live-debug.mjs";
+import { installLiveFixture } from "./live-installed.mjs";
 import { verifyMaterials } from "./live-materials.mjs";
 import { randomBytes } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
@@ -8,6 +9,13 @@ import { resolve, join } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 
 const root = process.cwd();
+const installedConfig = process.env.CERBERUS_INSTALLED_CONFIG;
+if (
+  installedConfig &&
+  (!process.argv.slice(2).length ||
+    process.argv.slice(2).some((mode) => !["pass", "revise"].includes(mode)))
+)
+  throw new Error("Installed verification supports pass and revise only");
 const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceAll(":", "-"));
 await mkdir(report, { recursive: true });
 const cases = process.argv.slice(2).length
@@ -142,7 +150,7 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
-  const configDir = join(work, "config");
+  const configDir = installedConfig || join(work, "config");
   const settings = join(configDir, "settings.json");
   const reloadSettings = (maxRevisions) =>
     JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
@@ -326,6 +334,9 @@ for (const mode of cases) {
     mode === "cli"
       ? execFileSync("git", ["-C", work, "rev-parse", "HEAD"], { encoding: "utf8" })
       : undefined;
+  const removeInstalledFixture = installedConfig
+    ? await installLiveFixture(configDir, work, mode)
+    : undefined;
   const session = `cerberus-${mode}-${process.pid}`;
   const args = [
     "claude",
@@ -341,15 +352,15 @@ for (const mode of cases) {
     ...(mode === "cli"
       ? ["Bash(git log:*)", "Bash(git -C " + (await realpath(work)) + " log:*)"]
       : []),
-    "--plugin-dir",
-    plugin,
-    "--plugin-dir",
-    display,
-    "--plugin-dir",
-    fixture,
+    ...(installedConfig ? [] : ["--plugin-dir", plugin, "--plugin-dir", display]),
+    ...(installedConfig ? [] : ["--plugin-dir", fixture]),
     ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
-    mode === "reload-work" || mode === "model" || mode === "toggle" || mode === "prompt"
+    installedConfig ||
+    mode === "reload-work" ||
+    mode === "model" ||
+    mode === "toggle" ||
+    mode === "prompt"
       ? "user,project,local"
       : "project,local",
     "--strict-mcp-config",
@@ -360,7 +371,13 @@ for (const mode of cases) {
     "--debug-file",
     join(artifacts, "debug.log"),
   ];
-  if (mode === "reload-work" || mode === "model" || mode === "toggle" || mode === "prompt")
+  if (
+    installedConfig ||
+    mode === "reload-work" ||
+    mode === "model" ||
+    mode === "toggle" ||
+    mode === "prompt"
+  )
     args.unshift(
       "env",
       `CLAUDE_CONFIG_DIR=${configDir}`,
@@ -913,7 +930,7 @@ for (const mode of cases) {
       const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
       if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");
     }
-    const debugReport = await verifyDebug(work, artifacts);
+    const debugReport = await verifyDebug(work, artifacts, installedConfig);
     await submit(session, "/cgate log");
     let debugScreen = "";
     const debugDeadline = Date.now() + 15_000;
@@ -948,6 +965,7 @@ for (const mode of cases) {
     process.exitCode = 1;
   } finally {
     if (started) tmux("kill-session", "-t", session);
+    removeInstalledFixture?.();
   }
 }
 await writeFile(
@@ -956,6 +974,7 @@ await writeFile(
     {
       claude: execFileSync("claude", ["--version"], { encoding: "utf8" }).trim(),
       model: "haiku",
+      installed: Boolean(installedConfig),
       cases: summary,
     },
     null,

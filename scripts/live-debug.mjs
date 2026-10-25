@@ -6,9 +6,11 @@ import { expand } from "../plugins/cerberus-gate/hooks/session-log.mjs";
 const jsonl = async (path) =>
   (await readFile(path, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
 // Select this disposable workspace's session using the independently recorded host cwd.
-export async function verifyDebug(work, artifacts) {
+export async function verifyDebug(work, artifacts, installedConfig) {
   const expected = await realpath(work);
-  const roots = [join(work, "config"), process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")];
+  const roots = installedConfig
+    ? [installedConfig]
+    : [join(work, "config"), process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")];
   const report = [];
   for (const config of roots) {
     const root = await realpath(join(config, "cerberus-gate/debug")).catch(() => undefined);

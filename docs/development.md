@@ -12,7 +12,7 @@ hook は worktree 共通の Git ディレクトリに置き、異なる既存 ho
 `core.hooksPath` は変更しない。
 設定済みなら、その hook から共通 Git ディレクトリへ処理を引き継ぐ必要がある。
 
-## 常用環境へのインストール
+## 開発版のインストール
 
 `make install` は未コミット変更を含む作業ツリーの審査・描画用プラグインを常用の Claude Code へ入れる。
 共有の marketplace と設定では、他のプラグインの項目を残す。
@@ -21,6 +21,38 @@ hook は worktree 共通の Git ディレクトリに置き、異なる既存 ho
 消える `/config` の設定値は事前に読み取り、元の型で復元する。
 `claude plugin configure --values-stdin` は複数行を拒否するため設定ファイルへ戻し、インストールが書いた他の設定も保持する。
 反映には Claude Code の再起動が必要。
+
+公開版が有効な環境では `make install` は変更前に停止する。
+開発時は README の `--plugin-dir` で両方を読み込む。
+
+## 公開版への移行
+
+通常の導入と更新は [README](/README.md#インストール) に従う。
+ルートの marketplace は `cerberus-gate`、従来の開発用は `happyonigiri-plugins` として共存する。
+公開版は審査用の `dependencies` により同じ marketplace の描画用を自動導入する。
+バージョンの正本は各プラグインの manifest とし、marketplace に重複定義しない。
+
+旧 `make install` 利用者は、すべての対話セッションを終了してから、更新したリポジトリで次を実行する。
+
+```sh
+npm run migrate
+```
+
+`CLAUDE_CONFIG_DIR` が設定されていれば、その環境だけを対象にする。
+旧版のユーザースコープの状態と設定を確認し、公開版と依存先を導入して設定を検証した後、旧版2つを無効化する。
+旧審査用が無効なら公開版も無効にする。
+審査設定の型と複数行を保持し、廃止済みの `readOnlyMcpTools`、保留原稿、セッションの復元状態は移さない。
+旧版の設定・データ、共有 marketplace、他のプラグインは残す。
+
+不正な設定 JSON、公開 marketplace の取得元の不一致、別スコープの対象プラグインを検出したら変更前に停止する。
+設定が衝突する場合はキーだけを表示するため、新旧の設定を確認してから再実行する。
+設定値や審査プロンプトはログに出さない。
+失敗時は今回変更した設定キーと有効状態を戻し、追加された公開版は無効で残す。
+復元に失敗した場合は表示された操作に従って公開版を無効化し、設定を確認してから再実行する。
+常用環境を変更するため、完了後は Claude Code を再起動する。
+
+隔離試験では `npm run migrate -- --marketplace-source <source>` でローカル Git リポジトリも指定できる。
+公開 GitHub からの導入は変更が公開先へ反映された後に、別の `CLAUDE_CONFIG_DIR` で README の2操作を確認する。
 
 ## 自動検査
 
@@ -58,3 +90,16 @@ CLI の実行成功は全 MCP 接続の検証を意味しない。
 詳細ログの検証では `/cgate log` の絶対パスを開き、開始・完了・失敗の操作 ID・入力・生応答を照合する。
 [live-debug.mjs](/scripts/live-debug.mjs) が索引から各インスタンス・審査資料を列挙し、順序・相関 ID・権限・資料内容を照合する。
 通常画面と `/cgate history` には依頼・原稿・生応答・例外詳細が出ないことを検査する。
+
+## 配布経路の実地検証
+
+```sh
+npm run test:distribution
+```
+
+一時 Git リポジトリをローカル marketplace として登録し、隔離した `CLAUDE_CONFIG_DIR` で依存先の自動導入、移行、再実行、更新後の設定保持を検証する。
+この試験はローカルディレクトリ経由であり、GitHub からの取得・更新は公開先反映後に別途確認する。
+使い捨ての設定ディレクトリは `tmp/distribution-report.json` の `config` に記録する。
+このパスを `CERBERUS_INSTALLED_CONFIG` に指定して `npm run test:live -- pass revise` を実行すると、インストール済みの2つを読み込み、合格・差し戻し・Ctrl+O を確認する。
+この指定では常用環境のパスを使わない。
+認証・導入案内に必要なアカウント情報だけを隔離設定へ複製し、認証ストレージは既存のものを参照する。

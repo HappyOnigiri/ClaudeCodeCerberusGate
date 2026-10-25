@@ -125,3 +125,29 @@ if (args.join(' ') === 'plugin list --json') console.log(JSON.stringify(${JSON.s
     options: { futureOption: "keep" },
   });
 });
+
+test("install refuses enabled public plugins before modifying the shared marketplace", async (t) => {
+  const work = await mkdtemp(join(tmpdir(), "cerberus-install-guard-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const config = join(work, "config");
+  const bin = join(work, "bin");
+  await mkdir(config);
+  await mkdir(bin);
+  const settingsPath = join(config, "settings.json");
+  const settings = JSON.stringify({ enabledPlugins: { "cerberus-gate@cerberus-gate": true } });
+  await writeFile(settingsPath, settings);
+  await writeFile(
+    join(bin, "claude"),
+    '#!/bin/sh\nif [ "$*" = "plugin list --json" ]; then echo \'[]\'; else exit 99; fi\n',
+    { mode: 0o755 },
+  );
+  const result = spawnSync(process.execPath, [resolve("scripts/install.mjs")], {
+    cwd: work,
+    env: { ...process.env, CLAUDE_CONFIG_DIR: config, PATH: `${bin}:${process.env.PATH}` },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--plugin-dir/);
+  assert.equal(await readFile(settingsPath, "utf8"), settings);
+  assert.deepEqual(await readdir(config), ["settings.json"]);
+});
