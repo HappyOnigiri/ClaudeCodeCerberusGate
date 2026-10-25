@@ -143,7 +143,7 @@ for (const mode of cases) {
    return result;
   });
   on('prompt.submit',async($,e,next)=>{
-   await $.fs.write(${JSON.stringify(artifacts)}+'/prompt-'+(++prompts)+'.json',JSON.stringify(e));return next(e);
+   const result=await next(e);await $.fs.write(${JSON.stringify(artifacts)}+'/prompt-'+(++prompts)+'.json',JSON.stringify({...e,context:result.context??e.context}));return result;
   });
   on('model.complete',async($,e,next)=>{
    const index=++review;
@@ -425,6 +425,7 @@ for (const mode of cases) {
     let latest = "";
     let reviewingSince;
     let persistentReview = false;
+    let completedAt;
     while (Date.now() < deadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "screen.txt"), latest);
@@ -482,8 +483,15 @@ for (const mode of cases) {
           ? latest.includes(cliToken) && /⏺\s*\{/u.test(latest)
           : /⏺\s+stable\b/u.test(latest))
       ) {
-        passed = true;
-        break;
+        // A reload may queue another continuation after an earlier stable answer.
+        // Observe an idle terminal before collecting the final control-prompt ledger.
+        if (mode !== "reload-review" || latest.includes("? for shortcuts")) {
+          completedAt ??= Date.now();
+          if (mode !== "reload-review" || Date.now() - completedAt >= 1500) {
+            passed = true;
+            break;
+          }
+        } else completedAt = undefined;
       }
       await pause(500);
     }
