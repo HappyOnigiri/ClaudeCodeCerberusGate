@@ -3,7 +3,9 @@
   "displayName": "Cerberus Gate",
   "version": "0.1.0",
   "description": "Review final answers before publication using a read-only agent, and route corrections back to the main agent.",
-  "author": { "name": "HappyOnigiri" },
+  "author": {
+    "name": "HappyOnigiri"
+  },
   "userConfig": {
     "reviewerModel": {
       "type": "string",
@@ -33,5 +35,6 @@
       "default": "",
       "required": false
     }
-  }
+  },
+  "types": "./types/index.d.ts"
 }

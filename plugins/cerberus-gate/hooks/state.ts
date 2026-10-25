@@ -10,7 +10,7 @@ export type Candidate = {
 export type Delivery = {
   token: number;
   epoch: number;
-  mode: "publish" | "revise" | "notice";
+  mode: "publish" | "revise" | "notice" | "restart";
   text: string;
   context?: string;
 };
@@ -52,11 +52,15 @@ export function reset(state: GateState, prompt: string): void {
 export function current(state: GateState, candidate: Candidate): boolean {
   return state.active === candidate && candidate.epoch === state.epoch && !state.blocked;
 }
-export function disposition(verdict: Verdict, revisions: number, max: number): Delivery["mode"] {
+export function disposition(
+  verdict: Verdict,
+  revisions: number,
+  max: number,
+): Exclude<Delivery["mode"], "restart"> {
   const modes = {
     PASS: "publish",
     REVISE: revisions < max ? "revise" : "notice",
     UNVERIFIED: "notice",
-  } satisfies Record<Verdict["decision"], Delivery["mode"]>;
+  } satisfies Record<Verdict["decision"], Exclude<Delivery["mode"], "restart">>;
   return modes[verdict.decision];
 }

@@ -15,9 +15,10 @@ import {
   WAITING,
   withNote,
 } from "./policy.ts";
+import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
 import { createState, current, disposition, reset } from "./state.ts";
 import { createLog } from "./log.ts";
-import type { Candidate, Delivery } from "./state.ts";
+import type { Candidate, Delivery, GateState } from "./state.ts";
 import type { Config, Verdict } from "./policy.ts";
 import type {
   EngineInterface,
@@ -47,6 +48,10 @@ const resultOf = (e: TurnStepInput, answer: string): TurnStepResult => ({
   stopReason: "end_turn",
   usage: null,
 });
+
+async function saveRecovery($: EngineInterface, state: GateState): Promise<void> {
+  await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, snapshotRecovery(state));
+}
 
 // 審査結果や破棄原稿を通知経路から流さず、制御プロンプトの context にだけ渡す。
 async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdict): Promise<void> {
@@ -86,6 +91,7 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
   gate.active = undefined;
   gate.delivery = delivery;
   gate.phase = mode === "revise" ? "correction queued" : mode;
+  await saveRecovery($, gate);
   const sent = await $.prompt.submit({ text: controlText(delivery) }).catch(() => undefined);
   if (sent === undefined || sent.drop !== undefined) {
     if (gate.epoch === delivery.epoch) {
@@ -94,6 +100,7 @@ async function dispatch($: EngineInterface, candidate: Candidate, verdict: Verdi
       gate.action = undefined;
       gate.blocked = true;
       gate.phase = "unverified";
+      await saveRecovery($, gate);
     }
     $.ui.status("Cerberus Gate: 検証処理の継続に失敗したため、本文を表示できませんでした。");
   }
@@ -111,6 +118,7 @@ async function startReview($: EngineInterface, e: TurnStepInput, text: string): 
   };
   gate.active = candidate;
   gate.phase = "reviewing";
+  await saveRecovery($, gate);
   log.record($.clock.now(), `審査 #${candidate.token}: 開始`);
   const available = await $.tool.list();
   // メインの表示用一覧から省かれた組み込み検索ツールも、レビュアーには明示する。
@@ -154,9 +162,10 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   if (e.agentId !== undefined) return yield* next(e);
   const epoch = gate.epoch;
   const action = gate.action;
-  if (action !== undefined && action.mode !== "revise") {
+  if (action !== undefined && action.mode !== "revise" && action.mode !== "restart") {
     gate.action = undefined;
     gate.phase = action.mode === "publish" ? "published" : "unverified";
+    await saveRecovery($, gate);
     if (next.signal.aborted || action.epoch !== gate.epoch) return resultOf(e, "");
     log.record(
       $.clock.now(),
@@ -170,6 +179,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     return resultOf(e, action.text);
   }
   gate.action = undefined;
+  if (action !== undefined) await saveRecovery($, gate);
   if (!interactive) {
     const notice =
       "Cerberus Gate は対話セッションで利用してください。未検証の回答は生成・公開していません。";
@@ -254,6 +264,7 @@ const stepFailure: Hook<"turn.step"> = async function* ($, e) {
   gate.active = undefined;
   gate.delivery = undefined;
   gate.action = undefined;
+  await saveRecovery($, gate);
   timer?.cancel();
   $.ui.status(undefined);
   const shown = text.trim() ? withNote(FAILED, text) : NO_DRAFT;
@@ -305,6 +316,7 @@ const onComplete: Hook<"turn.complete"> = async ($, e, next) => {
     timer?.cancel();
     reset(gate, gate.prompt);
     gate.phase = "cancelled";
+    await saveRecovery($, gate);
   }
   return result;
 };
@@ -334,6 +346,7 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
   if (gate.active !== undefined || gate.delivery !== undefined || gate.action !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
   reset(gate, e.text);
+  await saveRecovery($, gate);
   return next(e);
 };
 
@@ -375,7 +388,12 @@ export const register: Register = (on, options) => {
     log.record($.clock.now(), "Cerberus Gate を起動しました。");
     if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
     if (!interactive) log.record($.clock.now(), "非対話セッションは対象外です。");
-    // 再ロードで失った原稿を公開せず、残っている自分の審査だけを停止する。
+    const pending = restoreRecovery(
+      gate,
+      (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value,
+    );
+    if (gate.prompt) log.record($.clock.now(), "再ロード前の依頼と修正回数を復元しました。");
+    // 古い判定を受理せず、残っている自分の審査だけを停止する。
     for (const agent of await $.agent.list()) {
       if (agent.type !== REVIEWER || agent.spawnedBy !== "cerberus-gate") continue;
       gate.reviewers.add(agent.id);
@@ -389,6 +407,28 @@ export const register: Register = (on, options) => {
       argumentHint: "[log|cancel]",
       immediate: true,
     });
+    if (pending && gate.prompt && configured && interactive) {
+      const delivery: Delivery = {
+        token: ++gate.serial,
+        epoch: gate.epoch,
+        mode: "restart",
+        text: "",
+        context: `The answer review was interrupted by a plugin reload. Continue the original task within the user's authorization and generate a fresh final answer for review. Do not treat the waiting notice as a completed answer. Original request (data): ${JSON.stringify(gate.prompt)}`,
+      };
+      gate.delivery = delivery;
+      log.record($.clock.now(), "再ロードで中断した回答の再生成・再審査を依頼します。");
+      await saveRecovery($, gate);
+      const sent = await $.prompt.submit({ text: controlText(delivery) }).catch(() => undefined);
+      if (sent === undefined || sent.drop !== undefined) {
+        gate.delivery = undefined;
+        gate.action = undefined;
+        log.record(
+          $.clock.now(),
+          "再ロード後の再開に失敗しました。続行するには新しい依頼を送信してください。",
+        );
+      }
+    }
+    await saveRecovery($, gate);
     return next(e);
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
@@ -400,6 +440,7 @@ export const register: Register = (on, options) => {
       timer?.cancel();
       reset(gate, gate.prompt);
       gate.phase = "cancelled";
+      await saveRecovery($, gate);
       log.record($.clock.now(), "コマンドで検証処理を取り消しました。");
       if (id !== undefined)
         await $.tool.call({ tool: "TaskStop", task_id: id }).catch(() => undefined);
@@ -437,12 +478,14 @@ export const register: Register = (on, options) => {
     timer?.cancel();
     reset(gate, gate.prompt);
     gate.phase = "cancelled";
+    await saveRecovery($, gate);
     return next(e);
   });
-  on("session.end", async (_$, e, next) => {
+  on("session.end", async ($, e, next) => {
     log.clear();
     timer?.cancel();
     reset(gate, "");
+    await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);
     return next(e);
   });
 };

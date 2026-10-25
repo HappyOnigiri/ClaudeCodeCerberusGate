@@ -13,6 +13,8 @@ const api = new Set([
   "prompt.submit",
   "session.messages",
   "session.version",
+  "state.get",
+  "state.set",
   "tool.list",
   "tool.call",
   "ui.status",
@@ -154,6 +156,20 @@ function inspectMember(n, parent, { privileged, literal, report }) {
     if (!privileged || !api.has(name) || parent?.type !== "CallExpression" || parent.callee !== n) {
       report(n, "mods-api", `forbidden or indirect API reference ${parts.join(".")}`);
       return;
+    }
+    if (name === "state.get" || name === "state.set") {
+      const argument = parent.arguments[0];
+      const properties = argument?.type === "ObjectExpression" ? argument.properties : [];
+      const expected = { plugin: "cerberus-gate", key: "recovery" };
+      if (
+        properties.length !== 2 ||
+        properties.some((p) => p.type !== "Property" || p.computed) ||
+        Object.entries(expected).some(([key, value]) => {
+          const fields = properties.filter((p) => (p.key?.name ?? p.key?.value) === key);
+          return fields.length !== 1 || literal(fields[0]?.value) !== value;
+        })
+      )
+        report(n, "mods-api-target", `${name} requires the cerberus-gate recovery state`);
     }
     if (["tool.call", "agent.register", "agent.spawn"].includes(name)) {
       const argument = parent.arguments[0];

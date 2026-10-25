@@ -10,16 +10,29 @@ import {
   withNote,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
-function harness(options = {}, version = "2.1.310") {
+function harness(
+  options = {},
+  version = "2.1.310",
+  host = { states: new Map(), reviewers: [], counter: 0 },
+  registerHook = register,
+) {
   const handlers = new Map();
-  const events = { prompts: [], calls: [], inputs: [], agents: [], timers: [], commands: [] };
-  let counter = 0;
+  const events = {
+    prompts: [],
+    calls: [],
+    inputs: [],
+    agents: [],
+    timers: [],
+    commands: [],
+    spawns: [],
+  };
+
   let draft = "UNPUBLISHED DRAFT";
   const matches = (m, e) =>
     Object.entries(m).every(([k, v]) =>
       v instanceof RegExp ? typeof e[k] === "string" && v.test(e[k]) : v === e[k],
     );
-  register((name, ...args) => {
+  registerHook((name, ...args) => {
     const [matcher, handler] = args.length === 1 ? [{}, args[0]] : args;
     const entry = { matcher, handler };
     handlers.set(name, [...(handlers.get(name) ?? []), entry]);
@@ -31,6 +44,13 @@ function harness(options = {}, version = "2.1.310") {
   }, options);
   const engine = {
     ui: { status() {} },
+    state: {
+      get: async (ref) => ({ value: structuredClone(host.states.get(ref.key)) }),
+      set: async (ref, value) => {
+        host.states.set(ref.key, structuredClone(value));
+        return { isSet: true, version: 1 };
+      },
+    },
     command: {
       register: async (spec) => {
         events.commands.push(spec);
@@ -51,7 +71,7 @@ function harness(options = {}, version = "2.1.310") {
       call: async (e) => fire("tool.call", e),
     },
     agent: {
-      list: async () => [],
+      list: async () => host.reviewers,
       register: async (e) => {
         events.agents.push(e);
       },
@@ -85,7 +105,17 @@ function harness(options = {}, version = "2.1.310") {
     },
   };
   const core = async (name, e) => {
-    if (name === "agent.spawn") return { model: "haiku", agentId: `review-${++counter}` };
+    if (name === "agent.spawn") {
+      events.spawns.push(e);
+      const agentId = `review-${++host.counter}`;
+      host.reviewers.push({
+        id: agentId,
+        type: "cerberus-gate:reviewer",
+        spawnedBy: "cerberus-gate",
+        status: "running",
+      });
+      return { model: "haiku", agentId };
+    }
     if (name === "prompt.submit") return { text: e.text, context: e.context };
     if (name === "turn.complete") return { text: e.answer };
     if (name === "tool.check") return { decision: "allow" };
@@ -183,7 +213,7 @@ function harness(options = {}, version = "2.1.310") {
   const prompt = (text) =>
     fire("prompt.submit", { text, origin: { kind: "composer" }, wait: false });
   const finish = async (decision = "PASS", findings = []) => {
-    const agentId = `review-${counter}`;
+    const agentId = `review-${host.counter}`;
     await step({ agentId, text: JSON.stringify({ decision, findings }) });
     await fire("turn.complete", {
       agentId,
@@ -196,6 +226,8 @@ function harness(options = {}, version = "2.1.310") {
   };
   return {
     events,
+    host,
+    engine,
     step,
     fire,
     prompt,
@@ -417,4 +449,119 @@ test("cgate reports timeout and errors; unknown arguments are harmless and cerbe
     (await h.fire("command.run", { command: "cerberus", args: "cancel" })).text,
     /cancelled/u,
   );
+});
+
+let reloadSerial = 0;
+async function reload(h) {
+  const fresh = await import(`../plugins/cerberus-gate/hooks/register.ts?reload=${++reloadSerial}`);
+  const next = harness({}, "2.1.310", h.host, fresh.register);
+  await next.fire("session.start", { isInteractive: true });
+  return next;
+}
+
+test("reload during work retains the request and reviews the next answer", async () => {
+  const h = harness();
+  await h.prompt("original request");
+  await h.step({ tools: [{ name: "Read" }] });
+  const next = await reload(h);
+  assert.equal(next.events.prompts.length, 0);
+  assert.equal((await next.step()).text, WAITING);
+  assert.equal(JSON.parse(next.events.spawns[0].prompt).request, "original request");
+  await next.finish();
+  assert.equal((await next.step()).text, "UNPUBLISHED DRAFT");
+  assert.equal(next.host.states.get("recovery").pending, false);
+});
+
+test("reload during review stops old reviewers and regenerates without restoring drafts", async () => {
+  const h = harness();
+  await h.prompt("original request");
+  await h.step({ text: "PRIVATE OLD DRAFT" });
+  const saved = h.host.states.get("recovery");
+  const oldControl = `Cerberus Gate: 検証処理を継続します。 [${saved.epoch}-${saved.serial}]`;
+  const next = await reload(h);
+  assert.deepEqual(next.events.calls, ["TaskStop"]);
+  assert.equal(next.events.prompts.length, 1);
+  assert.match(next.events.prompts[0].context[0], /original request/u);
+  assert.doesNotMatch(JSON.stringify(next.host.states.get("recovery")), /PRIVATE OLD DRAFT/u);
+  assert.ok(
+    (
+      await next.fire("prompt.submit", {
+        text: oldControl,
+        origin: { kind: "plugin", name: "cerberus-gate" },
+      })
+    ).drop,
+  );
+  await next.fire("turn.complete", { agentId: "review-1", reason: "answer" });
+  assert.equal(next.events.prompts.length, 1);
+  assert.ok((await next.fire("tool.call", { agentId: "review-1", tool: "Read" })).deny);
+  assert.equal((await next.step({ text: "FRESH DRAFT" })).text, WAITING);
+  await next.finish();
+  assert.equal((await next.step()).text, "FRESH DRAFT");
+});
+
+test("reload preserves correction limits and invalidates a queued publication", async () => {
+  const h = harness({ maxRevisions: 2 });
+  await h.prompt("request");
+  await h.step();
+  await h.finish("REVISE", ["private finding"]);
+  const next = await reload(h);
+  assert.equal(next.host.states.get("recovery").revisions, 1);
+  assert.doesNotMatch(
+    JSON.stringify(next.host.states.get("recovery")),
+    /private finding|UNPUBLISHED DRAFT/u,
+  );
+  await next.step();
+  await next.finish();
+  // PASS has queued publication but no turn.step has delivered it yet.
+  const again = await reload(next);
+  assert.equal(again.events.prompts.length, 1);
+  assert.equal((await again.step({ text: "REGENERATED" })).text, WAITING);
+  await again.finish("REVISE", ["still wrong"]);
+  await again.step({ text: "CORRECTED" });
+  await again.finish("REVISE", ["still wrong"]);
+  assert.match((await again.step()).text, /修正回数の上限/u);
+});
+
+test("cancel, interruption, and session end cannot restart an old review after reload", async () => {
+  for (const event of ["cancel", "turn.abort", "session.end"]) {
+    const h = harness();
+    await h.prompt("request");
+    await h.step();
+    if (event === "cancel") await h.fire("command.run", { command: "cgate", args: "cancel" });
+    else await h.fire(event, {});
+    const next = await reload(h);
+    assert.equal(next.events.prompts.length, 0);
+    if (event === "session.end") assert.equal(next.host.states.get("recovery").prompt, "");
+  }
+});
+
+test("a new user request supersedes a queued reload restart", async () => {
+  const h = harness();
+  await h.prompt("old request");
+  await h.step();
+  const next = await reload(h);
+  await next.prompt("new request");
+  await next.step({ text: "new answer" });
+  assert.equal(JSON.parse(next.events.spawns[0].prompt).request, "new request");
+  await next.finish();
+  assert.equal((await next.step()).text, "new answer");
+});
+
+test("failed reload resumption is logged and does not leave a pending gate", async () => {
+  const h = harness();
+  await h.prompt("request");
+  await h.step();
+  const fresh = await import(`../plugins/cerberus-gate/hooks/register.ts?reload=${++reloadSerial}`);
+  const next = harness({}, "2.1.310", h.host, fresh.register);
+  next.engine.prompt.submit = async () => {
+    throw new Error("unavailable");
+  };
+  await next.fire("session.start", { isInteractive: true });
+  assert.equal(next.host.states.get("recovery").pending, false);
+  assert.match(
+    (await next.fire("command.run", { command: "cgate", args: "log" })).text,
+    /再開に失敗/u,
+  );
+  await next.prompt("continue");
+  assert.equal((await next.step()).text, WAITING);
 });

@@ -1,6 +1,6 @@
 import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 
@@ -9,7 +9,7 @@ const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceA
 await mkdir(report, { recursive: true });
 const cases = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["pass", "search", "revise", "unverified", "cancel"];
+  : ["pass", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"];
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -28,7 +28,11 @@ const submit = async (session, text) => {
 };
 const summary = [];
 for (const mode of cases) {
-  if (!["pass", "search", "revise", "unverified", "cancel"].includes(mode))
+  if (
+    !["pass", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"].includes(
+      mode,
+    )
+  )
     throw new Error(`Unknown case ${mode}`);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
@@ -38,6 +42,24 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
+  const configDir = join(work, "config");
+  const settings = join(configDir, "settings.json");
+  const reloadSettings = (maxRevisions) =>
+    JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
+  if (mode === "reload-work") {
+    await mkdir(configDir);
+    const accountPath = process.env.CLAUDE_CONFIG_DIR
+      ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
+      : join(homedir(), ".claude.json");
+    const original = JSON.parse(await readFile(accountPath, "utf8"));
+    const account = Object.fromEntries(
+      ["oauthAccount", "hasCompletedOnboarding", "lastOnboardingVersion", "theme"]
+        .filter((key) => original[key] !== undefined)
+        .map((key) => [key, original[key]]),
+    );
+    await writeFile(join(configDir, ".claude.json"), JSON.stringify(account));
+    await writeFile(settings, reloadSettings(2));
+  }
   const fixture = join(work, "fixture");
   await mkdir(join(fixture, ".claude-plugin"), { recursive: true });
   await mkdir(join(fixture, "hooks"));
@@ -61,6 +83,10 @@ for (const mode of cases) {
  export const register=on=>{
   on('agent.spawn',async($,e,next)=>next(${JSON.stringify(mode)}==='search' ? {...e,prompt:e.prompt+'\\nBefore deciding, use Glob to find **/fact.txt and Grep to search for stable in fact.txt. Both searches are required evidence.'} : e));
   on('turn.step',async function*($,e,next){
+   if(e.agentId && ${JSON.stringify(mode)}==='reload-review' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
+    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','review');
+    await $.clock.sleep(12000);
+   }
    if(!e.agentId && first && ${JSON.stringify(mode)}==='revise'){
     first=false;
     const text='The release channel is beta. CERBERUS_REJECTED_DRAFT';
@@ -75,6 +101,14 @@ for (const mode of cases) {
    const stream=next(e);const pieces=[];for await(const c of stream){pieces.push(c);yield c;}
    const result=await stream.result;
    await $.fs.write(${JSON.stringify(artifacts)}+'/step-'+(e.agentId??'main')+'-'+e.turnId+'-'+e.index+'.json',JSON.stringify({event:e,result,pieces}));
+   return result;
+  });
+  on('tool.call',{tool:'Read'},async($,e,next)=>{
+   const result=await next(e);
+   if(!e.agentId && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
+    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');
+    await $.clock.sleep(7000);
+   }
    return result;
   });
   on('turn.complete',async($,e,next)=>{
@@ -104,7 +138,7 @@ for (const mode of cases) {
     "--plugin-dir",
     fixture,
     "--setting-sources",
-    "project,local",
+    mode === "reload-work" ? "user,project,local" : "project,local",
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
@@ -113,6 +147,12 @@ for (const mode of cases) {
     "--debug-file",
     join(artifacts, "debug.log"),
   ];
+  if (mode === "reload-work")
+    args.unshift(
+      "env",
+      `CLAUDE_CONFIG_DIR=${configDir}`,
+      `CLAUDE_SECURESTORAGE_CONFIG_DIR=${process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? ""}`,
+    );
   let started = false;
   try {
     tmux(
@@ -150,12 +190,22 @@ for (const mode of cases) {
       session,
       "Read fact.txt and reply with exactly the release channel, with no other text.",
     );
+    let reloaded = false;
     let cancelled = false;
     let passed = false;
     let latest = "";
     while (Date.now() < deadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "screen.txt"), latest);
+      if (!reloaded && (await readdir(artifacts)).includes("reload-ready")) {
+        await writeFile(join(artifacts, "reloaded"), "yes");
+        if (mode === "reload-work") await writeFile(settings, reloadSettings(3));
+        else {
+          const module = join(plugin, "hooks/register.ts");
+          await writeFile(module, (await readFile(module, "utf8")) + "\n// live reload probe\n");
+        }
+        reloaded = true;
+      }
       if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
         throw new Error("Private draft or verdict leaked to the TUI");
       if (/\berror\b|hook skipped|hook failed/iu.test(latest)) throw new Error("Hook error in TUI");
@@ -190,7 +240,7 @@ for (const mode of cases) {
         break;
       }
       if (
-        (mode === "pass" || mode === "search" || mode === "revise") &&
+        (mode === "pass" || mode === "search" || mode === "revise" || mode.startsWith("reload-")) &&
         /⏺\s+stable\b/u.test(latest)
       ) {
         passed = true;
@@ -210,6 +260,8 @@ for (const mode of cases) {
         revise: "修正を依頼しました",
         unverified: "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
+        "reload-work": "検証済みの本文を公開しました。",
+        "reload-review": "検証済みの本文を公開しました。",
       }[mode];
       if (latest.includes("このセッションのログ（時刻は UTC）") && latest.includes(expected)) {
         logSeen = true;
@@ -219,6 +271,20 @@ for (const mode of cases) {
     }
     await writeFile(join(artifacts, "log-screen.txt"), latest);
     if (!logSeen) throw new Error("Expected session log not observed");
+    if (mode.startsWith("reload-")) {
+      if (!reloaded || !latest.includes("再ロード前の依頼と修正回数を復元しました。"))
+        throw new Error("Reload recovery not observed");
+      if (
+        mode === "reload-review" &&
+        !latest.includes("再ロードで中断した回答の再生成・再審査を依頼します。")
+      )
+        throw new Error("Interrupted review did not restart");
+      if (
+        mode === "reload-work" &&
+        latest.includes("再ロードで中断した回答の再生成・再審査を依頼します。")
+      )
+        throw new Error("Work reload happened after review started");
+    }
     if (!/\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]/u.test(latest))
       throw new Error("UTC timestamp not observed in session log");
     if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
