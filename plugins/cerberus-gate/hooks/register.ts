@@ -35,6 +35,10 @@ const log = createLog();
 let config: Config = readConfig({});
 let configured = true;
 let interactive = true;
+let pendingEnabled: boolean | undefined;
+const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
+const status = (): string =>
+  `Cerberus Gate: ${enabled() ? "on" : "off"} (${gate.sessionEnabled === undefined ? "saved" : "session"}); ${gate.phase}; corrections=${gate.revisions}`;
 let buffered = { key: "", text: "" };
 const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
 const controlText = (delivery: Delivery): string =>
@@ -50,6 +54,42 @@ const resultOf = (e: TurnStepInput, answer: string): TurnStepResult => ({
 
 async function saveRecovery($: EngineInterface, state: GateState): Promise<void> {
   await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, snapshotRecovery(state));
+}
+
+async function applyEnabled($: EngineInterface, desired: boolean | undefined, persist: boolean) {
+  if (persist) {
+    try {
+      const result = await $.config.set({
+        key: "cerberus-gate.enabled",
+        value: desired ?? config.enabled,
+      });
+      if (result.deny !== undefined || typeof result.value !== "boolean")
+        return { ok: false, text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
+      config = { ...config, enabled: result.value };
+      gate.sessionEnabled = undefined;
+    } catch {
+      return { ok: false, text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
+    }
+  } else gate.sessionEnabled = desired;
+  const turnId = gate.active?.turnId;
+  const pending =
+    gate.active !== undefined || gate.delivery !== undefined || gate.action !== undefined;
+  if (!enabled() && pending) {
+    reset(gate, gate.prompt);
+    gate.phase = "cancelled";
+    $.ui.status(undefined);
+  }
+  await saveRecovery($, gate);
+  log.record($.clock.now(), status());
+  if (!enabled() && turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
+  return {
+    ok: true,
+    text:
+      status() +
+      (!enabled() && pending
+        ? " 保留中の回答を取り消しました。新しい依頼を送信してください。"
+        : ""),
+  };
 }
 
 // Submission is deferred so it cannot wait on the turn holding the unpublished answer.
@@ -263,6 +303,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     gate.action = undefined;
     await saveRecovery($, gate);
   }
+  if (!enabled()) return yield* next(e);
   if (!interactive) {
     const text =
       "Cerberus Gate は対話セッションで利用してください。未検証の回答は生成・公開していません。";
@@ -292,7 +333,12 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     .filter((c) => c.kind === "text")
     .map((c) => c.text)
     .join("");
-  if (response.toolUses.length > 0 || chunks.some((c) => c.kind === "tool") || !text.trim()) {
+  if (
+    !enabled() ||
+    response.toolUses.length > 0 ||
+    chunks.some((c) => c.kind === "tool") ||
+    !text.trim()
+  ) {
     buffered.text = "";
     yield* chunks;
     return response;
@@ -414,6 +460,8 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
 };
 
 export const register: Register = (on, options) => {
+  gate.sessionEnabled = undefined;
+  pendingEnabled = undefined;
   log.clear();
   configured = true;
   try {
@@ -443,10 +491,10 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: "cgate",
       description: "Cerberus Gate の状態・セッションログを表示",
-      argumentHint: "[model|log|cancel]",
+      argumentHint: "[on|off|reset|model|log|cancel]",
       immediate: true,
     });
-    if (pending && gate.prompt && configured && interactive) {
+    if (pending && gate.prompt && configured && interactive && enabled()) {
       const delivery: Delivery = {
         token: ++gate.serial,
         epoch: gate.epoch,
@@ -462,6 +510,20 @@ export const register: Register = (on, options) => {
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
     const argument = e.args.trim();
+    if (argument === "on" || argument === "off") {
+      pendingEnabled = argument === "on";
+      await $.ui.open({
+        id: "enabled-scope",
+        title: "有効・無効の適用範囲",
+        focus: true,
+        closeOnEscape: true,
+      });
+      return {};
+    }
+    if (argument === "reset") {
+      pendingEnabled = undefined;
+      return { text: (await applyEnabled($, undefined, false)).text };
+    }
     if (argument === "model") {
       await $.ui.open({
         id: "reviewer-model",
@@ -473,7 +535,7 @@ export const register: Register = (on, options) => {
     }
     if (argument === "log") return { text: await log.text() };
     if (argument !== "" && argument !== "cancel")
-      return { text: "使い方: /cgate [model|log|cancel]" };
+      return { text: "使い方: /cgate [on|off|reset|model|log|cancel]" };
     if (argument === "cancel") {
       const turnId = gate.active?.turnId;
       reset(gate, gate.prompt);
@@ -483,7 +545,36 @@ export const register: Register = (on, options) => {
       log.record($.clock.now(), "コマンドで検証処理を取り消しました。");
       if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
     }
-    return { text: `Cerberus Gate: ${gate.phase}; corrections=${gate.revisions}` };
+    return { text: status() };
+  });
+  on("ui.render", { component: "Pane", requestId: "enabled-scope" }, ($, e) => {
+    const desired = pendingEnabled;
+    if (e.surface === "mobile" || desired === undefined) {
+      const { Text } = $.ui.resolve(e);
+      return Text({
+        children: "ターミナルで /cgate on または /cgate off を実行して適用範囲を選んでください。",
+      });
+    }
+    const { Select } = $.ui.resolve(e);
+    return Select({
+      key: `enabled-scope-${desired}`,
+      label: `回答検証を${desired ? "有効" : "無効"}にする範囲`,
+      options: [
+        { value: "session", label: "このセッションだけ" },
+        { value: "saved", label: "設定に保存（次回以降も適用）" },
+      ],
+      value: "session",
+      autoFocus: true,
+      onSelect: async (value) => {
+        if (pendingEnabled !== desired || (value !== "session" && value !== "saved")) return;
+        const result = await applyEnabled($, desired, value === "saved");
+        $.ui.toast(result.text, { timeoutMs: 3000 });
+        if (result.ok) {
+          pendingEnabled = undefined;
+          await $.ui.close({ id: "enabled-scope" });
+        }
+      },
+    });
   });
   on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
     if (e.surface === "mobile") {
@@ -510,6 +601,7 @@ export const register: Register = (on, options) => {
           }
           config = readConfig({
             ...options,
+            enabled: config.enabled,
             reviewerModel: result.value,
             reviewerEffort: config.reviewerEffort,
           });
@@ -552,6 +644,7 @@ export const register: Register = (on, options) => {
           }
           config = readConfig({
             ...options,
+            enabled: config.enabled,
             reviewerModel: config.reviewerModel,
             reviewerEffort: result.value,
           });
@@ -587,6 +680,8 @@ export const register: Register = (on, options) => {
   on("session.end", async ($, e, next) => {
     log.clear();
     reset(gate, "");
+    gate.sessionEnabled = undefined;
+    pendingEnabled = undefined;
     await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);
     return next(e);
   });

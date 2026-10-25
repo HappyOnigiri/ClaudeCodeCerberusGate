@@ -1,4 +1,5 @@
 export type CerberusRecovery = {
+  sessionEnabled?: boolean;
   prompt: string;
   epoch: number;
   serial: number;

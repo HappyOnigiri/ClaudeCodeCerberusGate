@@ -26,6 +26,7 @@ type Phase =
 
 export function createState() {
   return {
+    sessionEnabled: undefined as boolean | undefined,
     epoch: 0,
     serial: 0,
     revisions: 0,
