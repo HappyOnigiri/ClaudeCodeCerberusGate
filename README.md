@@ -27,7 +27,10 @@ claude --plugin-dir "$PWD/plugins/cerberus-gate"
 検証を完了できなかった回答は、未検証である旨の注記を付けて本文をそのまま表示する。
 
 `/cgate model` で検査用モデルの選択 UI を開き、`inherit`・`haiku`・`sonnet`・`opus` から選べる。
-現在の設定がモデル ID の場合は、その値も選択肢に表示する。Esc で変更せず閉じる。
+現在の設定がモデル ID の場合は、その値も選択肢に表示する。
+モデルを選ぶと保存され、続いて effort（`inherit`・`low`・`medium`・`high`・`xhigh`・`max`）を選べる。
+現在のモデルを選び直せば effort だけ変更できる。
+Esc は表示中の選択を保存せず閉じる。effort の画面で閉じても、保存済みのモデルは維持する。
 選択した値は Claude Code の設定 API で保存し、次の審査から使う。
 
 レビュアーのモデルと effort、修正回数・審査時間の上限、読み取り専用 MCP ツールの一覧はプラグインの設定項目で変更する。

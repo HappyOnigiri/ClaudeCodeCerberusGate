@@ -463,7 +463,7 @@ export const register: Register = (on, options) => {
     if (argument === "model") {
       await $.ui.open({
         id: "reviewer-model",
-        title: "検査用モデル",
+        title: "検査用モデル・effort",
         focus: true,
         closeOnEscape: true,
       });
@@ -486,7 +486,7 @@ export const register: Register = (on, options) => {
   on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
     if (e.surface === "mobile") {
       const { Text } = $.ui.resolve(e);
-      return Text({ children: "検査用モデルは /config で変更してください。" });
+      return Text({ children: "検査用モデル・effort は /config で変更してください。" });
     }
     const { Select } = $.ui.resolve(e);
     return Select({
@@ -504,11 +504,53 @@ export const register: Register = (on, options) => {
             $.ui.status(`Cerberus Gate: モデルを保存できませんでした。${result.deny}`);
             return;
           }
-          config = readConfig({ ...options, reviewerModel: result.value });
+          config = readConfig({
+            ...options,
+            reviewerModel: result.value,
+            reviewerEffort: config.reviewerEffort,
+          });
           await $.ui.close({ id: "reviewer-model" });
           $.ui.status(`Cerberus Gate: 検査用モデルを ${config.reviewerModel} に設定しました。`);
+          await $.ui.open({
+            id: "reviewer-effort",
+            title: "検査用 effort",
+            focus: true,
+            closeOnEscape: true,
+          });
         } catch {
           $.ui.status("Cerberus Gate: モデルを保存できませんでした。");
+        }
+      },
+    });
+  });
+  on("ui.render", { component: "Pane", requestId: "reviewer-effort" }, ($, e) => {
+    if (e.surface === "mobile") {
+      const { Text } = $.ui.resolve(e);
+      return Text({ children: "検査用 effort は /config で変更してください。" });
+    }
+    const { Select } = $.ui.resolve(e);
+    return Select({
+      key: "reviewer-effort",
+      label: `検査用 effort（モデル: ${config.reviewerModel}）`,
+      options: ["inherit", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value })),
+      value: config.reviewerEffort,
+      autoFocus: true,
+      onSelect: async (value) => {
+        try {
+          const result = await $.config.set({ key: "cerberus-gate.reviewerEffort", value });
+          if (result.deny !== undefined) {
+            $.ui.status(`Cerberus Gate: effort を保存できませんでした。${result.deny}`);
+            return;
+          }
+          config = readConfig({
+            ...options,
+            reviewerModel: config.reviewerModel,
+            reviewerEffort: result.value,
+          });
+          await $.ui.close({ id: "reviewer-effort" });
+          $.ui.status(`Cerberus Gate: 検査用 effort を ${config.reviewerEffort} に設定しました。`);
+        } catch {
+          $.ui.status("Cerberus Gate: effort を保存できませんでした。");
         }
       },
     });
