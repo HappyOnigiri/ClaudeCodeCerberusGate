@@ -1,23 +1,25 @@
+import type { ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const manifest = JSON.parse(
-  await readFile(new URL("./native-tools.json", import.meta.url), "utf8"),
-);
+const manifest: Record<
+  string,
+  Record<string, { url: string; sha256: string; member: string }>
+> = JSON.parse(await readFile(new URL("./native-tools.json", import.meta.url), "utf8"));
 const platform = `${process.platform}-${process.arch}`;
 const cache = resolve("node_modules/.cache/cerberus-checks", platform);
-function entry(tool) {
+function entry(tool: string) {
   const spec = manifest[tool]?.[platform];
   if (!spec) throw new Error(`native:1: platform: unsupported ${tool} on ${platform}`);
   return spec;
 }
-export function binary(tool) {
+export function binary(tool: string) {
   return join(cache, `${tool}-${entry(tool).sha256.slice(0, 16)}`);
 }
-export function verify(data, sha256) {
+export function verify(data: Uint8Array, sha256: string) {
   if (createHash("sha256").update(data).digest("hex") !== sha256)
     throw new Error("native:1: checksum: SHA-256 mismatch");
 }
@@ -43,16 +45,22 @@ export async function setup() {
     }
   }
 }
-export function run(tool, args, options = {}) {
+export function run(
+  tool: string,
+  args: string[],
+  options:
+    | ExecFileSyncOptionsWithStringEncoding
+    | Omit<ExecFileSyncOptionsWithStringEncoding, "encoding"> = {},
+) {
   try {
     return execFileSync(binary(tool), args, { encoding: "utf8", stdio: "inherit", ...options });
   } catch (error) {
-    if (error.code === "ENOENT")
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
       throw new Error(`${tool}:1: missing-tool: run npm run setup:checks`, { cause: error });
     throw error;
   }
 }
-async function lint(mode) {
+async function lint(mode: string | undefined) {
   if (mode === "workflows") {
     const files = (await readdir(".github/workflows"))
       .filter((f) => /\.ya?ml$/u.test(f))
@@ -76,7 +84,7 @@ async function lint(mode) {
     run("shellcheck", ["--format=gcc", ...files]);
   } else throw new Error(`native:1: mode: unknown ${mode}`);
 }
-if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? "")).href) {
   if (process.argv[2] === "setup") await setup();
   else await lint(process.argv[2]);
 }

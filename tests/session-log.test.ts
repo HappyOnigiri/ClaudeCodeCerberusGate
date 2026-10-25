@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { snapshot, expand, release } from "../plugins/cerberus-gate/hooks/session-log.mjs";
+import { snapshot, expand, release } from "../plugins/cerberus-gate/hooks/session-log.mts";
 
 // Independently authored raw JSONL: content strings and block arrays, branches,
 // internal records, a correction and a tool result longer than Read's usual window.
@@ -41,7 +41,7 @@ const raw =
     '{"type":"assistant","sessionId":"session","uuid":"branch","parentUuid":"u1","message":{"content":"superseded branch"}}',
   ].join("\n") + "\n";
 
-test("mechanical expansion preserves old constraints, long results and raw provenance", async (t) => {
+void test("mechanical expansion preserves old constraints, long results and raw provenance", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-source-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const source = join(work, "session.jsonl");
@@ -65,7 +65,7 @@ test("mechanical expansion preserves old constraints, long results and raw prove
   assert.equal((await stat(material.directory)).mode & 0o777, 0o700);
   assert.equal((await stat(material.source)).mode & 0o777, 0o600);
 });
-test("missing, incomplete, malformed and mismatched logs fail instead of omitting records", async () => {
+void test("missing, incomplete, malformed and mismatched logs fail instead of omitting records", async () => {
   assert.throws(() => expand(raw.slice(0, -1), "session"), /Incomplete/u);
   assert.throws(() => expand(raw + "{bad}\n", "session"));
   assert.throws(() => expand(raw, "other"), /Wrong session/u);
@@ -73,12 +73,12 @@ test("missing, incomplete, malformed and mismatched logs fail instead of omittin
   await assert.rejects(snapshot("/nonexistent/cerberus.jsonl", "session"));
   await assert.rejects(release(tmpdir()), /Invalid review directory/u);
 });
-test("CLI follows symlinked plugin paths and reports missing session as failure", async (t) => {
+void test("CLI follows symlinked plugin paths and reports missing session as failure", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-command-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const result = spawnSync(
     process.execPath,
-    ["plugins/cerberus-gate/hooks/session-log.mjs", "create"],
+    ["plugins/cerberus-gate/hooks/session-log.mts", "create"],
     {
       input: JSON.stringify({ sessionId: "not-a-real-session" }),
       encoding: "utf8",
@@ -89,7 +89,7 @@ test("CLI follows symlinked plugin paths and reports missing session as failure"
   assert.equal(result.stdout, "");
 });
 
-test("missing current request never yields a seemingly complete snapshot", async (t) => {
+void test("missing current request never yields a seemingly complete snapshot", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-request-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const source = join(work, "session.jsonl");
@@ -97,15 +97,15 @@ test("missing current request never yields a seemingly complete snapshot", async
   await assert.rejects(snapshot(source, "session", "not flushed yet"), /Current request/u);
 });
 
-test("CLI resolves only the current session and deletes only its own material", async (t) => {
+void test("CLI resolves only the current session and deletes only its own material", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-cli-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   await mkdir(join(work, "projects", "project"), { recursive: true });
   const source = join(work, "projects", "project", "session.jsonl");
   await writeFile(source, raw);
-  const linked = join(work, "helper.mjs");
-  await symlink(join(process.cwd(), "plugins/cerberus-gate/hooks/session-log.mjs"), linked);
-  const invoke = (operation, input) =>
+  const linked = join(work, "helper.mts");
+  await symlink(join(process.cwd(), "plugins/cerberus-gate/hooks/session-log.mts"), linked);
+  const invoke = (operation: string, input: unknown) =>
     spawnSync(process.execPath, [linked, operation], {
       input: JSON.stringify(input),
       encoding: "utf8",
@@ -122,14 +122,14 @@ test("CLI resolves only the current session and deletes only its own material", 
   assert.equal(await readFile(source, "utf8"), raw);
 });
 
-test("persistent material is byte-identical, indexed, private and retained after temporary release", async (t) => {
+void test("persistent material is byte-identical, indexed, private and retained after temporary release", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-preserve-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   await mkdir(join(work, "projects", "project"), { recursive: true });
   await writeFile(join(work, "projects", "project", "session.jsonl"), raw);
   const result = spawnSync(
     process.execPath,
-    ["plugins/cerberus-gate/hooks/session-log.mjs", "create"],
+    ["plugins/cerberus-gate/hooks/session-log.mts", "create"],
     {
       input: JSON.stringify({
         sessionId: "session",
@@ -145,7 +145,7 @@ test("persistent material is byte-identical, indexed, private and retained after
   const index = (await readFile(join(work, "cerberus-gate/debug/session/index.jsonl"), "utf8"))
     .trim()
     .split("\n")
-    .map(JSON.parse);
+    .map((line) => JSON.parse(line));
   assert.equal(index.length, 3);
   for (const record of index) {
     const saved = join(work, "cerberus-gate/debug/session", record.path);
@@ -160,7 +160,7 @@ test("persistent material is byte-identical, indexed, private and retained after
   assert.equal(await readFile(join(material.debug.directory, "source.jsonl"), "utf8"), raw);
 });
 
-test("persistent write failure preserves usable temporary evidence and reports structured diagnostics", async (t) => {
+void test("persistent write failure preserves usable temporary evidence and reports structured diagnostics", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-persist-failure-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   await mkdir(join(work, "projects", "project"), { recursive: true });
@@ -168,7 +168,7 @@ test("persistent write failure preserves usable temporary evidence and reports s
   await symlink(join(work, "projects"), join(work, "cerberus-gate"));
   const result = spawnSync(
     process.execPath,
-    ["plugins/cerberus-gate/hooks/session-log.mjs", "create"],
+    ["plugins/cerberus-gate/hooks/session-log.mts", "create"],
     {
       input: JSON.stringify({
         sessionId: "session",

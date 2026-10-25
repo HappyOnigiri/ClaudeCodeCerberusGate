@@ -68,7 +68,7 @@ async function flushDebug(
     if (!records.length) return;
     try {
       const result = await $.process.run(
-        ["node", `${$.plugin.root}/hooks/debug-log.mjs`, "append"],
+        ["node", `${$.plugin.root}/hooks/debug-log.mts`, "append"],
         {
           stdin: JSON.stringify({ ...logger.identity(), records }),
           timeoutMs: 1000,
@@ -87,7 +87,7 @@ async function initializeDebug($: EngineInterface, details: unknown): Promise<vo
   let pluginVersion: unknown;
   try {
     const result = await $.process.run(
-      ["node", `${$.plugin.root}/hooks/debug-log.mjs`, "initialize"],
+      ["node", `${$.plugin.root}/hooks/debug-log.mts`, "initialize"],
       {
         stdin: JSON.stringify(identity),
         timeoutMs: 1000,
@@ -462,7 +462,7 @@ async function verify(
     });
     if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
     const generated = await $.process.run(
-      ["node", `${$.plugin.root}/hooks/session-log.mjs`, "create"],
+      ["node", `${$.plugin.root}/hooks/session-log.mts`, "create"],
       {
         stdin: JSON.stringify({
           sessionId: await $.session.id(),
@@ -506,7 +506,7 @@ async function verify(
       logger.record("material.release.start", { operationId: materialOperationId, directory });
       if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
       const removed = await $.process
-        .run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "release"], {
+        .run(["node", `${$.plugin.root}/hooks/session-log.mts`, "release"], {
           stdin: JSON.stringify({ directory }),
           timeoutMs: 15_000,
         })
@@ -748,7 +748,7 @@ export const register: Register = (on, options) => {
     const recovery = (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value;
     if (recovery?.material !== undefined) {
       await $.process
-        .run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "release"], {
+        .run(["node", `${$.plugin.root}/hooks/session-log.mts`, "release"], {
           stdin: JSON.stringify({ directory: recovery.material }),
           timeoutMs: 15_000,
         })

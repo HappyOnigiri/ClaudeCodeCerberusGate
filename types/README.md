@@ -11,5 +11,5 @@ claude --model haiku --plugin-dir ./plugins/cerberus-gate --plugin-dir ./plugins
 ```
 
 生成先は `plugins/cerberus-gate/.claude-plugin/types/`。
-型を更新したら `node scripts/review-inputs.mjs` で配布用の組み込みツール引数案内も再生成する。
+型を更新したら `node scripts/review-inputs.ts` で配布用の組み込みツール引数案内も再生成する。
 変更後は `npm run check` と `npm run test:live` で互換性を確認する。

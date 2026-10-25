@@ -2,22 +2,20 @@
   "compilerOptions": {
     "target": "es2023",
     "lib": ["es2023"],
-    "module": "esnext",
-    "moduleResolution": "bundler",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "typeRoots": ["./types"],
-    "types": ["claude-code", "claude-code-tools"],
-    "allowImportingTsExtensions": true
+    "typeRoots": ["./types", "./node_modules/@types"],
+    "types": ["node", "claude-code", "claude-code-tools"],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true
   },
-  "include": [
-    "plugins/cerberus-gate/hooks",
-    "plugins/cerberus-gate-display/hooks",
-    "plugins/cerberus-gate/tests",
-    "plugins/cerberus-gate/types"
-  ]
+  "include": ["plugins/**/*.ts", "plugins/**/*.mts", "scripts/**/*.ts", "tests/**/*.ts"]
 }

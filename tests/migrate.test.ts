@@ -1,3 +1,11 @@
+import type { TestContext } from "node:test";
+interface FixtureOptions {
+  active?: boolean;
+  settings?: object | string;
+  scope?: string;
+  fail?: string;
+  market?: { name: string; source: string; repo: string }[];
+}
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -7,7 +15,7 @@ import { spawnSync } from "node:child_process";
 
 const old = "cerberus-gate@happyonigiri-plugins";
 const fresh = "cerberus-gate@cerberus-gate";
-const display = (id) => id.replace("cerberus-gate@", "cerberus-gate-display@");
+const display = (id: string) => id.replace("cerberus-gate@", "cerberus-gate-display@");
 const options = {
   reviewerModel: "haiku",
   maxRevisions: 3,
@@ -15,8 +23,8 @@ const options = {
   reviewPrompt: "secret\ncriteria",
 };
 async function fixture(
-  t,
-  { active = true, settings, scope = "user", fail = "", market = [] } = {},
+  t: TestContext,
+  { active = true, settings, scope = "user", fail = "", market = [] }: FixtureOptions = {},
 ) {
   const work = await mkdtemp(join(tmpdir(), "cerberus-migrate-test-"));
   t.after(() => rm(work, { recursive: true, force: true }));
@@ -82,7 +90,7 @@ if ((failed === 'enable' && args[0] === 'enable') || (failed === 'install' && ar
     { mode: 0o755 },
   );
   const run = () =>
-    spawnSync(process.execPath, [resolve("scripts/migrate.mjs")], {
+    spawnSync(process.execPath, [resolve("scripts/migrate.ts")], {
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
@@ -93,10 +101,15 @@ if ((failed === 'enable' && args[0] === 'enable') || (failed === 'install' && ar
     });
   const read = async () => JSON.parse(await readFile(join(config, "settings.json"), "utf8"));
   const state = async () => JSON.parse(await readFile(join(config, "state.json"), "utf8"));
-  return { run, read, state, original };
+  return {
+    run,
+    read,
+    state,
+    original: JSON.parse(typeof original === "string" ? "{}" : JSON.stringify(original)),
+  };
 }
 for (const active of [true, false])
-  test(`migration preserves native options, other settings and active=${active}; rerun is stable`, async (t) => {
+  await test(`migration preserves native options, other settings and active=${active}; rerun is stable`, async (t) => {
     const f = await fixture(t, { active });
     const r = f.run();
     assert.equal(r.status, 0, r.stderr);
@@ -114,7 +127,7 @@ for (const active of [true, false])
     assert.deepEqual(await f.read(), saved);
   });
 for (const fail of ["install", "disable", "enable", "rollback"])
-  test(`migration restores owned settings after ${fail} failure`, async (t) => {
+  await test(`migration restores owned settings after ${fail} failure`, async (t) => {
     const f = await fixture(t, { fail });
     const r = f.run();
     assert.equal(r.status, 1);
@@ -154,8 +167,8 @@ for (const [name, setup, pattern] of [
     { market: [{ name: "cerberus-gate", source: "github", repo: "someone/else" }] },
     /different source/,
   ],
-])
-  test(`migration refuses ${JSON.stringify(name)} without mutations`, async (t) => {
+] satisfies [string, FixtureOptions, RegExp][])
+  await test(`migration refuses ${JSON.stringify(name)} without mutations`, async (t) => {
     const f = await fixture(t, setup);
     const r = f.run();
     assert.equal(r.status, 1);
@@ -163,12 +176,12 @@ for (const [name, setup, pattern] of [
     assert.ok(!r.stderr.includes("different secret"));
     assert.ok(
       (await f.state()).calls.every(
-        (a) => a[0] === "list" || a.join(" ") === "marketplace list --json",
+        (a: string[]) => a[0] === "list" || a.join(" ") === "marketplace list --json",
       ),
     );
   });
 
-test("migration merges matching public options while retaining public-only options", async (t) => {
+await test("migration merges matching public options while retaining public-only options", async (t) => {
   const f = await fixture(t, {
     settings: {
       enabledPlugins: { [old]: true, [display(old)]: false, [fresh]: false },
@@ -186,7 +199,7 @@ test("migration merges matching public options while retaining public-only optio
   });
 });
 
-test("migration refuses two enabled reviewers without changing settings", async (t) => {
+await test("migration refuses two enabled reviewers without changing settings", async (t) => {
   const f = await fixture(t, { settings: { enabledPlugins: { [old]: true, [fresh]: true } } });
   const r = f.run();
   assert.equal(r.status, 1);

@@ -1,3 +1,7 @@
+export interface Identity {
+  sessionId: string;
+  instanceId: string;
+}
 import manifest from "../.claude-plugin/plugin.json" with { type: "json" };
 import { safeValue } from "./debug.ts";
 import { open, mkdir, lstat, realpath } from "node:fs/promises";
@@ -6,13 +10,13 @@ import { homedir } from "node:os";
 import { join, resolve, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 
-function identifier(value) {
+function identifier(value: unknown) {
   if (typeof value !== "string" || !/^[a-zA-Z0-9-]+$/u.test(value))
     throw new Error("Invalid debug identifier");
   return value;
 }
 // Check every component, including configured ancestors; never follow a symlink.
-async function directory(path, privateRoot = path) {
+async function directory(path: string, privateRoot = path) {
   const absolute = resolve(path);
   let current = parse(absolute).root;
   for (const part of absolute.slice(current.length).split("/").filter(Boolean)) {
@@ -36,7 +40,13 @@ async function directory(path, privateRoot = path) {
   }
   return absolute;
 }
-async function append(path, text, exclusive = false, create = true, signal) {
+async function append(
+  path: string,
+  text: string,
+  exclusive = false,
+  create = true,
+  signal?: AbortSignal,
+) {
   signal?.throwIfAborted();
   const existing = await lstat(path).catch((error) => {
     if (error.code !== "ENOENT") throw error;
@@ -60,9 +70,9 @@ async function append(path, text, exclusive = false, create = true, signal) {
     await handle.close();
   }
 }
-async function appendIndex(path, text) {
+async function appendIndex(path: string, text: string) {
   const controller = new AbortController();
-  let timer;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       append(path, text, false, true, controller.signal),
@@ -77,7 +87,7 @@ async function appendIndex(path, text) {
     clearTimeout(timer);
   }
 }
-async function paths(sessionId, instanceId) {
+async function paths(sessionId: string, instanceId: string) {
   const root = await realpath(resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")));
   const session = join(root, "cerberus-gate", "debug", identifier(sessionId));
   const instance = join(session, identifier(instanceId));
@@ -89,7 +99,7 @@ async function paths(sessionId, instanceId) {
     instance,
   };
 }
-async function initialize(input) {
+async function initialize(input: Identity) {
   const location = await paths(input.sessionId, input.instanceId);
   await append(location.events, "", true);
   await appendIndex(
@@ -104,7 +114,7 @@ async function initialize(input) {
   );
   return { ...location, pluginVersion: manifest.version };
 }
-async function appendEvents(input) {
+async function appendEvents(input: Identity & { records: unknown[] }) {
   const location = await paths(input.sessionId, input.instanceId);
   if (!Array.isArray(input.records)) throw new Error("Invalid records");
   await append(
@@ -115,14 +125,18 @@ async function appendEvents(input) {
   );
 }
 // Only the material helper calls this function, with the three freshly generated contents.
-export async function preserve(input, material, contents) {
+export async function preserve(
+  input: Identity & { reviewId: string },
+  material: { sourcePath: string; bytes: number; lines: number },
+  contents: Record<string, string>,
+) {
   const location = await paths(input.sessionId, input.instanceId);
   const reviewId = identifier(input.reviewId);
   const review = await directory(join(location.instance, "reviews", reviewId), location.instance);
   const saved = [];
   try {
     for (const name of ["source.jsonl", "users.txt", "history.txt"]) {
-      await append(join(review, name), contents[name], true);
+      await append(join(review, name), contents[name]!, true);
       saved.push(name);
       await appendIndex(
         location.index,

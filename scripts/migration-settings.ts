@@ -1,14 +1,21 @@
+export interface Settings {
+  enabledPlugins?: Record<string, boolean>;
+  pluginConfigs?: Record<string, { options?: Record<string, unknown> }>;
+  [key: string]: unknown;
+}
+
 import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
-const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-export async function readSettings(path) {
-  let value;
+const object = (value: unknown) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+export async function readSettings(path: string): Promise<Settings> {
+  let value: Settings;
   try {
     value = JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return {};
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
     throw new Error(`Cannot parse settings: ${path}`, { cause: error });
   }
   if (!object(value)) throw new Error(`Invalid settings object: ${path}`);
@@ -24,7 +31,7 @@ export async function readSettings(path) {
 }
 
 // Re-read immediately before each patch. Never restore an old copy of the settings file.
-export async function patchSettings(path, change) {
+export async function patchSettings(path: string, change: (current: Settings) => void) {
   const current = await readSettings(path);
   change(current);
   await mkdir(dirname(path), { recursive: true });

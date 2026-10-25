@@ -1,9 +1,10 @@
+import type { StdioOptions } from "node:child_process";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export function coverage(files, destination, stdio = "inherit") {
+export function coverage(files: string[], destination: string, stdio: StdioOptions = "inherit") {
   if (!files.length) throw new Error("coverage:1: targets: no Node tests");
   mkdirSync(resolve(destination, ".."), { recursive: true });
   rmSync(destination, { force: true });
@@ -13,7 +14,7 @@ export function coverage(files, destination, stdio = "inherit") {
       "--test",
       "--experimental-test-coverage",
       "--test-coverage-include=plugins/*/hooks/*.ts",
-      "--test-coverage-include=plugins/*/hooks/*.mjs",
+      "--test-coverage-include=plugins/*/hooks/*.mts",
       "--test-reporter=spec",
       "--test-reporter-destination=stdout",
       "--test-reporter=lcov",
@@ -33,9 +34,9 @@ export function coverage(files, destination, stdio = "inherit") {
     throw new Error("coverage:1: report: empty LCOV");
   return 0;
 }
-if (import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? "")).href) {
   const files = readdirSync("tests")
-    .filter((f) => f.endsWith(".test.mjs"))
+    .filter((f) => f.endsWith(".test.ts"))
     .map((f) => `tests/${f}`);
   process.exitCode = coverage(files, "tmp/coverage/lcov.info");
 }

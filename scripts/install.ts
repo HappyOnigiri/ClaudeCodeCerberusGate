@@ -31,9 +31,9 @@ const entries = [
   },
 ];
 
-const claude = (...args) =>
+const claude = (...args: string[]) =>
   execFileSync("claude", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
-const readJson = async (path, fallback) => {
+const readJson = async <T>(path: string, fallback: T): Promise<T> => {
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch {
@@ -42,8 +42,13 @@ const readJson = async (path, fallback) => {
 };
 
 // Refuse before touching the shared marketplace or installed plugins.
-const initialSettings = await readJson(join(config, "settings.json"), {});
-const initialPlugins = JSON.parse(claude("plugin", "list", "--json"));
+const initialSettings = await readJson<{ enabledPlugins?: Record<string, boolean> }>(
+  join(config, "settings.json"),
+  {},
+);
+const initialPlugins: { id: string; enabled: boolean }[] = JSON.parse(
+  claude("plugin", "list", "--json"),
+);
 if (
   entries.some((item) => {
     const id = `${item.name}@cerberus-gate`;
@@ -75,27 +80,34 @@ for (const item of entries) {
 
 // marketplace.json は watchdog など他のプラグインと共有するため、対象の2項目だけを差し替える。
 const manifestPath = join(marketplace, ".claude-plugin/marketplace.json");
-const manifest = await readJson(manifestPath, {
+const manifest = await readJson<{
+  name: string;
+  owner: { name: string; url: string };
+  metadata: { description: string };
+  plugins: { name: string }[];
+}>(manifestPath, {
   name: marketplaceName,
   owner: { name: "HappyOnigiri", url: "https://github.com/HappyOnigiri" },
   metadata: { description: "Local marketplace for HappyOnigiri plugins." },
   plugins: [],
 });
 const names = new Set(entries.map((item) => item.name));
-const others = (manifest.plugins ?? []).filter((item) => !names.has(item.name));
+const others = (manifest.plugins ?? []).filter((item: { name: string }) => !names.has(item.name));
 manifest.plugins = [...others, ...entries];
 await mkdir(join(marketplace, ".claude-plugin"), { recursive: true });
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
 const marketplaces = JSON.parse(claude("plugin", "marketplace", "list", "--json"));
-if (!marketplaces.some((item) => item.name === marketplaceName))
+if (!marketplaces.some((item: { name: string }) => item.name === marketplaceName))
   claude("plugin", "marketplace", "add", marketplace);
 claude("plugin", "marketplace", "update", marketplaceName);
 
 // update は version が同じだと入れ替えないため、入れ直す。uninstall で /config の設定が
 // 消えるので、先に読み取ってインストール後に戻す。
 const settingsPath = join(config, "settings.json");
-const settings = await readJson(settingsPath, {});
+const settings = await readJson<{
+  pluginConfigs?: Record<string, { options?: Record<string, unknown> }>;
+}>(settingsPath, {});
 const options = Object.fromEntries(
   Object.entries(settings?.pluginConfigs?.[plugin]?.options ?? {}).filter(
     ([key]) => key !== "readOnlyMcpTools",
@@ -106,7 +118,11 @@ if (Object.keys(options).length)
 const installed = JSON.parse(claude("plugin", "list", "--json"));
 for (const item of entries) {
   const id = `${item.name}@${marketplaceName}`;
-  if (installed.some((existing) => existing.id === id && existing.scope === "user"))
+  if (
+    installed.some(
+      (existing: { id: string; scope: string }) => existing.id === id && existing.scope === "user",
+    )
+  )
     claude("plugin", "uninstall", "--keep-data", "--scope", "user", id);
   claude("plugin", "install", "--scope", "user", id);
 }
@@ -121,7 +137,7 @@ if (Object.keys(options).length) {
   await writeFile(settingsPath, `${JSON.stringify(current, null, 2)}\n`);
 }
 
-const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 const dirty = git("status", "--porcelain", "--", ...entries.map((item) => `plugins/${item.name}`))
   ? " + uncommitted changes"
   : "";

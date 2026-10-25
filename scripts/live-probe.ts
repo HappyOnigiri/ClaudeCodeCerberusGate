@@ -1,6 +1,12 @@
-import { verifyDebug } from "./live-debug.mjs";
-import { installLiveFixture } from "./live-installed.mjs";
-import { verifyMaterials } from "./live-materials.mjs";
+interface Settings {
+  pluginConfigs?: Record<
+    string,
+    { options?: { reviewerModel?: string; reviewerEffort?: string; enabled?: boolean } }
+  >;
+}
+import { verifyDebug } from "./live-debug.ts";
+import { verifyMaterials } from "./live-materials.ts";
+import { installLiveFixture } from "./live-installed.ts";
 import { randomBytes } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -41,24 +47,24 @@ const cases = process.argv.slice(2).length
       "reload-work",
       "reload-review",
     ];
-const tmux = (...args) =>
+const tmux = (...args: string[]) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 // Terminal wrapping and Markdown rendering consume whitespace, escape backslashes and code ticks.
-const decisionOf = (text) => {
+const decisionOf = (text: string) => {
   try {
     return JSON.parse(text).decision;
   } catch {
     return undefined;
   }
 };
-const compact = (text) => text.replace(/[\s\\`*]/gu, "");
-const withoutFindings = (screen, findings) =>
-  findings.reduce(
+const compact = (text: string) => text.replace(/[\s\\`*]/gu, "");
+const withoutFindings = (screen: string, findings: unknown[]) =>
+  findings.reduce<string>(
     (text, finding) => text.replaceAll(compact(JSON.stringify(finding)), ""),
     compact(screen),
   );
-const submit = async (session, text) => {
+const submit = async (session: string, text: string) => {
   tmux("send-keys", "-t", session, "-l", text);
   await pause(500);
   // ユーザーの Enter=改行設定にも対応する。通常設定では Enter を使う。
@@ -73,14 +79,14 @@ const submit = async (session, text) => {
 };
 const customPrompt =
   "Check the release channel against fact.txt.\nBefore deciding, request Read for fact.txt and use its successful result in the evidence array. Do not substitute main-agent reads from the conversation. CUSTOM_REVIEW_CRITERIA";
-const drafts = {
+const drafts: Record<string, string> = {
   bounds: "stable. A closing hour of 26 is a valid configuration example.",
   environment: "stable. The default is false, so this feature has no effect in production.",
   causal: "stable. The provider watch waits for timeline rendering to complete.",
   choice:
     "stable. I propose CreatedAt as the origin of the 720-day retention period; this is an unresolved specification choice requiring approval.",
 };
-const facts = {
+const facts: Record<string, string> = {
   bounds: "The closing hour accepts integers from 12 through 24 inclusive.",
   environment:
     "The feature default is false. The production deployment manifest sets it to true. The running cluster has not been inspected.",
@@ -89,7 +95,7 @@ const facts = {
   choice:
     "CreatedAt is set at creation and unchanged on re-entry. The retention duration is 720 days. The specification does not define the retention origin.",
 };
-const requests = {
+const requests: Record<string, string> = {
   bounds: "Assess whether a closing hour of 26 is a valid configuration example.",
   environment:
     "Assess whether the feature default establishes that it has no effect in production.",
@@ -98,7 +104,7 @@ const requests = {
   choice:
     "Propose an origin for the 720-day retention period, explicitly identifying any unresolved specification choice requiring approval.",
 };
-const expectedFindings = {
+const expectedFindings: Record<string, RegExp> = {
   bounds: /26|12.*24/u,
   environment: /production|manifest/u,
   causal: /render|causal|wait/u,
@@ -144,7 +150,7 @@ for (const mode of cases) {
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
   if (mode === "missing-log")
-    await writeFile(join(plugin, "hooks/session-log.mjs"), "process.exitCode=1;\n");
+    await writeFile(join(plugin, "hooks/session-log.mts"), "process.exitCode=1;\n");
   const display = join(work, "display");
   await cp(join(root, "plugins/cerberus-gate-display"), display, {
     recursive: true,
@@ -152,7 +158,7 @@ for (const mode of cases) {
   });
   const configDir = installedConfig || join(work, "config");
   const settings = join(configDir, "settings.json");
-  const reloadSettings = (maxRevisions) =>
+  const reloadSettings = (maxRevisions: number) =>
     JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
   if (mode === "reload-work" || mode === "model" || mode === "toggle" || mode === "prompt") {
     await mkdir(configDir);
@@ -424,7 +430,7 @@ for (const mode of cases) {
       if (!modelScreen.includes("fable")) throw new Error("Fable model option did not appear");
       tmux("send-keys", "-t", session, "Down", "Enter");
       const savedDeadline = Date.now() + 15_000;
-      let saved;
+      let saved: Settings = {};
       while (Date.now() < savedDeadline) {
         saved = JSON.parse(await readFile(settings, "utf8"));
         if (
@@ -470,7 +476,7 @@ for (const mode of cases) {
       if (after.includes(notice)) throw new Error("Temporary notice did not expire");
     }
     if (mode === "toggle") {
-      const checkCommand = async (command, expected, scope) => {
+      const checkCommand = async (command: string, expected: string, scope?: string) => {
         const before = tmux("capture-pane", "-p", "-t", session, "-S", "-1000").split(
           expected,
         ).length;
@@ -501,7 +507,7 @@ for (const mode of cases) {
       };
       await checkCommand("/cgate off", "off (saved)", "saved");
       await pause(1500);
-      const saved = JSON.parse(await readFile(settings, "utf8"));
+      const saved: Settings = JSON.parse(await readFile(settings, "utf8"));
       if (!Object.values(saved.pluginConfigs ?? {}).some((p) => p.options?.enabled === false))
         throw new Error("Disabled setting was not persisted");
       await submit(session, "Reply with exactly DISABLED_OK.");
@@ -519,7 +525,7 @@ for (const mode of cases) {
       await checkCommand("/cgate reset", "off (saved)");
       await checkCommand("/cgate on", "on (saved)", "saved");
       await pause(1500);
-      const enabled = JSON.parse(await readFile(settings, "utf8"));
+      const enabled: Settings = JSON.parse(await readFile(settings, "utf8"));
       if (!Object.values(enabled.pluginConfigs ?? {}).some((p) => p.options?.enabled === true))
         throw new Error("Enabled setting was not persisted");
     }
@@ -662,7 +668,7 @@ for (const mode of cases) {
           // Tool requests and malformed responses contain no displayed findings.
         }
       }
-      if (expectedFindings[mode] && !visibleFindings.some((f) => expectedFindings[mode].test(f)))
+      if (expectedFindings[mode] && !visibleFindings.some((f) => expectedFindings[mode]!.test(f)))
         throw new Error("Reviewer did not identify the intended material evidence problem");
       const heading = "Prompt from the cerberus-gate plugin";
       const body = "Cerberus Gate: 検証処理を継続します。";
@@ -725,7 +731,10 @@ for (const mode of cases) {
         "missing-log": "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
       }[mode];
-      if (latest.includes("このセッションのログ（時刻は UTC）") && latest.includes(expected)) {
+      if (
+        latest.includes("このセッションのログ（時刻は UTC）") &&
+        latest.includes(expected ?? "")
+      ) {
         logSeen = true;
         break;
       }
@@ -838,7 +847,7 @@ for (const mode of cases) {
     ).length;
     if (needsRevision && !verdicts.some((v) => v.includes('"REVISE"')))
       throw new Error("No real reviewer REVISE verdict observed");
-    const revisions = verdicts.filter((text) => {
+    const revisions = verdicts.filter((text: string) => {
       try {
         return JSON.parse(text).decision === "REVISE";
       } catch {
@@ -902,7 +911,7 @@ for (const mode of cases) {
             decisionOf(review.result.text) === "PASS" &&
             JSON.stringify(JSON.parse(input.unpublishedDraft)) === cliExpected &&
             input.evidence.some(
-              (entry) =>
+              (entry: { tool: string; input: { command?: string }; result: string }) =>
                 entry.tool === "Bash" &&
                 entry.input.command === cliCommand &&
                 entry.result.includes(cliExpected),

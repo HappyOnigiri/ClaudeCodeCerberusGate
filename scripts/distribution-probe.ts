@@ -10,11 +10,11 @@ const work = await mkdtemp(join(tmpdir(), "cerberus-distribution-"));
 const repo = join(work, "repo");
 const config = join(work, "config");
 const env = { ...process.env, CLAUDE_CONFIG_DIR: config };
-const run = (command, args, cwd = root) =>
+const run = (command: string, args: string[], cwd = root) =>
   execFileSync(command, args, { cwd, env, encoding: "utf8", stdio: "pipe" });
-const cli = (...args) => run("claude", ["plugin", ...args]);
-const json = async (path) => JSON.parse(await readFile(path, "utf8"));
-const save = (path, data) => writeFile(path, `${JSON.stringify(data, null, 2)}\n`);
+const cli = (...args: string[]) => run("claude", ["plugin", ...args]);
+const json = async (path: string) => JSON.parse(await readFile(path, "utf8"));
+const save = (path: string, data: unknown) => writeFile(path, `${JSON.stringify(data, null, 2)}\n`);
 await mkdir(repo);
 await mkdir(config);
 await cp(resolve("plugins"), join(repo, "plugins"), {
@@ -23,7 +23,7 @@ await cp(resolve("plugins"), join(repo, "plugins"), {
 });
 await cp(resolve(".claude-plugin"), join(repo, ".claude-plugin"), { recursive: true });
 run("git", ["init", "-q", repo]);
-const commit = (message) => {
+const commit = (message: string) => {
   run("git", ["add", "."], repo);
   run(
     "git",
@@ -45,14 +45,16 @@ commit("Initial marketplace");
 const source = repo;
 cli("marketplace", "add", source);
 cli("install", "--scope", "user", "cerberus-gate@cerberus-gate");
-let installed = JSON.parse(cli("list", "--json"));
+let installed: { id: string; scope: string; enabled: boolean; version: string }[] = JSON.parse(
+  cli("list", "--json"),
+);
 assert.equal(installed.length, 2);
 assert.ok(installed.every((i) => i.scope === "user" && i.enabled));
 console.log("PASS dependency auto-install from local Git directory");
 // Reset only this disposable config's public installation before testing the old installer.
 for (const id of ["cerberus-gate@cerberus-gate", "cerberus-gate-display@cerberus-gate"])
   cli("uninstall", "--scope", "user", "--keep-data", id);
-run(process.execPath, [resolve("scripts/install.mjs")]);
+run(process.execPath, [resolve("scripts/install.ts")]);
 const old = "cerberus-gate@happyonigiri-plugins";
 const fresh = "cerberus-gate@cerberus-gate";
 const settingsPath = join(config, "settings.json");
@@ -68,7 +70,7 @@ settings.pluginConfigs[old] = { options: { ...options, readOnlyMcpTools: "retire
 settings.unrelated = { keep: "unchanged" };
 await save(settingsPath, settings);
 const migrate = () =>
-  run(process.execPath, [resolve("scripts/migrate.mjs"), "--marketplace-source", source]);
+  run(process.execPath, [resolve("scripts/migrate.ts"), "--marketplace-source", source]);
 migrate();
 settings = await json(settingsPath);
 assert.deepEqual(settings.pluginConfigs[fresh].options, options);
@@ -88,7 +90,7 @@ commit("Probe update");
 cli("marketplace", "update", "cerberus-gate");
 cli("update", "--scope", "user", fresh);
 installed = JSON.parse(cli("list", "--json"));
-assert.equal(installed.find((i) => i.id === fresh).version, "0.1.2");
+assert.equal(installed.find((i) => i.id === fresh)?.version, "0.1.2");
 assert.deepEqual((await json(settingsPath)).pluginConfigs[fresh].options, options);
 console.log("PASS local marketplace update preserves typed options");
 // Use defaults for the subsequent interactive verification, keeping the update check independent.

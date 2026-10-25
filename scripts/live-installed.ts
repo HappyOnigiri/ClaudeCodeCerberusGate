@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 // Installed fixtures must follow the installed gate in hook registration order.
-export async function installLiveFixture(configDir, work, mode) {
+export async function installLiveFixture(configDir: string, work: string, mode: string) {
   const accountPath = process.env.CLAUDE_CONFIG_DIR
     ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
     : join(homedir(), ".claude.json");
@@ -20,7 +20,7 @@ export async function installLiveFixture(configDir, work, mode) {
     ),
   );
   const fixtureMarket = `cerberus-probe-${mode}-${process.pid}`;
-  const installedCli = (...args) =>
+  const installedCli = (...args: string[]) =>
     execFileSync("claude", ["plugin", ...args], {
       encoding: "utf8",
       env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },

@@ -1,15 +1,24 @@
+import { asFixture } from "./helpers/fixture.ts";
+import type { On } from "claude-code";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { register } from "../plugins/cerberus-gate-display/hooks/register.ts";
 
 const control =
   'Cerberus Gate: 検証処理を継続します。 [1-1]\n\n指摘と根拠:\n- "fact.txt:1 contradicts the draft"';
-let render;
-register((event, matcher, handler) => {
-  assert.equal(event, "ui.render");
-  assert.deepEqual(matcher, { component: "UserMessage" });
-  render = handler;
-}, {});
+let render!: (
+  engine: object,
+  input: ReturnType<typeof event>,
+  next: (input: ReturnType<typeof event>) => unknown,
+) => unknown;
+register(
+  asFixture<On>((event: string, matcher: unknown, handler: typeof render) => {
+    assert.equal(event, "ui.render");
+    assert.deepEqual(matcher, { component: "UserMessage" });
+    render = handler;
+  }),
+  {},
+);
 const event = (props = {}, surface = "terminal") => ({
   component: "UserMessage",
   surface,
@@ -22,11 +31,11 @@ const event = (props = {}, surface = "terminal") => ({
   },
 });
 
-test("control body is collapsed without changing the message, then restored in the detailed view", () => {
+void test("control body is collapsed without changing the message, then restored in the detailed view", () => {
   const input = event();
   const before = structuredClone(input);
   const original = { type: "Text", props: {}, children: [input.props.text] };
-  const next = (e) => {
+  const next = (e: ReturnType<typeof event>) => {
     assert.strictEqual(e, input);
     return original;
   };
@@ -38,7 +47,7 @@ test("control body is collapsed without changing the message, then restored in t
   assert.deepEqual(render({}, input, next), { type: "Box", props: {}, children: [] });
 });
 
-test("user messages, other plugins, other Cerberus messages and remote surfaces keep their drawing", () => {
+void test("user messages, other plugins, other Cerberus messages and remote surfaces keep their drawing", () => {
   for (const input of [
     event({ origin: { kind: "composer" } }),
     event({ origin: { kind: "plugin", name: "other" } }),
@@ -50,7 +59,7 @@ test("user messages, other plugins, other Cerberus messages and remote surfaces 
   ]) {
     const original = { type: "Text", props: {}, children: [input.props.text] };
     assert.strictEqual(
-      render({}, input, (e) => {
+      render({}, input, (e: ReturnType<typeof event>) => {
         assert.strictEqual(e, input);
         return original;
       }),

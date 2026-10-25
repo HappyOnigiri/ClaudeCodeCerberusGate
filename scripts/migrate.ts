@@ -1,16 +1,32 @@
+import type { Settings } from "./migration-settings.ts";
+interface InstalledPlugin {
+  id: string;
+  scope: string;
+  enabled: boolean;
+  projectPath?: string;
+}
+interface Marketplace {
+  name: string;
+  source: string;
+  repo?: string;
+  path: string;
+  url?: string;
+}
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { readSettings, patchSettings } from "./migration-settings.mjs";
+import { readSettings, patchSettings } from "./migration-settings.ts";
 
 const config = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
 const path = join(config, "settings.json");
-const names = ["cerberus-gate", "cerberus-gate-display"];
-const oldIds = names.map((name) => `${name}@happyonigiri-plugins`);
-const newIds = names.map((name) => `${name}@cerberus-gate`);
+const oldIds = [
+  "cerberus-gate@happyonigiri-plugins",
+  "cerberus-gate-display@happyonigiri-plugins",
+] as const;
+const newIds = ["cerberus-gate@cerberus-gate", "cerberus-gate-display@cerberus-gate"] as const;
 const ids = [...oldIds, ...newIds];
-const cli = (...args) => {
+const cli = (...args: string[]) => {
   try {
     return execFileSync("claude", ["plugin", ...args], { encoding: "utf8", stdio: "pipe" });
   } catch {
@@ -18,15 +34,21 @@ const cli = (...args) => {
     throw new Error(`Claude CLI failed: plugin ${args.join(" ")}`);
   }
 };
-const list = () => JSON.parse(cli("list", "--json"));
-const user = (items, id) => items.find((item) => item.id === id && item.scope === "user");
-const enabled = (settings, items, id) =>
+const list = (): InstalledPlugin[] => JSON.parse(cli("list", "--json"));
+const user = (items: InstalledPlugin[], id: string) =>
+  items.find((item) => item.id === id && item.scope === "user");
+const enabled = (settings: Settings, items: InstalledPlugin[], id: string) =>
   settings.enabledPlugins?.[id] ?? user(items, id)?.enabled ?? false;
-const setEnabled = (id, value) => {
+const setEnabled = (id: string, value: boolean) => {
   if (user(list(), id)?.enabled !== value) cli(value ? "enable" : "disable", "--scope", "user", id);
 };
 
-async function rollback(before, installed, changedOptions, options) {
+async function rollback(
+  before: Settings,
+  installed: InstalledPlugin[],
+  changedOptions: string[],
+  options: Record<string, unknown>,
+) {
   const failures = [];
   // Disable the new pair before restoring the legacy pair, including partial CLI failures.
   for (const id of newIds) {
@@ -41,8 +63,9 @@ async function rollback(before, installed, changedOptions, options) {
       current.enabledPlugins ??= {};
       for (const id of ids) {
         if (Object.hasOwn(before.enabledPlugins ?? {}, id))
-          current.enabledPlugins[id] = before.enabledPlugins[id];
-        else if (newIds.includes(id) && !user(installed, id)) current.enabledPlugins[id] = false;
+          current.enabledPlugins[id] = before.enabledPlugins![id]!;
+        else if (newIds.some((newId) => newId === id) && !user(installed, id))
+          current.enabledPlugins[id] = false;
         else delete current.enabledPlugins[id];
       }
       const savedOptions = current.pluginConfigs?.[newIds[0]]?.options;
@@ -68,12 +91,14 @@ async function migrate() {
   console.log("Close interactive Claude Code sessions before migration. Restart after completion.");
   const before = await readSettings(path);
   const installed = list();
-  const elsewhere = installed.filter((item) => ids.includes(item.id) && item.scope !== "user");
+  const elsewhere = installed.filter(
+    (item) => ids.some((id) => id === item.id) && item.scope !== "user",
+  );
   if (elsewhere.length)
     throw new Error(
       `Migrate only user scope. Disable or migrate these installations separately: ${elsewhere.map((item) => `${item.id} (${item.scope}: ${item.projectPath ?? "managed"})`).join(", ")}`,
     );
-  const markets = JSON.parse(cli("marketplace", "list", "--json"));
+  const markets: Marketplace[] = JSON.parse(cli("marketplace", "list", "--json"));
   const market = markets.find((item) => item.name === "cerberus-gate");
   if (market) {
     const matches =
@@ -110,7 +135,7 @@ async function migrate() {
   const targetActive = user(installed, oldIds[0])
     ? oldActive
     : enabled(before, installed, newIds[0]);
-  const changedOptions = [];
+  const changedOptions: string[] = [];
   try {
     // Installation enables plugins by default. Explicitly gate the new IDs first.
     await patchSettings(path, (current) => {
@@ -162,7 +187,7 @@ async function migrate() {
         { cause: error },
       );
     throw new Error(
-      `${error.message}. Previous settings restored; newly installed plugins remain disabled. Rerun npm run migrate after resolving the failure.`,
+      `${error instanceof Error ? error.message : String(error)}. Previous settings restored; newly installed plugins remain disabled. Rerun npm run migrate after resolving the failure.`,
       { cause: error },
     );
   }
@@ -170,6 +195,6 @@ async function migrate() {
 try {
   await migrate();
 } catch (error) {
-  console.error(error.message);
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }
