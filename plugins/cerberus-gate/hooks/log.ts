@@ -1,13 +1,18 @@
+import { formatFindings } from "./policy.ts";
+
 const MAX_ENTRIES = 1000;
 
-// 本文・指摘・例外の内容は渡さず、処理の経過だけを保持する。
+// 原稿・依頼本文・例外の詳細は渡さず、処理の経過と審査の指摘を保持する。
 export function createLog() {
   const entries: { time: Promise<string>; message: string }[] = [];
   let omitted = 0;
   return {
-    record(now: Promise<number>, message: string): void {
+    record(now: Promise<number>, message: string, findings: readonly string[] = []): void {
       const time = now.then((ms) => new Date(ms).toISOString()).catch(() => "時刻不明");
-      entries.push({ time, message });
+      entries.push({
+        time,
+        message: findings.length ? `${message}\n${formatFindings(findings)}` : message,
+      });
       if (entries.length > MAX_ENTRIES) {
         entries.shift();
         omitted++;

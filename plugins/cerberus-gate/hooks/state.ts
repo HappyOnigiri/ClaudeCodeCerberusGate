@@ -13,6 +13,7 @@ export type Delivery = {
   epoch: number;
   context: string;
   mode: "revise" | "restart";
+  findings: readonly string[];
 };
 type Phase =
   | "idle"

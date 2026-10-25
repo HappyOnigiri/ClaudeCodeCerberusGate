@@ -306,7 +306,7 @@ test("PASS returns the exact held answer in the original step without a prompt",
   assert.ok(h.events.timers[0].cancelled);
 });
 
-test("only REVISE sends hidden context; corrected answer is reviewed without a publication prompt", async () => {
+test("REVISE exposes findings in its prompt but keeps the draft in hidden context", async () => {
   const h = harness();
   await started(h);
   h.replies.push(verdict("REVISE", ["fact.txt:1 contradicts the draft"]));
@@ -314,7 +314,9 @@ test("only REVISE sends hidden context; corrected answer is reviewed without a p
   await h.flushCorrections();
   assert.equal(h.events.prompts.length, 1);
   const sent = h.events.prompts[0];
-  assert.doesNotMatch(sent.text, /UNPUBLISHED|fact.txt/u);
+  assert.doesNotMatch(sent.text, /UNPUBLISHED/u);
+  assert.match(sent.text, /指摘と根拠:[\s\S]*fact.txt:1 contradicts the draft/u);
+  assert.ok(sent.context.join("").includes("UNPUBLISHED DRAFT"));
   assert.ok(sent.context.join("").includes("fact.txt:1"));
   h.setDraft("CORRECTED");
   assert.equal((await h.step()).text, "CORRECTED");
@@ -419,6 +421,10 @@ test("revision cap shows a note; correction delivery failure is reported without
   cap.replies.push(verdict("REVISE", ["SECRET FINDING"]));
   assert.equal((await cap.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
   assert.equal(cap.events.prompts.length, 0);
+  assert.match(
+    (await cap.fire("command.run", { command: "cgate", args: "log" })).text,
+    /REVISE[\s\S]*SECRET FINDING[\s\S]*修正回数の上限/u,
+  );
   const failed = harness();
   await started(failed);
   failed.failPrompt();
@@ -509,7 +515,7 @@ test("truncated answers and stream failures show only that step's text", async (
   assert.equal((await empty.step({ fail: true, text: "" })).text, NO_DRAFT);
 });
 
-test("session log works during review, hides drafts/findings and clears at session end", async () => {
+test("session log works during review, shows findings without the draft and clears at session end", async () => {
   const h = harness();
   await started(h);
   assert.ok(h.events.commands.some((c) => c.name === "cgate" && c.immediate));
@@ -530,7 +536,8 @@ test("session log works during review, hides drafts/findings and clears at sessi
   await h.step();
   const log = (await h.fire("command.run", { command: "cerberus", args: " log " })).text;
   assert.match(log, /REVISE[\s\S]*PASS[\s\S]*検証済みの本文を公開/u);
-  assert.doesNotMatch(log, /SECRET FINDING|UNPUBLISHED/u);
+  assert.match(log, /指摘と根拠:[\s\S]*SECRET FINDING/u);
+  assert.doesNotMatch(log, /UNPUBLISHED/u);
   assert.match(log, /1970-01-01T00:00:00.000Z/u);
   await h.fire("session.end", {});
   assert.match(
