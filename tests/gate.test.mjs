@@ -18,7 +18,12 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
-function harness(options = {}, version = "2.1.310") {
+function harness(
+  options = {},
+  version = "2.1.310",
+  host = { states: new Map(), reviewers: [] },
+  registerHook = register,
+) {
   const handlers = new Map();
   const events = {
     prompts: [],
@@ -42,7 +47,7 @@ function harness(options = {}, version = "2.1.310") {
     Object.entries(m).every(([k, v]) =>
       v instanceof RegExp ? typeof e[k] === "string" && v.test(e[k]) : v === e[k],
     );
-  register((name, ...args) => {
+  registerHook((name, ...args) => {
     const [matcher, handler] = args.length === 1 ? [{}, args[0]] : args;
     const entry = { matcher, handler };
     handlers.set(name, [...(handlers.get(name) ?? []), entry]);
@@ -53,6 +58,13 @@ function harness(options = {}, version = "2.1.310") {
     };
   }, options);
   const engine = {
+    state: {
+      get: async (ref) => ({ value: structuredClone(host.states.get(ref.key)) }),
+      set: async (ref, value) => {
+        host.states.set(ref.key, structuredClone(value));
+        return { isSet: true, version: 1 };
+      },
+    },
     ui: {
       status(value) {
         events.statuses.push(value);
@@ -86,7 +98,7 @@ function harness(options = {}, version = "2.1.310") {
         })),
       call: async (e) => fire("tool.call", e, "cerberus-gate"),
     },
-    agent: { list: async () => [] },
+    agent: { list: async () => host.reviewers },
     prompt: {
       submit: async (e) => {
         if (promptFailure) throw new Error("queue unavailable");
@@ -216,6 +228,8 @@ function harness(options = {}, version = "2.1.310") {
   }
   return {
     events,
+    host,
+    unload: () => controller.abort(),
     flushCorrections: async () => {
       for (const timer of events.timers.filter((t) => t.ms === 0 && !t.cancelled)) {
         timer.cancel();
@@ -566,4 +580,122 @@ test("built-in search tools stay available when omitted from the main tool list"
     assert.ok(names.includes(name));
   assert.equal(h.events.statuses.at(-1), undefined);
   assert.ok(!h.events.statuses.includes(""));
+});
+
+let reloadSerial = 0;
+async function reload(h, options = {}) {
+  h.unload();
+  const fresh = await import(`../plugins/cerberus-gate/hooks/register.ts?reload=${++reloadSerial}`);
+  const next = harness(options, "2.1.310", h.host, fresh.register);
+  await next.fire("session.start", { isInteractive: true });
+  return next;
+}
+
+test("reload during work restores the request and reviews without a restart prompt", async () => {
+  const h = harness();
+  await started(h);
+  await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
+  const next = await reload(h);
+  await next.flushCorrections();
+  assert.equal(next.events.prompts.length, 0);
+  assert.equal((await next.step()).text, "UNPUBLISHED DRAFT");
+  assert.equal(JSON.parse(next.events.models[0].request.prompt).request, "original request");
+  assert.equal(next.host.states.get("recovery").pending, false);
+});
+
+test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
+  const h = harness();
+  await started(h);
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const running = h.step({ text: "PRIVATE OLD DRAFT" });
+  await tick();
+  const saved = h.host.states.get("recovery");
+  assert.equal(saved.pending, true);
+  assert.doesNotMatch(JSON.stringify(saved), /PRIVATE OLD DRAFT/u);
+  h.host.reviewers.push({
+    id: "legacy-reviewer",
+    type: "cerberus-gate:reviewer",
+    spawnedBy: "cerberus-gate",
+    status: "running",
+  });
+  const next = await reload(h);
+  await next.flushCorrections();
+  assert.deepEqual(next.events.calls, ["TaskStop"]);
+  assert.equal(next.events.prompts.length, 1);
+  assert.match(next.events.prompts[0].context.join(""), /original request/u);
+  assert.ok(
+    (
+      await next.fire("prompt.submit", {
+        origin: { kind: "plugin", name: "cerberus-gate" },
+        text: `Cerberus Gate: 検証処理を継続します。 [${saved.epoch}-${saved.serial}]`,
+      })
+    ).drop,
+  );
+  assert.ok((await next.fire("tool.call", { agentId: "legacy-reviewer", tool: "Read" })).deny);
+  held.resolve({ isAnswered: true, text: verdict() });
+  assert.equal((await running).text, "");
+  assert.equal((await next.step({ text: "FRESH DRAFT" })).text, "FRESH DRAFT");
+  assert.equal(next.host.states.get("recovery").pending, false);
+});
+
+test("reload preserves correction counts across queued and accepted correction prompts", async () => {
+  for (const accepted of [false, true]) {
+    const h = harness({ maxRevisions: 2 });
+    await started(h);
+    h.replies.push(verdict("REVISE", ["PRIVATE FINDING"]));
+    await h.step();
+    if (accepted) await h.flushCorrections();
+    const next = await reload(h);
+    await next.flushCorrections();
+    assert.equal(next.host.states.get("recovery").revisions, 1);
+    assert.doesNotMatch(
+      JSON.stringify(next.host.states.get("recovery")),
+      /PRIVATE FINDING|UNPUBLISHED DRAFT/u,
+    );
+    next.replies.push(verdict("REVISE", ["still wrong"]));
+    assert.equal((await next.step()).text, WAITING);
+    await next.flushCorrections();
+    next.replies.push(verdict("REVISE", ["still wrong"]));
+    assert.equal((await next.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
+    assert.equal(next.events.prompts.length, 2);
+  }
+});
+
+test("published, unverified, cancelled, aborted and ended sessions do not auto-restart on reload", async () => {
+  for (const event of ["publish", "unverified", "cancel", "turn.abort", "session.end"]) {
+    const h = harness();
+    await started(h);
+    if (event === "unverified") h.replies.push("INVALID_REVIEW");
+    await h.step();
+    if (event === "cancel") await h.fire("command.run", { command: "cgate", args: "cancel" });
+    else if (event !== "publish" && event !== "unverified") await h.fire(event, {});
+    const next = await reload(h);
+    await next.flushCorrections();
+    assert.equal(next.events.prompts.length, 0, event);
+    if (event === "session.end") assert.equal(next.host.states.get("recovery").prompt, "");
+  }
+});
+
+test("new requests supersede a queued reload restart and failed restart delivery clears pending state", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(verdict("REVISE", ["finding"]));
+  await h.step();
+  const next = await reload(h);
+  await next.prompt("new request");
+  await next.flushCorrections();
+  assert.equal(next.events.prompts.length, 0);
+  assert.equal((await next.step({ text: "new answer" })).text, "new answer");
+  assert.equal(JSON.parse(next.events.models[0].request.prompt).request, "new request");
+  next.replies.push(verdict("REVISE", ["finding"]));
+  await next.step();
+  const again = await reload(next);
+  again.failPrompt();
+  await again.flushCorrections();
+  assert.equal(again.host.states.get("recovery").pending, false);
+  assert.match(
+    (await again.fire("command.run", { command: "cgate", args: "log" })).text,
+    /再開に失敗/u,
+  );
 });

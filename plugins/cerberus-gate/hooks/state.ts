@@ -12,6 +12,7 @@ export type Delivery = {
   token: number;
   epoch: number;
   context: string;
+  mode: "revise" | "restart";
 };
 type Phase =
   | "idle"
@@ -30,6 +31,7 @@ export function createState() {
     revisions: 0,
     active: undefined as Candidate | undefined,
     delivery: undefined as Delivery | undefined,
+    action: undefined as Delivery | undefined,
     reviewers: new Set<string>(),
     prompt: "",
     phase: "idle" as Phase,
@@ -43,6 +45,7 @@ export function reset(state: GateState, prompt: string): void {
   state.revisions = 0;
   state.active = undefined;
   state.delivery = undefined;
+  state.action = undefined;
   state.prompt = prompt;
   state.phase = "idle";
   state.blocked = false;

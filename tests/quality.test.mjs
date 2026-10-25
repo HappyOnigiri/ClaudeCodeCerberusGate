@@ -43,12 +43,23 @@ test("architecture permits current registration and rejects forbidden dependenci
     "const { tool } = $;",
     '$.tool.call({tool: "Write"});',
     "$.tool.call(options);",
+    '$.state.get({plugin: "other", key: "recovery"});',
+    '$.state.set({plugin: "cerberus-gate", key: "other"}, null);',
+    "$.state.get(ref);",
+    '$.state.set({plugin: "cerberus-gate", key: "recovery", ...options}, null);',
     '$.tool.call({tool: "TaskStop", ...options});',
     '$.agent.register({name: "other"});',
     "$.agent.spawn({subagentType: UNKNOWN});",
     "function f(engine: EngineInterface) { engine.tool.list(); }",
   ])
     assert.ok(architecture(registration, source).length, source);
+  assert.deepEqual(
+    architecture(
+      registration,
+      '$.state.get({plugin: "cerberus-gate", key: "recovery"}); $.state.set({plugin: "cerberus-gate", key: "recovery"}, null);',
+    ),
+    [],
+  );
   assert.deepEqual(
     architecture(
       registration,

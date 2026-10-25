@@ -1,6 +1,6 @@
 import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 
@@ -9,7 +9,17 @@ const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceA
 await mkdir(report, { recursive: true });
 const cases = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["pass", "search", "revise", "unverified", "cancel", "slow", "timeout"];
+  : [
+      "pass",
+      "search",
+      "revise",
+      "unverified",
+      "cancel",
+      "slow",
+      "timeout",
+      "reload-work",
+      "reload-review",
+    ];
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -28,7 +38,19 @@ const submit = async (session, text) => {
 };
 const summary = [];
 for (const mode of cases) {
-  if (!["pass", "search", "revise", "unverified", "cancel", "slow", "timeout"].includes(mode))
+  if (
+    ![
+      "pass",
+      "search",
+      "revise",
+      "unverified",
+      "cancel",
+      "slow",
+      "timeout",
+      "reload-work",
+      "reload-review",
+    ].includes(mode)
+  )
     throw new Error(`Unknown case ${mode}`);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
@@ -38,6 +60,24 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
+  const configDir = join(work, "config");
+  const settings = join(configDir, "settings.json");
+  const reloadSettings = (maxRevisions) =>
+    JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
+  if (mode === "reload-work") {
+    await mkdir(configDir);
+    const accountPath = process.env.CLAUDE_CONFIG_DIR
+      ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
+      : join(homedir(), ".claude.json");
+    const original = JSON.parse(await readFile(accountPath, "utf8"));
+    const account = Object.fromEntries(
+      ["oauthAccount", "hasCompletedOnboarding", "lastOnboardingVersion", "theme"]
+        .filter((key) => original[key] !== undefined)
+        .map((key) => [key, original[key]]),
+    );
+    await writeFile(join(configDir, ".claude.json"), JSON.stringify(account));
+    await writeFile(settings, reloadSettings(2));
+  }
   const fixture = join(work, "fixture");
   await mkdir(join(fixture, ".claude-plugin"), { recursive: true });
   await mkdir(join(fixture, "hooks"));
@@ -60,7 +100,7 @@ for (const mode of cases) {
  let first=true,review=0,prompts=0,tools=0;
  export const register=on=>{
   on('turn.step',async function*($,e,next){
-   if(!e.agentId && first && ${JSON.stringify(mode)}==='revise'){
+   if(!e.agentId && first && ['revise','reload-review'].includes(${JSON.stringify(mode)})){
     first=false;
     const text='The release channel is beta. CERBERUS_REJECTED_DRAFT';
     yield {kind:'text',index:0,text};yield {kind:'stop',stopReason:'end_turn',usage:null};
@@ -76,6 +116,9 @@ for (const mode of cases) {
   });
   on('model.complete',async($,e,next)=>{
    const index=++review;
+   if(${JSON.stringify(mode)}==='reload-review' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
+    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','review');await $.clock.sleep(7000);
+   }
    await $.fs.write(${JSON.stringify(artifacts)}+'/review-start-'+index+'.json',JSON.stringify({at:Date.now(),request:e}));
    if(['cancel','timeout'].includes(${JSON.stringify(mode)}))await $.clock.sleep(7000);
    if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
@@ -88,6 +131,9 @@ for (const mode of cases) {
   });
   on('tool.call',async($,e,next)=>{
    const result=await next(e);
+   if(e.tool==='Read' && !e.agentId && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
+    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');await $.clock.sleep(7000);
+   }
    await $.fs.write(${JSON.stringify(artifacts)}+'/tool-'+(++tools)+'.json',JSON.stringify({tool:e.tool,origin:next.origin,result}));return result;
   });
   on('turn.complete',async($,e,next)=>{
@@ -150,7 +196,7 @@ for (const mode of cases) {
     fixture,
     ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
-    "project,local",
+    mode === "reload-work" ? "user,project,local" : "project,local",
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
@@ -159,6 +205,12 @@ for (const mode of cases) {
     "--debug-file",
     join(artifacts, "debug.log"),
   ];
+  if (mode === "reload-work")
+    args.unshift(
+      "env",
+      `CLAUDE_CONFIG_DIR=${configDir}`,
+      `CLAUDE_SECURESTORAGE_CONFIG_DIR=${process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? ""}`,
+    );
   let started = false;
   try {
     tmux(
@@ -196,12 +248,22 @@ for (const mode of cases) {
       session,
       "Read fact.txt and reply with exactly the release channel, with no other text.",
     );
+    let reloaded = false;
     let cancelled = false;
     let passed = false;
     let latest = "";
     while (Date.now() < deadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "screen.txt"), latest);
+      if (!reloaded && (await readdir(artifacts)).includes("reload-ready")) {
+        await writeFile(join(artifacts, "reloaded"), "yes");
+        if (mode === "reload-work") await writeFile(settings, reloadSettings(3));
+        else {
+          const module = join(plugin, "hooks/register.ts");
+          await writeFile(module, (await readFile(module, "utf8")) + "\n// live reload probe\n");
+        }
+        reloaded = true;
+      }
       if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
         throw new Error("Private draft or verdict leaked to the TUI");
       if (/\berror\b|hook skipped|hook failed|hooks module did not load/iu.test(latest))
@@ -228,7 +290,11 @@ for (const mode of cases) {
         break;
       }
       if (
-        (mode === "pass" || mode === "search" || mode === "revise" || mode === "slow") &&
+        (mode === "pass" ||
+          mode === "search" ||
+          mode === "revise" ||
+          mode === "slow" ||
+          mode.startsWith("reload-")) &&
         /⏺\s+stable\b/u.test(latest)
       ) {
         passed = true;
@@ -247,6 +313,8 @@ for (const mode of cases) {
         search: "検証済みの本文を公開しました。",
         slow: "検証済みの本文を公開しました。",
         timeout: "タイムアウト",
+        "reload-work": "検証済みの本文を公開しました。",
+        "reload-review": "検証済みの本文を公開しました。",
         revise: "修正を依頼しました",
         unverified: "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
@@ -259,6 +327,13 @@ for (const mode of cases) {
     }
     await writeFile(join(artifacts, "log-screen.txt"), latest);
     if (!logSeen) throw new Error("Expected session log not observed");
+    if (mode.startsWith("reload-")) {
+      if (!reloaded || !latest.includes("再ロード前の依頼と修正回数を復元しました。"))
+        throw new Error("Reload recovery not observed");
+      const restarted = latest.includes("再ロードで中断した回答の再生成・再審査を依頼します。");
+      if (mode === "reload-work" && restarted)
+        throw new Error("Work reload unnecessarily restarted a review");
+    }
     if (!/\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]/u.test(latest))
       throw new Error("UTC timestamp not observed in session log");
     if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
@@ -286,13 +361,22 @@ for (const mode of cases) {
     const records = await readdir(artifacts);
     const verdicts = [];
     const origins = [];
+    let restartPrompts = 0;
     for (const name of records) {
       if (/^review-\d+\.json$/u.test(name)) {
         const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
         verdicts.push(review.result.text ?? "");
       }
-      if (name.startsWith("prompt-"))
-        origins.push(JSON.parse(await readFile(join(artifacts, name), "utf8")).origin);
+      if (name.startsWith("prompt-")) {
+        const prompt = JSON.parse(await readFile(join(artifacts, name), "utf8"));
+        origins.push(prompt.origin);
+        if (
+          prompt.context?.some((text) =>
+            text.includes("The answer review was interrupted by a plugin reload."),
+          )
+        )
+          restartPrompts++;
+      }
     }
     const pluginPrompts = origins.filter(
       (origin) => origin.kind === "plugin" && origin.name === "cerberus-gate",
@@ -306,7 +390,13 @@ for (const mode of cases) {
         return false;
       }
     }).length;
-    if (mode === "revise" ? revisions < 1 || pluginPrompts !== revisions : pluginPrompts !== 0)
+    const expectedPrompts =
+      (mode === "revise" || mode === "reload-review" ? revisions : 0) + restartPrompts;
+    if (
+      restartPrompts > (mode === "reload-review" ? 1 : 0) ||
+      (mode === "revise" && revisions < 1) ||
+      pluginPrompts !== expectedPrompts
+    )
       throw new Error(`Unexpected control prompt count: ${pluginPrompts}`);
     if (mode === "search") {
       const calls = [];
@@ -329,7 +419,7 @@ for (const mode of cases) {
       const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
       if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");
     }
-    summary.push({ case: mode, status: "PASS", workspace: work, pluginPrompts });
+    summary.push({ case: mode, status: "PASS", workspace: work, pluginPrompts, restartPrompts });
     console.log(`PASS ${mode}`);
   } catch (error) {
     if (started)
