@@ -2,7 +2,7 @@
 
 ## セットアップと Git
 
-対応バージョンは [package.json](/package.json) と [README](/README.md#起動) を参照する。
+対応バージョンは [package.json](/package.json) と [README](/README.md#インストール) を参照する。
 `npm ci`、`npm run setup:checks`、`sh scripts/setup-hooks.sh` で検査ツールと hook を導入する。
 型定義の更新は [型定義の手順](/types/README.md) に従う。
 
@@ -19,7 +19,7 @@ hook は worktree 共通の Git ディレクトリに置き、異なる既存 ho
 
 `claude plugin update` は同じ `version` を入れ替えないため、アンインストール後に再インストールする。
 消える `/config` の設定値は事前に読み取り、元の型で復元する。
-設定保存 CLI は複数行を拒否するため設定ファイルへ戻し、インストールが書いた他の設定も保持する。
+`claude plugin configure --values-stdin` は複数行を拒否するため設定ファイルへ戻し、インストールが書いた他の設定も保持する。
 反映には Claude Code の再起動が必要。
 
 ## 自動検査
