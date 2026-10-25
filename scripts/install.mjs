@@ -14,7 +14,7 @@ const entry = {
   name: "cerberus-gate",
   displayName: "Cerberus Gate",
   description:
-    "Review final answers before publication using a read-only agent, and route corrections back to the main agent.",
+    "Review final answers before publication using session tools under instructions prohibiting side effects, and route corrections back to the main agent.",
   source: "./cerberus-gate",
   homepage: "https://github.com/HappyOnigiri/ClaudeCodeCerberusGate",
   keywords: ["review", "agents", "mod"],
@@ -78,10 +78,9 @@ claude("plugin", "marketplace", "update", marketplaceName);
 // 消えるので、先に読み取ってインストール後に戻す。
 const settings = await readJson(join(config, "settings.json"), {});
 const options = Object.fromEntries(
-  Object.entries(settings?.pluginConfigs?.[plugin]?.options ?? {}).map(([key, value]) => [
-    key,
-    String(value),
-  ]),
+  Object.entries(settings?.pluginConfigs?.[plugin]?.options ?? {})
+    .filter(([key]) => key !== "readOnlyMcpTools")
+    .map(([key, value]) => [key, String(value)]),
 );
 const saved = JSON.stringify(options);
 if (saved !== "{}")

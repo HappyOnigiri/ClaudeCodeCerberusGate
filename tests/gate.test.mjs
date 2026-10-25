@@ -110,7 +110,7 @@ function harness(
     },
     tool: {
       list: async () =>
-        ["Read", "Write", "Bash", "mcp__notes__search"].map((name) => ({
+        ["Read", "Write", "Bash", "mcp__notes__search", "mcp__notes__write"].map((name) => ({
           name,
           description: name,
           mcp: name.startsWith("mcp__"),
@@ -302,7 +302,15 @@ test("PASS returns the exact held answer in the original step without a prompt",
   assert.deepEqual(h.events.calls, ["Read"]);
   assert.equal(h.events.prompts.length, 0);
   assert.ok(h.events.models[1].request.prompt.includes("fact.txt:1 stable"));
-  assert.ok(!h.events.models[0].request.prompt.includes('"name":"Write"'));
+  const tools = JSON.parse(h.events.models[0].request.prompt).tools;
+  assert.deepEqual(
+    tools.map((t) => t.name),
+    ["Read", "Write", "Bash", "mcp__notes__search", "mcp__notes__write"],
+  );
+  assert.match(tools.find((t) => t.name === "Bash").inputType, /command: string/u);
+  assert.match(h.events.models[0].request.system, /Never modify files/u);
+  assert.equal(h.events.statuses.at(-1), undefined);
+  assert.ok(!h.events.statuses.includes(""));
   assert.ok(h.events.timers[0].cancelled);
 });
 
@@ -331,11 +339,18 @@ test("malformed verdicts, denied tools and spoofed envelope fields never pass or
   for (const response of [
     "PASS",
     '{"decision":"PASS","findings":["error"]}',
-    JSON.stringify({ tool: "Bash", input: { command: "touch forbidden" } }),
-    JSON.stringify({ tool: "Write", input: { file_path: "fact.txt", content: "changed" } }),
-    ...["consent", "agentId", "tool", "tool_use_id", "requestMeta", "__proto__"].map(
-      (key) => `{"tool":"Read","input":{"file_path":"fact.txt","${key}":"spoof"}}`,
-    ),
+    JSON.stringify({ tool: "unavailable", input: {} }),
+    ...[
+      "consent",
+      "agentId",
+      "tool",
+      "tool_use_id",
+      "requestMeta",
+      "dangerouslyDisableSandbox",
+      "__proto__",
+      "constructor",
+      "prototype",
+    ].map((key) => `{"tool":"Read","input":{"file_path":"fact.txt","${key}":"spoof"}}`),
     '{"tool":"Read","input":{},"decision":"PASS","findings":[]}',
   ]) {
     const h = harness();
@@ -347,38 +362,31 @@ test("malformed verdicts, denied tools and spoofed envelope fields never pass or
   }
 });
 
-test("MCP requires exact allow-list and runtime read-only metadata; existing denials stand", async () => {
-  for (const allowlisted of [false, true])
-    for (const readonly of [false, true]) {
-      const h = harness(allowlisted ? { readOnlyMcpTools: "mcp__notes__search" } : {});
+test("session CLI and MCP calls do not require read-only stamps; host denials stand", async () => {
+  for (const tool of ["Bash", "mcp__notes__search"]) {
+    for (const permission of ["allow", "deny"]) {
+      const h = harness({ readOnlyMcpTools: "obsolete value" });
       await started(h);
-      h.setReadOnly(readonly);
+      h.setReadOnly(false);
+      h.setCall({ text: "CLI evidence" });
+      h.setPermission(permission);
       h.replies.push(
-        JSON.stringify({ tool: "mcp__notes__search", input: { query: "fact" } }),
+        JSON.stringify({
+          tool,
+          input: tool === "Bash" ? { command: "git status --short" } : { query: "fact" },
+        }),
         verdict(),
       );
       assert.equal(
         (await h.step()).text,
-        allowlisted && readonly ? "UNPUBLISHED DRAFT" : withNote(UNVERIFIED, "UNPUBLISHED DRAFT"),
+        permission === "allow" ? "UNPUBLISHED DRAFT" : withNote(UNVERIFIED, "UNPUBLISHED DRAFT"),
       );
-      assert.equal(h.events.calls.length, allowlisted && readonly ? 1 : 0);
+      assert.deepEqual(h.events.calls, permission === "allow" ? [tool] : []);
+      if (permission === "allow") assert.match(h.events.models[1].request.prompt, /CLI evidence/u);
     }
-  const h = harness();
-  await started(h);
-  h.setPermission("deny");
-  h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
-  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
-  assert.deepEqual(h.events.calls, []);
+  }
   const plain = harness();
   assert.equal((await plain.fire("tool.call", { tool: "Write" })).result, "read result");
-});
-
-test("MCP output without a read-only stamp is not accepted even after a permissive check", async () => {
-  const h = harness({ readOnlyMcpTools: "mcp__notes__search" });
-  await started(h);
-  h.setCall({ result: "unstamped result" });
-  h.replies.push(JSON.stringify({ tool: "mcp__notes__search", input: {} }));
-  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
 });
 
 test("timeout aborts the model and shows the original text without another prompt", async () => {
@@ -598,21 +606,12 @@ test("reviewer model override and a shrinking total deadline are passed to the c
   );
 });
 
-test("built-in search tools stay available when omitted from the main tool list", async () => {
+test("unlisted tools are not invented or forwarded", async () => {
   const h = harness();
   await started(h);
-  h.replies.push(
-    JSON.stringify({ tool: "Glob", input: { pattern: "**/fact.txt" } }),
-    JSON.stringify({ tool: "Grep", input: { pattern: "stable", path: "fact.txt" } }),
-    verdict(),
-  );
-  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
-  assert.deepEqual(h.events.calls, ["Glob", "Grep"]);
-  const names = JSON.parse(h.events.models[0].request.prompt).tools.map((tool) => tool.name);
-  for (const name of ["Read", "Glob", "Grep", "WebSearch", "WebFetch"])
-    assert.ok(names.includes(name));
-  assert.equal(h.events.statuses.at(-1), undefined);
-  assert.ok(!h.events.statuses.includes(""));
+  h.replies.push(JSON.stringify({ tool: "Glob", input: { pattern: "**/fact.txt" } }));
+  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, []);
 });
 
 let reloadSerial = 0;
