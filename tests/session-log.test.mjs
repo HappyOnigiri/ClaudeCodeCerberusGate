@@ -121,3 +121,67 @@ test("CLI resolves only the current session and deletes only its own material", 
   assert.equal(invoke("release", { directory: work }).status, 1);
   assert.equal(await readFile(source, "utf8"), raw);
 });
+
+test("persistent material is byte-identical, indexed, private and retained after temporary release", async (t) => {
+  const work = await mkdtemp(join(tmpdir(), "cerberus-preserve-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  await mkdir(join(work, "projects", "project"), { recursive: true });
+  await writeFile(join(work, "projects", "project", "session.jsonl"), raw);
+  const result = spawnSync(
+    process.execPath,
+    ["plugins/cerberus-gate/hooks/session-log.mjs", "create"],
+    {
+      input: JSON.stringify({
+        sessionId: "session",
+        debug: { sessionId: "session", instanceId: "instance", reviewId: "1-1" },
+      }),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_CONFIG_DIR: work },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const material = JSON.parse(result.stdout);
+  assert.equal(material.debug.state, "saved");
+  const index = (await readFile(join(work, "cerberus-gate/debug/session/index.jsonl"), "utf8"))
+    .trim()
+    .split("\n")
+    .map(JSON.parse);
+  assert.equal(index.length, 3);
+  for (const record of index) {
+    const saved = join(work, "cerberus-gate/debug/session", record.path);
+    assert.equal(
+      await readFile(saved, "utf8"),
+      await readFile(join(material.directory, record.path.split("/").at(-1)), "utf8"),
+    );
+    assert.equal((await stat(saved)).mode & 0o777, 0o600);
+    assert.equal(record.bytes, Buffer.byteLength(raw));
+  }
+  await release(material.directory);
+  assert.equal(await readFile(join(material.debug.directory, "source.jsonl"), "utf8"), raw);
+});
+
+test("persistent write failure preserves usable temporary evidence and reports structured diagnostics", async (t) => {
+  const work = await mkdtemp(join(tmpdir(), "cerberus-persist-failure-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  await mkdir(join(work, "projects", "project"), { recursive: true });
+  await writeFile(join(work, "projects", "project", "session.jsonl"), raw);
+  await symlink(join(work, "projects"), join(work, "cerberus-gate"));
+  const result = spawnSync(
+    process.execPath,
+    ["plugins/cerberus-gate/hooks/session-log.mjs", "create"],
+    {
+      input: JSON.stringify({
+        sessionId: "session",
+        debug: { sessionId: "session", instanceId: "instance", reviewId: "1-1" },
+      }),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_CONFIG_DIR: work },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const material = JSON.parse(result.stdout);
+  assert.equal(material.debug.state, "failed");
+  assert.match(material.debug.error.message, /Unsafe debug directory/u);
+  assert.equal(await readFile(material.source, "utf8"), raw);
+  await release(material.directory);
+});

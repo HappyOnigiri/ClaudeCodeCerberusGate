@@ -6,7 +6,7 @@ import {
   MAX_DRAFT,
   NO_DRAFT,
   readConfig,
-  parseVerdict,
+  diagnoseVerdict,
   REVIEWER,
   UNRESOLVED,
   UNVERIFIED,
@@ -14,9 +14,18 @@ import {
   withNote,
 } from "./policy.ts";
 import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
-import { createState, current, disposition, reset } from "./state.ts";
-import { MAX_ROUNDS, MAX_EVIDENCE, reviewSystem, reviewTools, toolRequest } from "./review.ts";
+import { createState, current, disposition, reset, resultOf } from "./state.ts";
+import {
+  MAX_ROUNDS,
+  MAX_EVIDENCE,
+  reviewSystem,
+  reviewTools,
+  toolRequest,
+  reviewFailureReason,
+  cancellable,
+} from "./review.ts";
 import type { ReviewRequest } from "./review.ts";
+import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
 import type { Candidate, Delivery, GateState } from "./state.ts";
 import type { Config, Verdict } from "./policy.ts";
@@ -25,15 +34,92 @@ import type {
   Hook,
   Register,
   TurnStepInput,
-  TurnStepResult,
   ToolCallArgs,
   ToolCallResult,
 } from "claude-code";
 
 const gate = createState();
 const log = createLog();
+let debug = createDebug();
+let debugQueue: Promise<void> = Promise.resolve();
+function debugFailure($: EngineInterface, error: unknown): void {
+  debug.failed(error);
+  try {
+    log.record(
+      $.clock.now(),
+      "デバッグログの保存に失敗しました。/cgate log で保存状態を確認してください。",
+    );
+    $.ui.toast("Cerberus Gate: デバッグログの保存に失敗しました。", { timeoutMs: 3000 });
+  } catch {
+    /* Diagnostic notifications must not interrupt publication. */
+  }
+}
+async function flushDebug(
+  $: EngineInterface,
+  logger = debug,
+  force = false,
+  signal?: AbortSignal,
+): Promise<void> {
+  // A cancelled turn cannot launch helpers. Keep its tail for the next live dispatch.
+  if (!logger.ready()) return;
+  debugQueue = debugQueue.then(async () => {
+    if ((signal?.aborted || gate.phase === "cancelled") && !force) return;
+    const records = logger.take();
+    if (!records.length) return;
+    try {
+      const result = await $.process.run(
+        ["node", `${$.plugin.root}/hooks/debug-log.mjs`, "append"],
+        {
+          stdin: JSON.stringify({ ...logger.identity(), records }),
+          timeoutMs: 1000,
+        },
+      );
+      if (result.exitCode !== 0) throw result;
+    } catch (error) {
+      if (logger === debug) debugFailure($, error);
+    }
+  });
+  await debugQueue;
+}
+async function initializeDebug($: EngineInterface, details: unknown): Promise<void> {
+  debug = createDebug();
+  const identity = debug.start(await $.session.id());
+  let pluginVersion: unknown;
+  try {
+    const result = await $.process.run(
+      ["node", `${$.plugin.root}/hooks/debug-log.mjs`, "initialize"],
+      {
+        stdin: JSON.stringify(identity),
+        timeoutMs: 1000,
+      },
+    );
+    if (result.exitCode !== 0 || result.isStdoutTruncated) throw result;
+    const location = JSON.parse(result.stdout);
+    if (
+      typeof location.events !== "string" ||
+      typeof location.index !== "string" ||
+      typeof location.directory !== "string"
+    )
+      throw new Error("Invalid debug location");
+    debug.saved(location);
+    pluginVersion = location.pluginVersion;
+  } catch (error) {
+    debugFailure($, error);
+  }
+  debug.record("session.start", {
+    details,
+    config,
+    configured,
+    cwd: await $.session.cwd(),
+    version: await $.session.version(),
+    pluginRoot: $.plugin.root,
+    pluginVersion,
+  });
+  await flushDebug($);
+}
 let config: Config = readConfig({});
 let configured = true;
+let configError: unknown;
 let interactive = true;
 let pendingEnabled: boolean | undefined;
 const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
@@ -43,17 +129,15 @@ let buffered = { key: "", text: "" };
 const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
 const controlText = (delivery: Delivery): string =>
   `${CONTROL} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings)}` : ""}`;
-const resultOf = (e: TurnStepInput, answer: string): TurnStepResult => ({
-  turnId: e.turnId,
-  index: e.index,
-  answer,
-  toolUses: [],
-  stopReason: "end_turn",
-  usage: null,
-});
 
-async function saveRecovery($: EngineInterface, state: GateState): Promise<void> {
+async function saveRecovery(
+  $: EngineInterface,
+  state: GateState,
+  signal?: AbortSignal,
+): Promise<void> {
+  debug.record("state.saved", { ...snapshotRecovery(state), phase: state.phase });
   await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, snapshotRecovery(state));
+  await flushDebug($, debug, false, signal);
 }
 
 async function applyEnabled($: EngineInterface, desired: boolean | undefined, persist: boolean) {
@@ -67,7 +151,9 @@ async function applyEnabled($: EngineInterface, desired: boolean | undefined, pe
         return { ok: false, text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
       config = { ...config, enabled: result.value };
       gate.sessionEnabled = undefined;
-    } catch {
+    } catch (error) {
+      debug.record("settings.failed", { setting: "enabled", error }, "error");
+      await flushDebug($);
       return { ok: false, text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
     }
   } else gate.sessionEnabled = desired;
@@ -96,7 +182,19 @@ async function applyEnabled($: EngineInterface, desired: boolean | undefined, pe
 function queueContinuation($: EngineInterface, delivery: Delivery): void {
   $.clock.after(0, async () => {
     if (gate.delivery !== delivery || gate.epoch !== delivery.epoch) return;
-    const sent = await $.prompt.submit({ text: controlText(delivery) }).catch(() => undefined);
+    const operationId = debug.operation();
+    debug.record("delivery.start", { operationId, ...delivery });
+    await flushDebug($);
+    const sent = await $.prompt.submit({ text: controlText(delivery) }).catch((error: unknown) => {
+      debug.record("delivery.failed", { operationId, error }, "error");
+      return undefined;
+    });
+    debug.record("delivery.complete", {
+      operationId,
+      result: sent,
+      stale: gate.epoch !== delivery.epoch || gate.serial !== delivery.token,
+    });
+    await flushDebug($);
     if (gate.epoch !== delivery.epoch || gate.serial !== delivery.token) return;
     if (sent !== undefined && sent.drop === undefined) return;
     gate.delivery = undefined;
@@ -130,20 +228,6 @@ async function callReviewTool(
 }
 
 const unverified = (): Verdict => ({ decision: "UNVERIFIED", findings: [] });
-// Cancellation must also release the main step while an investigation tool is still in flight.
-async function cancellable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  let stop: () => void = () => {};
-  const cancelled = new Promise<never>((_resolve, reject) => {
-    stop = () => reject(new Error("Review stopped"));
-    signal.addEventListener("abort", stop, { once: true });
-    if (signal.aborted) stop();
-  });
-  try {
-    return await Promise.race([operation, cancelled]);
-  } finally {
-    signal.removeEventListener("abort", stop);
-  }
-}
 
 async function review(
   $: EngineInterface,
@@ -154,6 +238,19 @@ async function review(
   effort: TurnStepInput["effort"],
 ): Promise<Verdict> {
   const signal = candidate.controller.signal;
+  const logger = debug;
+  const correlation = {
+    turnId: candidate.turnId,
+    stepIndex: candidate.stepIndex,
+    epoch: candidate.epoch,
+    reviewToken: candidate.token,
+  };
+  let stage = "tool.list";
+  let activeOperationId = "";
+  const fail = (reason: string): Verdict => {
+    logger.record("review.unverified", { ...correlation, reason });
+    return unverified();
+  };
   try {
     const started = await $.clock.now();
     const tools = reviewTools(await $.tool.list());
@@ -162,53 +259,115 @@ async function review(
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const remaining = reviewConfig.reviewTimeoutMs - ((await $.clock.now()) - started);
       if (remaining <= 0) candidate.timedOut = true;
-      if (signal.aborted || candidate.timedOut) return unverified();
-      const response = await $.model.complete(
-        {
-          model: reviewConfig.reviewerModel === "inherit" ? model : reviewConfig.reviewerModel,
-          effort:
-            reviewConfig.reviewerEffort === "inherit"
-              ? typeof effort === "number"
-                ? undefined
-                : effort
-              : reviewConfig.reviewerEffort,
-          system: reviewSystem(reviewConfig),
-          prompt: JSON.stringify({
-            request,
-            workingDirectory: await $.session.cwd(),
-            sessionLog: JSON.parse(candidate.context),
-            unpublishedDraft: candidate.text,
-            tools,
-            evidence,
-            replyFormat:
-              'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
-          }),
-          maxTokens: 4096,
-          timeoutMs: remaining,
-        },
-        { signal },
+      if (signal.aborted || candidate.timedOut)
+        return fail(signal.aborted ? "cancelled" : "timeout");
+      const operationId = logger.operation();
+      stage = "model";
+      activeOperationId = operationId;
+      const modelRequest = {
+        model: reviewConfig.reviewerModel === "inherit" ? model : reviewConfig.reviewerModel,
+        effort:
+          reviewConfig.reviewerEffort === "inherit"
+            ? typeof effort === "number"
+              ? undefined
+              : effort
+            : reviewConfig.reviewerEffort,
+        system: reviewSystem(reviewConfig),
+        prompt: JSON.stringify({
+          request,
+          workingDirectory: await $.session.cwd(),
+          sessionLog: JSON.parse(candidate.context),
+          unpublishedDraft: candidate.text,
+          tools,
+          evidence,
+          replyFormat:
+            'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
+        }),
+        maxTokens: 4096,
+        timeoutMs: remaining,
+      };
+      logger.record("model.start", {
+        ...correlation,
+        operationId,
+        round,
+        remaining,
+        request: modelRequest,
+      });
+      await flushDebug($, logger, false, signal);
+      const modelStarted = await $.clock.now();
+      const response = await cancellable(
+        $.model.complete(modelRequest, { signal }).then((result) => {
+          if (signal.aborted) {
+            logger.record("model.discarded", { ...correlation, operationId, response: result });
+          }
+          return result;
+        }),
+        signal,
       );
-      if (signal.aborted || !response.isAnswered || response.text.length > MAX_DRAFT)
-        return unverified();
+      logger.record("model.complete", {
+        ...correlation,
+        operationId,
+        round,
+        response,
+        elapsedMs: (await $.clock.now()) - modelStarted,
+      });
+      await flushDebug($, logger, false, signal);
+      if (signal.aborted) return fail("cancelled");
+      if (!response.isAnswered || !response.text) return fail("model_empty_or_failed");
+      if (response.text.length > MAX_DRAFT) return fail("response_size_limit");
       if ((await $.clock.now()) - started >= reviewConfig.reviewTimeoutMs) {
         candidate.timedOut = true;
-        return unverified();
+        return fail("timeout");
       }
+      stage = "parse";
       const call = toolRequest(response.text);
-      if (call === undefined) return parseVerdict(response.text);
-      const result = await cancellable(callReviewTool($, call, names), signal);
-      if (signal.aborted || result.deny !== undefined || result.isError) return unverified();
+      if (call === undefined) {
+        const parsed = diagnoseVerdict(response.text);
+        logger.record("verdict.parsed", { ...correlation, ...parsed });
+        return parsed.verdict;
+      }
+      stage = "tool";
+      const toolOperationId = logger.operation();
+      activeOperationId = toolOperationId;
+      logger.record("tool.start", { ...correlation, operationId: toolOperationId, call });
+      await flushDebug($, logger, false, signal);
+      const result = await cancellable(
+        callReviewTool($, call, names).then((value) => {
+          logger.record(signal.aborted ? "tool.discarded" : "tool.complete", {
+            ...correlation,
+            operationId: toolOperationId,
+            result: value,
+          });
+          return value;
+        }),
+        signal,
+      );
+      await flushDebug($, logger, false, signal);
+      if (signal.aborted) return fail("cancelled");
+      if (result.deny !== undefined || result.isError)
+        return fail(result.deny !== undefined ? "tool_denied" : "tool_failed");
       evidence.push({
         tool: call.tool,
         input: call.input,
         result: result.text ?? JSON.stringify(result.result) ?? "",
       });
-      if (JSON.stringify(evidence).length > MAX_EVIDENCE) return unverified();
+      if (JSON.stringify(evidence).length > MAX_EVIDENCE) return fail("evidence_size_limit");
     }
-  } catch {
-    // Invalid JSON, permission failures and unavailable evidence never become PASS.
+  } catch (error) {
+    logger.record(
+      "review.failed",
+      {
+        ...correlation,
+        stage,
+        operationId: activeOperationId,
+        reason: reviewFailureReason(stage, error, signal.aborted, candidate.timedOut),
+        error,
+      },
+      "error",
+    );
+    return unverified();
   }
-  return unverified();
+  return fail("round_limit");
 }
 
 // Regular reviews queue only REVISE; reload recovery can also request a fresh answer.
@@ -218,6 +377,13 @@ async function finishReview(
   verdict: Verdict,
 ): Promise<string> {
   const mode = disposition(verdict, gate.revisions, config.maxRevisions);
+  debug.record("review.complete", {
+    epoch: candidate.epoch,
+    reviewToken: candidate.token,
+    verdict,
+    mode,
+    revisions: gate.revisions,
+  });
   log.record($.clock.now(), `審査 #${candidate.token}: ${verdict.decision}`, verdict.findings);
   gate.active = undefined;
   if (mode === "revise") {
@@ -263,9 +429,11 @@ async function verify(
   signal: AbortSignal,
 ): Promise<string> {
   const epoch = gate.epoch;
+  const logger = debug;
   const candidate: Candidate = {
     token: ++gate.serial,
     turnId: e.turnId,
+    stepIndex: e.index,
     epoch: gate.epoch,
     text,
     context: "",
@@ -284,25 +452,44 @@ async function verify(
     candidate.controller.abort();
   });
   let directory: string | undefined;
+  const materialOperationId = debug.operation();
   try {
-    await saveRecovery($, gate);
+    await saveRecovery($, gate, signal);
+    logger.record("material.start", {
+      operationId: materialOperationId,
+      epoch,
+      reviewToken: candidate.token,
+    });
+    if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
     const generated = await $.process.run(
       ["node", `${$.plugin.root}/hooks/session-log.mjs`, "create"],
       {
-        stdin: JSON.stringify({ sessionId: await $.session.id(), request: gate.prompt }),
+        stdin: JSON.stringify({
+          sessionId: await $.session.id(),
+          request: gate.prompt,
+          debug: { ...debug.identity(), reviewId: `${epoch}-${candidate.token}` },
+        }),
         timeoutMs: 15_000,
       },
     );
+    logger.record("material.complete", { operationId: materialOperationId, result: generated });
+    if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
     if (generated.exitCode !== 0 || generated.isStdoutTruncated) {
       if (!current(gate, candidate) || signal.aborted) return "";
+      logger.record("review.unverified", {
+        reason: "material_failed",
+        epoch,
+        reviewToken: candidate.token,
+      });
       return await finishReview($, candidate, unverified());
     }
     const material = JSON.parse(generated.stdout);
+    if (material.debug?.state === "failed") debugFailure($, material.debug);
     directory = material.directory;
     candidate.context = generated.stdout;
     if (!current(gate, candidate) || signal.aborted) return "";
     gate.material = directory;
-    await saveRecovery($, gate);
+    await saveRecovery($, gate, signal);
     let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort);
     if (!current(gate, candidate) || signal.aborted) return "";
     if (candidate.timedOut) {
@@ -310,23 +497,38 @@ async function verify(
       verdict = { decision: "UNVERIFIED", findings: [] };
     }
     return await finishReview($, candidate, verdict);
-  } catch {
+  } catch (error) {
+    logger.record("review.exception", { epoch, reviewToken: candidate.token, error }, "error");
     if (!current(gate, candidate) || signal.aborted) return "";
     return await finishReview($, candidate, unverified());
   } finally {
     if (directory !== undefined) {
+      logger.record("material.release.start", { operationId: materialOperationId, directory });
+      if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
       const removed = await $.process
         .run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "release"], {
           stdin: JSON.stringify({ directory }),
           timeoutMs: 15_000,
         })
         .catch(() => undefined);
+      logger.record("material.release.complete", {
+        operationId: materialOperationId,
+        result: removed,
+      });
       if (removed?.exitCode !== 0) log.record($.clock.now(), "検証資料の削除に失敗しました。");
     }
     if (gate.material === directory) {
       gate.material = undefined;
-      if (gate.prompt) await saveRecovery($, gate);
+      if (gate.prompt && epoch === gate.epoch) await saveRecovery($, gate, signal);
     }
+    logger.record("review.cleanup", {
+      epoch,
+      reviewToken: candidate.token,
+      timedOut: candidate.timedOut,
+      aborted: signal.aborted,
+      stale: epoch !== gate.epoch,
+    });
+    if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
     timer.cancel();
     signal.removeEventListener("abort", abort);
     if (gate.active === candidate) gate.active = undefined;
@@ -365,7 +567,17 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     chunks.push(chunk);
   }
   const response = await stream.result;
-  if (next.signal.aborted || epoch !== gate.epoch) return resultOf(e, "");
+  debug.record("answer.received", {
+    turnId: e.turnId,
+    stepIndex: e.index,
+    epoch,
+    response,
+    chunks,
+  });
+  if (next.signal.aborted || epoch !== gate.epoch) {
+    debug.record("answer.discarded", { turnId: e.turnId, epoch });
+    return resultOf(e, "");
+  }
   const text = chunks
     .filter((c) => c.kind === "text")
     .map((c) => c.text)
@@ -376,6 +588,14 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     chunks.some((c) => c.kind === "tool") ||
     !text.trim()
   ) {
+    debug.record("answer.skipped", {
+      reason: !enabled()
+        ? "disabled"
+        : response.toolUses.length || chunks.some((c) => c.kind === "tool")
+          ? "tool_step"
+          : "empty",
+    });
+    await flushDebug($, debug, false, next.signal);
     buffered.text = "";
     yield* chunks;
     return response;
@@ -389,10 +609,18 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
       $.clock.now(),
       "回答の終了条件またはサイズが審査の対象外のため、未検証の本文を表示しました。",
     );
+    debug.record("review.unverified", {
+      reason: text.length > MAX_DRAFT ? "draft_size_limit" : "stop_reason",
+      stopReason: response.stopReason,
+    });
+    await flushDebug($, debug, false, next.signal);
     shown = withNote(UNVERIFIED, text);
   } else {
+    debug.record("status.changed", { value: WAITING });
     $.ui.status(WAITING);
     shown = await verify($, e, text, next.signal);
+    debug.record("status.changed", { value: null });
+    await flushDebug($, debug, false, next.signal);
     $.ui.status(undefined);
   }
   if (buffered.key === stepKey(e)) buffered.text = "";
@@ -403,6 +631,11 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
 };
 
 const stepFailure: Hook<"turn.step"> = async function* ($, e, next) {
+  debug.record(
+    "hook.failed",
+    { hook: "turn.step", error: "error" in next ? next.error : undefined },
+    "error",
+  );
   const text = buffered.key === stepKey(e) ? buffered.text : "";
   buffered = { key: "", text: "" };
   if (next.signal.aborted) return resultOf(e, "");
@@ -426,6 +659,11 @@ const stepFailure: Hook<"turn.step"> = async function* ($, e, next) {
 };
 
 const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
+  debug.record("prompt.received", {
+    prompt: e,
+    epoch: gate.epoch,
+    pending: gate.active !== undefined || gate.delivery !== undefined,
+  });
   if (e.origin.kind === "plugin" && e.origin.name === "cerberus-gate") {
     const delivery = gate.delivery;
     if (delivery === undefined || e.text !== controlText(delivery) || delivery.epoch !== gate.epoch)
@@ -492,15 +730,18 @@ export const register: Register = (on, options) => {
   pendingEnabled = undefined;
   log.clear();
   configured = true;
+  configError = undefined;
   try {
     config = readConfig(options);
-  } catch {
+  } catch (error) {
+    configError = error;
     configured = false;
   }
   on("session.start", async ($, e, next) => {
     log.clear();
     interactive = e.isInteractive;
     configured = configured && (await $.session.version()).base === "2.1.310";
+    await initializeDebug($, { event: e, options, configError });
     log.record($.clock.now(), "Cerberus Gate を起動しました。");
     if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
     if (!interactive) log.record($.clock.now(), "非対話セッションは対象外です。");
@@ -514,6 +755,7 @@ export const register: Register = (on, options) => {
         .catch(() => undefined);
     }
     gate.material = undefined;
+    debug.record("recovery.loaded", recovery);
     const pending = restoreRecovery(gate, recovery);
     if (gate.prompt) log.record($.clock.now(), "再ロード前の依頼と修正回数を復元しました。");
     for (const agent of await $.agent.list()) {
@@ -522,11 +764,16 @@ export const register: Register = (on, options) => {
       if (agent.status === "running")
         await $.tool.call({ tool: "TaskStop", task_id: agent.id }).catch(() => undefined);
     }
-    await $.command.register({ name: "cerberus", description: "回答検証の状態を表示" });
+    await $.command.register({
+      name: "cerberus",
+      description: "回答検証の状態・履歴・デバッグログを表示",
+      argumentHint: "[on|off|reset|model|history|log|cancel]",
+      immediate: true,
+    });
     await $.command.register({
       name: "cgate",
       description: "Cerberus Gate の状態・セッションログを表示",
-      argumentHint: "[on|off|reset|model|log|cancel]",
+      argumentHint: "[on|off|reset|model|history|log|cancel]",
       immediate: true,
     });
     if (pending && gate.prompt && configured && interactive && enabled()) {
@@ -546,6 +793,8 @@ export const register: Register = (on, options) => {
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
     const argument = e.args.trim();
+    debug.record("command.received", { command: e.command, argument });
+    void flushDebug($, debug, true);
     if (argument === "on" || argument === "off") {
       pendingEnabled = argument === "on";
       await $.ui.open({
@@ -569,9 +818,10 @@ export const register: Register = (on, options) => {
       });
       return {};
     }
-    if (argument === "log") return { text: await log.text() };
+    if (argument === "history") return { text: await log.text() };
+    if (argument === "log") return { text: debug.text() };
     if (argument !== "" && argument !== "cancel")
-      return { text: "使い方: /cgate [on|off|reset|model|log|cancel]" };
+      return { text: "使い方: /cgate [on|off|reset|model|history|log|cancel]" };
     if (argument === "cancel") {
       const turnId = gate.active?.turnId;
       reset(gate, gate.prompt);
@@ -651,7 +901,9 @@ export const register: Register = (on, options) => {
             focus: true,
             closeOnEscape: true,
           });
-        } catch {
+        } catch (error) {
+          debug.record("settings.failed", { setting: "reviewerModel", error }, "error");
+          await flushDebug($);
           $.ui.toast("Cerberus Gate: モデルを保存できませんでした。", { timeoutMs: 3000 });
         }
       },
@@ -688,7 +940,9 @@ export const register: Register = (on, options) => {
             timeoutMs: 3000,
           });
           await $.ui.close({ id: "reviewer-effort" });
-        } catch {
+        } catch (error) {
+          debug.record("settings.failed", { setting: "reviewerEffort", error }, "error");
+          await flushDebug($);
           $.ui.toast("Cerberus Gate: effort を保存できませんでした。", { timeoutMs: 3000 });
         }
       },
@@ -700,11 +954,16 @@ export const register: Register = (on, options) => {
   on("agent.spawn", { subagentType: REVIEWER }, () => ({ deny: "Cerberus: reviews run inline." }));
   on("turn.step", onStep).catch(stepFailure);
   on("prompt.submit", onPrompt);
-  on("tool.call", onTool).catch(() => ({ deny: "Cerberus: reviewer tool guard failed." }));
-  on("tool.check", onCheck).catch(() => ({
-    decision: "deny",
-    reason: "Cerberus: permission guard failed.",
-  }));
+  on("tool.call", onTool).catch(async ($, e, next) => {
+    debug.record("hook.failed", { hook: "tool.call", input: e, error: next.error }, "error");
+    await flushDebug($);
+    return { deny: "Cerberus: reviewer tool guard failed." };
+  });
+  on("tool.check", onCheck).catch(async ($, e, next) => {
+    debug.record("hook.failed", { hook: "tool.check", input: e, error: next.error }, "error");
+    await flushDebug($);
+    return { decision: "deny", reason: "Cerberus: permission guard failed." };
+  });
   on("turn.abort", async ($, e, next) => {
     log.record($.clock.now(), "回答処理が中断されました。");
     reset(gate, gate.prompt);
@@ -714,6 +973,8 @@ export const register: Register = (on, options) => {
     return next(e);
   });
   on("session.end", async ($, e, next) => {
+    debug.record("session.end", e);
+    await flushDebug($, debug, true);
     log.clear();
     reset(gate, "");
     gate.sessionEnabled = undefined;

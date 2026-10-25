@@ -2,6 +2,7 @@ import type { Verdict } from "./policy.ts";
 export type Candidate = {
   token: number;
   turnId: string;
+  stepIndex: number;
   epoch: number;
   text: string;
   context: string;
@@ -65,4 +66,15 @@ export function disposition(verdict: Verdict, revisions: number, max: number): M
     UNVERIFIED: "notice",
   } satisfies Record<Verdict["decision"], Mode>;
   return modes[verdict.decision];
+}
+
+export function resultOf(e: { turnId: string; index: number }, answer: string) {
+  return {
+    turnId: e.turnId,
+    index: e.index,
+    answer,
+    toolUses: [],
+    stopReason: "end_turn" as const,
+    usage: null,
+  };
 }

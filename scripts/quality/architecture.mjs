@@ -212,6 +212,8 @@ function inspectDependency(n, { file, privileged, literal, report }) {
       file !== displayRegistration &&
       local &&
       !local.endsWith("/session-log.mjs") &&
+      (!local.endsWith("/debug-log.mjs") ||
+        file === "plugins/cerberus-gate/hooks/session-log.mjs") &&
       local.startsWith("plugins/cerberus-gate/hooks/") &&
       !local.endsWith(".d.ts") &&
       (privileged ||
@@ -235,17 +237,33 @@ function inspectDependency(n, { file, privileged, literal, report }) {
       "node:path": ["join", "dirname", "basename"],
       "node:url": ["fileURLToPath"],
     };
+    const debugImports = {
+      "node:fs/promises": ["open", "mkdir", "lstat", "realpath"],
+      "node:fs": ["constants"],
+      "node:os": ["homedir"],
+      "node:path": ["join", "resolve", "parse"],
+      "node:url": ["fileURLToPath"],
+    };
+    const imports =
+      file === "plugins/cerberus-gate/hooks/debug-log.mjs" ? debugImports : helperImports;
     const helper =
-      file === "plugins/cerberus-gate/hooks/session-log.mjs" &&
+      [
+        "plugins/cerberus-gate/hooks/session-log.mjs",
+        "plugins/cerberus-gate/hooks/debug-log.mjs",
+      ].includes(file) &&
       n.type === "ImportDeclaration" &&
-      helperImports[target] &&
+      imports[target] &&
       n.specifiers.every(
         (s) =>
           s.type === "ImportSpecifier" &&
           s.local.name === s.imported.name &&
-          helperImports[target].includes(s.imported.name),
+          imports[target].includes(s.imported.name),
       );
-    if (!allowedLocal && !hostTypes && !helper)
+    const ownManifest =
+      file === "plugins/cerberus-gate/hooks/debug-log.mjs" &&
+      n.type === "ImportDeclaration" &&
+      target === "../.claude-plugin/plugin.json";
+    if (!allowedLocal && !hostTypes && !helper && !ownManifest)
       report(n, "dependency-boundary", `forbidden dependency ${target ?? "<dynamic>"}`);
   }
   if (
@@ -264,14 +282,19 @@ function inspectProcess(n, parent, literal, report) {
   if (
     args.length !== 3 ||
     literal(args[0]) !== "node" ||
-    !["create", "release"].includes(literal(args[2])) ||
+    !(
+      (helper?.quasis?.[1]?.value.cooked === "/hooks/session-log.mjs" &&
+        ["create", "release"].includes(literal(args[2]))) ||
+      (helper?.quasis?.[1]?.value.cooked === "/hooks/debug-log.mjs" &&
+        ["initialize", "append"].includes(literal(args[2])))
+    ) ||
     helper?.type !== "TemplateLiteral" ||
     helper.expressions.length !== 1 ||
     chain(helper.expressions[0]).join(".") !== "$.plugin.root" ||
     helper.quasis[0]?.value.cooked !== "" ||
-    helper.quasis[1]?.value.cooked !== "/hooks/session-log.mjs"
+    !["/hooks/session-log.mjs", "/hooks/debug-log.mjs"].includes(helper.quasis[1]?.value.cooked)
   )
-    report(n, "mods-api-target", "process.run permits only the bundled session-log helper");
+    report(n, "mods-api-target", "process.run permits only bundled material/debug operations");
   const options = parent.arguments[1];
   if (
     options?.type !== "ObjectExpression" ||
@@ -279,7 +302,7 @@ function inspectProcess(n, parent, literal, report) {
       (p) => p.type !== "Property" || p.computed || !["stdin", "timeoutMs"].includes(p.key?.name),
     )
   )
-    report(n, "mods-api-target", "session-log permits only stdin and timeoutMs");
+    report(n, "mods-api-target", "bundled helpers permit only stdin and timeoutMs");
 }
 function inspectMember(n, parent, { privileged, literal, report, readCalls }) {
   if (n.type === "MemberExpression") {

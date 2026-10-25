@@ -36,6 +36,7 @@ function harness(
     timers: [],
     commands: [],
     inputs: [],
+    debug: [],
   };
   const replies = [];
   let draft = "UNPUBLISHED DRAFT";
@@ -63,7 +64,19 @@ function harness(
   const engine = {
     plugin: { root: "/plugin" },
     process: {
-      run: async (argv) => {
+      run: async (argv, processOptions) => {
+        if (argv[1].endsWith("/debug-log.mjs")) {
+          const input = JSON.parse(processOptions.stdin);
+          events.debug.push(...(input.records ?? []));
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              directory: "/debug/session",
+              events: "/debug/session/events.jsonl",
+              index: "/debug/session/index.jsonl",
+            }),
+          };
+        }
         if (argv[2] === "release") {
           events.released = true;
           return { exitCode: 0 };
@@ -431,7 +444,7 @@ test("timeout aborts the model and shows the original text without another promp
   assert.ok(h.events.models[0].options.signal.aborted);
   assert.deepEqual(h.events.prompts, []);
   assert.match(
-    (await h.fire("command.run", { command: "cgate", args: "log" })).text,
+    (await h.fire("command.run", { command: "cgate", args: "history" })).text,
     /タイムアウト[\s\S]*UNVERIFIED/u,
   );
 });
@@ -458,7 +471,7 @@ test("revision cap shows a note; correction delivery failure is reported without
   assert.equal((await cap.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
   assert.equal(cap.events.prompts.length, 0);
   assert.match(
-    (await cap.fire("command.run", { command: "cgate", args: "log" })).text,
+    (await cap.fire("command.run", { command: "cgate", args: "history" })).text,
     /REVISE[\s\S]*SECRET FINDING[\s\S]*修正回数の上限/u,
   );
   const failed = harness();
@@ -468,7 +481,7 @@ test("revision cap shows a note; correction delivery failure is reported without
   assert.equal((await failed.step()).text, "");
   await failed.flushCorrections();
   assert.match(
-    (await failed.fire("command.run", { command: "cgate", args: "log" })).text,
+    (await failed.fire("command.run", { command: "cgate", args: "history" })).text,
     /送信に失敗/u,
   );
 });
@@ -559,7 +572,7 @@ test("session log works during review, shows findings without the draft and clea
   h.replies.push(() => held.promise);
   const running = h.step();
   await tick();
-  const pending = (await h.fire("command.run", { command: "cgate", args: "log" })).text;
+  const pending = (await h.fire("command.run", { command: "cgate", args: "history" })).text;
   assert.match(pending, /審査 #\d+: 開始/u);
   assert.doesNotMatch(pending, /UNPUBLISHED/u);
   assert.match(
@@ -570,14 +583,14 @@ test("session log works during review, shows findings without the draft and clea
   await running;
   await h.flushCorrections();
   await h.step();
-  const log = (await h.fire("command.run", { command: "cerberus", args: " log " })).text;
+  const log = (await h.fire("command.run", { command: "cerberus", args: " history " })).text;
   assert.match(log, /REVISE[\s\S]*PASS[\s\S]*検証済みの本文を公開/u);
   assert.match(log, /指摘と根拠:[\s\S]*SECRET FINDING/u);
   assert.doesNotMatch(log, /UNPUBLISHED/u);
   assert.match(log, /1970-01-01T00:00:00.000Z/u);
   await h.fire("session.end", {});
   assert.match(
-    (await h.fire("command.run", { command: "cgate", args: "log" })).text,
+    (await h.fire("command.run", { command: "cgate", args: "history" })).text,
     /ログはありません/u,
   );
 });
@@ -751,7 +764,7 @@ test("new requests supersede a queued reload restart and failed restart delivery
   await again.flushCorrections();
   assert.equal(again.host.states.get("recovery").pending, false);
   assert.match(
-    (await again.fire("command.run", { command: "cgate", args: "log" })).text,
+    (await again.fire("command.run", { command: "cgate", args: "history" })).text,
     /再開に失敗/u,
   );
 });
@@ -1082,4 +1095,126 @@ test("snapshot paths replace inline conversation and cleanup follows the held re
   held.resolve({ isAnswered: true, text: verdict() });
   assert.equal((await running).text, "");
   assert.equal(h.events.released, true);
+});
+
+test("history and debug locations respond during an in-flight review without leaking bodies", async () => {
+  const h = harness();
+  await started(h);
+  const pending = deferred();
+  h.replies.push(() => pending.promise);
+  const running = h.step();
+  while (!h.events.models.length) await new Promise((r) => setImmediate(r));
+  for (const command of ["cgate", "cerberus"]) {
+    const result = await h.fire("command.run", { command, args: "log" });
+    assert.match(result.text, /session ID: session/u);
+    assert.match(result.text, /索引: \/debug\/session\/index.jsonl/u);
+    assert.doesNotMatch(result.text, /UNPUBLISHED|request/u);
+  }
+  pending.resolve({ isAnswered: true, text: verdict() });
+  await running;
+  const start = h.events.debug.find((e) => e.event === "model.start");
+  const end = h.events.debug.find((e) => e.event === "model.complete");
+  assert.equal(start.data.operationId, end.data.operationId);
+  assert.match(start.data.request.prompt, /UNPUBLISHED DRAFT/u);
+  assert.equal(end.data.response.text, verdict());
+});
+
+test("diagnostics distinguish malformed, contradictory and explicit unverified replies from API exceptions", async () => {
+  for (const [reply, event, reason] of [
+    ["{bad", "review.failed", "invalid_json"],
+    [verdict("UNVERIFIED"), "verdict.parsed", "explicit_unverified"],
+    [verdict("PASS", ["contradiction"]), "verdict.parsed", "inconsistent"],
+    [
+      () => {
+        throw new Error("provider failure", { cause: "unavailable" });
+      },
+      "review.failed",
+      "model_exception",
+    ],
+    [
+      JSON.stringify({ tool: "Read", input: { consent: true } }),
+      "review.failed",
+      "tool_control_denied",
+    ],
+  ]) {
+    const h = harness();
+    await started(h);
+    h.replies.push(reply);
+    assert.match((await h.step()).text, /未検証/u);
+    const diagnostic = h.events.debug.find((e) => e.event === event && e.data.reason === reason);
+    assert.ok(diagnostic, reason);
+    if (reason === "model_exception") assert.equal(diagnostic.data.error.cause, "unavailable");
+    assert.ok(h.events.debug.some((e) => e.event === "review.complete"));
+  }
+});
+
+test("debug append failures and helper timeouts leave PASS publication intact and expose save state", async () => {
+  for (const fails of [false, true]) {
+    const h = harness();
+    await started(h);
+    const run = h.engine.process.run;
+    h.engine.process.run = async (argv, options) => {
+      if (argv[1].endsWith("/debug-log.mjs")) {
+        assert.equal(options.timeoutMs, 1000);
+        if (fails) throw new Error("helper timeout");
+        return { exitCode: 1, stderr: "disk failure" };
+      }
+      return run(argv, options);
+    };
+    assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+    const status = await h.fire("command.run", { command: "cgate", args: "log" });
+    assert.match(status.text, /保存失敗/u);
+    assert.ok(
+      h.events.toasts.some((t) => t.text.includes("デバッグログ") && t.options.timeoutMs === 3000),
+    );
+  }
+});
+
+test("cancelled review tail is retained for a live command, with sequence and terminal cause intact", async () => {
+  const h = harness();
+  await started(h);
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const running = h.step();
+  while (!h.events.models.length) await new Promise((r) => setImmediate(r));
+  await h.fire("command.run", { command: "cgate", args: "cancel" });
+  held.resolve({ isAnswered: true, text: verdict() });
+  await running;
+  await tick();
+  await h.fire("command.run", { command: "cgate", args: "log" });
+  await tick();
+  assert.ok(
+    h.events.debug.some((e) => e.event === "review.failed" && e.data.reason === "cancelled"),
+  );
+  assert.ok(
+    h.events.debug.some((e) => e.event === "model.discarded"),
+    JSON.stringify(h.events.debug.map((e) => [e.sequence, e.event, e.data.reason])),
+  );
+  assert.deepEqual(
+    h.events.debug.map((e) => e.sequence),
+    h.events.debug.map((_, i) => i + 1),
+  );
+});
+
+test("late cancelled model results wait for a live dispatch after a new request", async () => {
+  const h = harness();
+  await started(h);
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const old = h.step();
+  while (!h.events.models.length) await tick();
+  await h.prompt("new request");
+  await old;
+  const saved = h.events.debug.length;
+  held.resolve({ isAnswered: true, text: verdict("REVISE", ["stale finding"]) });
+  await tick();
+  assert.equal(h.events.debug.length, saved);
+  await h.fire("command.run", { command: "cgate", args: "log" });
+  await tick();
+  assert.ok(h.events.debug.some((e) => e.event === "model.discarded"));
+  assert.equal(h.events.prompts.length, 0);
+  assert.deepEqual(
+    h.events.debug.map((e) => e.sequence),
+    h.events.debug.map((_, i) => i + 1),
+  );
 });

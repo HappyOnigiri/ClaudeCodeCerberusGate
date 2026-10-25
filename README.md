@@ -45,7 +45,8 @@ Claude Code を再起動すると有効になります。
 | コマンド                   | 操作                                       |
 | -------------------------- | ------------------------------------------ |
 | `/cgate`                   | 有効状態と処理状況を確認                   |
-| `/cgate log`               | このセッションの審査経過・指摘・根拠を表示 |
+| `/cgate history`           | このセッションの審査経過・指摘・根拠を表示 |
+| `/cgate log`               | デバッグログの保存場所と保存状態を表示     |
 | `/cgate model`             | 審査用モデルと effort を選択               |
 | `/cgate on` / `/cgate off` | 審査を有効化・無効化し、適用範囲を選択     |
 | `/cgate reset`             | セッションの一時設定を解除                 |
@@ -73,3 +74,29 @@ claude --plugin-dir "$PWD/plugins/cerberus-gate" --plugin-dir "$PWD/plugins/cerb
 
 不具合の報告や提案は [Issues](https://github.com/HappyOnigiri/ClaudeCodeCerberusGate/issues) へお寄せください。
 修正やドキュメントの改善は [Pull requests](https://github.com/HappyOnigiri/ClaudeCodeCerberusGate/pulls) で受け付けています。
+
+## デバッグログ
+
+詳細ログは常時有効で、依頼・未公開原稿・モデル入力と生応答・ツール引数と結果・例外詳細を含みます。
+審査時点の標準ログの固定コピーと展開資料も保存します。
+保存先は `CLAUDE_CONFIG_DIR`（未指定時は `~/.claude`）配下です。
+
+```text
+cerberus-gate/debug/<sessionId>/
+  index.jsonl
+  <instanceId>/
+    events.jsonl
+    reviews/<epoch>-<reviewToken>/
+      source.jsonl
+      users.txt
+      history.txt
+```
+
+セッション ID が分かれば `cerberus-gate/debug/<sessionId>/index.jsonl` を開き、`path` をセッションディレクトリからの相対パスとして解決してください。
+起動・再ロードごとのログと、保存に成功した審査資料が索引に追記されます。
+索引の保存失敗時には `<instanceId>/reviews/` 内も探索してください。
+デバッグ保存は `/clear`・終了後も保持し、自動削除・ローテーションは行いません。
+メモリ内の履歴は従来どおり `/clear`・終了・再ロードで消えます。
+強制終了・アンロードで末尾が未保存になる場合は、完全な JSONL 行までを解析してください。
+保存失敗は3秒の通知と履歴に表示し、`/cgate log` から確認できます。
+保存できなくても回答の検証は続けます。

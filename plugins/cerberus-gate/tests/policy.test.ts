@@ -42,6 +42,7 @@ describe("review contract", () => {
     reset(state, "old");
     const candidate = {
       token: 1,
+      stepIndex: 0,
       turnId: "t",
       epoch: state.epoch,
       text: "draft",
