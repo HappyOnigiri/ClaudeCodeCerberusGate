@@ -89,6 +89,7 @@ for (const mode of cases) {
       settings,
       mode === "model" || mode === "toggle"
         ? JSON.stringify({
+            tui: "fullscreen",
             pluginConfigs: { "cerberus-gate@inline": { options: { reviewerEffort: "inherit" } } },
           })
         : reloadSettings(2),
@@ -267,8 +268,12 @@ for (const mode of cases) {
     if (mode === "model") {
       await submit(session, "/cgate model");
       await pause(1000);
+      tmux("send-keys", "-t", session, "C-x", "Tab");
+      await pause(250);
       const modelScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-200");
       await writeFile(join(artifacts, "model-picker.txt"), modelScreen);
+      if (!modelScreen.split("\n").some((line) => line.startsWith("Ctrl+X")))
+        throw new Error("Model picker was not placed below the transcript");
       if (!modelScreen.includes("fable")) throw new Error("Fable model option did not appear");
       tmux("send-keys", "-t", session, "Down", "Enter");
       const savedDeadline = Date.now() + 15_000;
@@ -308,7 +313,7 @@ for (const mode of cases) {
       )
         throw new Error("Model and effort selections were not persisted to user settings");
       await writeFile(join(artifacts, "saved-settings.json"), JSON.stringify(saved, null, 2));
-      const notice = "Cerberus Gate: 検査用 effort を low に設定しました。";
+      const notice = "検査用 effort を low";
       const before = tmux("capture-pane", "-p", "-t", session);
       await writeFile(join(artifacts, "notice-before.txt"), before);
       if (!before.includes(notice)) throw new Error("Temporary notice was not displayed");
@@ -329,10 +334,18 @@ for (const mode of cases) {
             if (Date.now() > pickerDeadline) throw new Error("Scope picker did not open");
             await pause(250);
           }
+          if (
+            !tmux("capture-pane", "-p", "-t", session)
+              .split("\n")
+              .some((line) => line.startsWith("Ctrl+X"))
+          )
+            throw new Error("Scope picker was not placed below the transcript");
           await writeFile(
             join(artifacts, `scope-${scope}.txt`),
             tmux("capture-pane", "-p", "-t", session),
           );
+          tmux("send-keys", "-t", session, "C-x", "Tab");
+          await pause(250);
           if (scope === "saved") tmux("send-keys", "-t", session, "Down");
           tmux("send-keys", "-t", session, "Enter");
         }
