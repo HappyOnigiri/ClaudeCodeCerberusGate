@@ -52,6 +52,7 @@ Ctrl+O で会話全体の詳細表示に切り替えると制御プロンプト�
 保存する会話・モデルに渡す制御文・非表示の context は変更せず、他の送信元のメッセージも折りたたまない。
 送信元のプラグイン自身の描画フックはエンジンがスキップするため、描画処理は別プラグインに置く。
 見出しは Claude Code 本体が描画するため残り、クリックによる個別の展開は行わない。
+審査用プラグインだけで起動した場合は、修正・再開用プロンプトの本文も通常画面に表示する。
 修正はメインエージェントがユーザーの既存の権限内で行う。
 旧版からの再ロードで残るレビュアーは停止し、その結果通知でメインが再開しないようにする。
 
@@ -167,4 +168,52 @@ Read の offset/limit と Grep の範囲指定を使い、切れた結果は分�
 未設定・空文字・空白だけなら既定文を使い、指定された複数行や前後の空白はそのままモデルへ渡す。
 上限は JavaScript の文字列長で20,000文字とし、型の不一致や上限超過では他の不正設定と同じく審査を無効にする。
 本文に続けて読み取り専用の制約と JSON プロトコルを必ず付け、実行時にもセッションのツール一覧・ホストの権限判定・判定検証を適用する。
-設定の保存先、再ロードと既定文への戻し方は [README](/README.md#検証プロンプトの変更) を参照する。
+設定の保存先、再ロードと既定文への戻し方は、後述の「検証プロンプトの変更」を参照する。
+
+## モデルと上限の設定
+
+`/cgate model` で検査用モデルの選択 UI を開き、`inherit`・`haiku`・`sonnet`・`opus`・`fable` から選べる。
+現在の設定がモデル ID の場合は、その値も選択肢に表示する。
+モデルを選ぶと保存され、続いて effort（`inherit`・`low`・`medium`・`high`・`xhigh`・`max`）を選べる。
+現在のモデルを選び直せば effort だけ変更できる。
+Esc は表示中の選択を保存せず閉じる。effort の画面で閉じても、保存済みのモデルは維持する。
+選択した値は Claude Code の設定 API で保存し、次の審査から使う。
+
+レビュアーのモデルと effort、修正回数・審査時間の上限はプラグインの設定項目で変更する。
+`reviewerModel` と `reviewerEffort` の既定値は `inherit` で、最終回答を生成したステップのモデルと effort を引き継ぐ。
+`/config` でモデル ID や effort（`inherit`・`low`・`medium`・`high`・`xhigh`・`max`）を設定できる。
+モデルが対応しない effort はエンジン側の制約に従う。
+元のステップの effort が数値の場合、審査 API は数値を受け付けないため、審査モデルの既定値を使う。
+選択 UI からの保存先はユーザースコープの `~/.claude/settings.json` の `pluginConfigs[<plugin>].options`。
+`CLAUDE_CONFIG_DIR` を指定した場合は、その配下の `settings.json` に保存する。
+
+## 検証プロンプトの変更
+
+`reviewPrompt` で審査の観点・手順を変更できる。
+未設定、空文字、空白だけの文字列では既定文を使い、それ以外は指定した本文で既定文全体を置き換える。
+上限は JavaScript の文字列長で20,000文字とする。
+文字列以外や上限超過は不正設定として審査を無効にし、通常の回答を表示する。
+
+`/config` の「Review prompt」で文面を編集して保存でき、複数行の貼り付けにも対応する。
+保存後はプラグインが再ロードされ、次の審査から適用する。
+`claude plugin configure --values-stdin` は複数行を拒否するため、複数行の保存には設定画面または設定ファイルを使う。
+複数行は設定ファイルの `pluginConfigs` 内の対象プラグインの `options.reviewPrompt` に、改行を `\n` として保存できる。
+ローカルインストール時の ID は `cerberus-gate@happyonigiri-plugins`、`--plugin-dir` 起動時は `cerberus-gate@inline` となる。
+`reviewPrompt` を空文字へ戻して再ロードすると、既定の審査に戻る。
+`make install` による再インストールでも保存済みの本文を復元する。
+
+```json
+{
+  "pluginConfigs": {
+    "cerberus-gate@happyonigiri-plugins": {
+      "options": {
+        "reviewPrompt": "Check material claims against sources.\nPrioritize assumptions that could change the conclusion."
+      }
+    }
+  }
+}
+```
+
+設定は審査の本文だけを変更する。
+読み取り専用の制約、許可ツール、権限判定、ツール要求と判定の JSON 契約は固定であり、設定では解除できない。
+設定した観点によって審査結果は変わるため、重要な根拠や完了条件を確認する指示を含める。
