@@ -62,6 +62,11 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
+  const display = join(work, "display");
+  await cp(join(root, "plugins/cerberus-gate-display"), display, {
+    recursive: true,
+    filter: (p) => !p.includes("/.claude-plugin/types"),
+  });
   const configDir = join(work, "config");
   const settings = join(configDir, "settings.json");
   const reloadSettings = (maxRevisions) =>
@@ -202,6 +207,8 @@ for (const mode of cases) {
     "--plugin-dir",
     plugin,
     "--plugin-dir",
+    display,
+    "--plugin-dir",
     fixture,
     ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
@@ -337,6 +344,36 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
+    if (mode === "revise" || mode === "reload-review") {
+      const heading = "Prompt from the cerberus-gate plugin";
+      const body = "Cerberus Gate: 検証処理を継続します。";
+      if (!latest.includes(heading) || latest.includes(body))
+        throw new Error("Control prompt was not collapsed to its sender heading");
+      await writeFile(join(artifacts, "collapsed-screen.txt"), latest);
+      tmux("send-keys", "-t", session, "C-o");
+      const expandedDeadline = Date.now() + 10_000;
+      while (Date.now() < expandedDeadline) {
+        latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+        if (latest.includes(heading) && latest.includes(body)) break;
+        await pause(250);
+      }
+      await writeFile(join(artifacts, "expanded-screen.txt"), latest);
+      if (!latest.includes(body)) throw new Error("Ctrl+O did not expand the control prompt");
+      if (latest.includes("CERBERUS_REJECTED_DRAFT"))
+        throw new Error("Private draft leaked through the detailed transcript");
+      tmux("send-keys", "-t", session, "C-o");
+      const collapsedDeadline = Date.now() + 10_000;
+      while (Date.now() < collapsedDeadline) {
+        latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+        if (latest.includes(heading) && !latest.includes(body)) break;
+        await pause(250);
+      }
+      await writeFile(join(artifacts, "recollapsed-screen.txt"), latest);
+      if (!latest.includes(heading) || latest.includes(body))
+        throw new Error("Ctrl+O did not collapse the control prompt again");
+      if (latest.includes("CERBERUS_REJECTED_DRAFT"))
+        throw new Error("Private draft leaked after toggling the detailed transcript");
+    }
     await submit(session, "/cgate log");
     const logDeadline = Date.now() + 15_000;
     let logSeen = false;

@@ -15,6 +15,7 @@ import { parse, sources } from "../scripts/quality/source.mjs";
 
 const root = process.cwd();
 const registration = "plugins/cerberus-gate/hooks/register.ts";
+const displayRegistration = "plugins/cerberus-gate-display/hooks/register.ts";
 const run = (file, args, options = {}) => spawnSync(file, args, { encoding: "utf8", ...options });
 async function fixture(t) {
   const path = await mkdtemp(join(tmpdir(), "cerberus-quality-"));
@@ -93,6 +94,20 @@ test("architecture permits only the guarded dynamic read-tool boundary", () => {
     source.replace("...call.input,tool:call.tool", '...call.input,tool:call.tool,consent:"spoof"'),
   ])
     assert.ok(architecture(registration, altered).length, altered);
+});
+test("display registration can import host types but cannot call APIs or import runtime modules", () => {
+  assert.deepEqual(
+    architecture(displayRegistration, 'import type { Register } from "claude-code";'),
+    [],
+  );
+  for (const source of [
+    '$.fs.write("file", "text");',
+    "$.session.messages();",
+    'import { Register } from "claude-code";',
+    'import x from "node:fs";',
+    'import x from "../../cerberus-gate/hooks/policy.ts";',
+  ])
+    assert.ok(architecture(displayRegistration, source).length, source);
 });
 test("source discovery and parsing fail closed", async (t) => {
   const path = await fixture(t);

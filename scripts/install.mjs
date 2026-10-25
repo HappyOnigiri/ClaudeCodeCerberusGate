@@ -1,4 +1,4 @@
-// make install の本体。作業ツリーの plugins/cerberus-gate を、未コミットの変更も含めて
+// make install の本体。作業ツリーの審査・描画プラグインを、未コミットの変更も含めて
 // ローカル marketplace happyonigiri-plugins 経由で Claude Code にインストールする。
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -19,6 +19,17 @@ const entry = {
   homepage: "https://github.com/HappyOnigiri/ClaudeCodeCerberusGate",
   keywords: ["review", "agents", "mod"],
 };
+const entries = [
+  entry,
+  {
+    name: "cerberus-gate-display",
+    displayName: "Cerberus Gate Display",
+    description: "Collapse Cerberus Gate control prompts; expand their body with Ctrl+O.",
+    source: "./cerberus-gate-display",
+    homepage: entry.homepage,
+    keywords: ["review", "display", "mod"],
+  },
+];
 
 const claude = (...args) =>
   execFileSync("claude", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
@@ -31,18 +42,20 @@ const readJson = async (path, fallback) => {
 };
 
 // 実行時に読むファイルだけを置く。テストと生成された型定義は配布しない。
-const source = resolve(root, "plugins/cerberus-gate");
-const target = join(marketplace, entry.name);
-await rm(target, { recursive: true, force: true });
-await cp(source, target, {
-  recursive: true,
-  filter: (path) => {
-    const name = relative(source, path);
-    return !/^(?:tests|tsconfig\.json|\.claude-plugin\/types)(?:\/|$)/u.test(name);
-  },
-});
+for (const item of entries) {
+  const source = resolve(root, "plugins", item.name);
+  const target = join(marketplace, item.name);
+  await rm(target, { recursive: true, force: true });
+  await cp(source, target, {
+    recursive: true,
+    filter: (path) => {
+      const name = relative(source, path);
+      return !/^(?:tests|tsconfig\.json|\.claude-plugin\/types)(?:\/|$)/u.test(name);
+    },
+  });
+}
 
-// marketplace.json は watchdog など他のプラグインと共有するため、この項目だけを差し替える。
+// marketplace.json は watchdog など他のプラグインと共有するため、対象の2項目だけを差し替える。
 const manifestPath = join(marketplace, ".claude-plugin/marketplace.json");
 const manifest = await readJson(manifestPath, {
   name: marketplaceName,
@@ -50,8 +63,9 @@ const manifest = await readJson(manifestPath, {
   metadata: { description: "Local marketplace for HappyOnigiri plugins." },
   plugins: [],
 });
-const others = (manifest.plugins ?? []).filter((item) => item.name !== entry.name);
-manifest.plugins = [...others, entry];
+const names = new Set(entries.map((item) => item.name));
+const others = (manifest.plugins ?? []).filter((item) => !names.has(item.name));
+manifest.plugins = [...others, ...entries];
 await mkdir(join(marketplace, ".claude-plugin"), { recursive: true });
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -75,19 +89,22 @@ if (saved !== "{}")
     `Saved options of ${plugin}. If a step below fails, set them again with:\n  echo '${saved}' | claude plugin configure --values-stdin ${plugin}`,
   );
 const installed = JSON.parse(claude("plugin", "list", "--json"));
-if (installed.some((item) => item.id === plugin && item.scope === "user"))
-  claude("plugin", "uninstall", "--keep-data", "--scope", "user", plugin);
-claude("plugin", "install", "--scope", "user", plugin);
-if (saved !== "{}")
-  execFileSync("claude", ["plugin", "configure", "--values-stdin", plugin], {
-    input: saved,
-    stdio: ["pipe", "inherit", "inherit"],
-  });
+for (const item of entries) {
+  const id = `${item.name}@${marketplaceName}`;
+  if (installed.some((existing) => existing.id === id && existing.scope === "user"))
+    claude("plugin", "uninstall", "--keep-data", "--scope", "user", id);
+  claude("plugin", "install", "--scope", "user", id);
+  if (id === plugin && saved !== "{}")
+    execFileSync("claude", ["plugin", "configure", "--values-stdin", plugin], {
+      input: saved,
+      stdio: ["pipe", "inherit", "inherit"],
+    });
+}
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
-const dirty = git("status", "--porcelain", "--", "plugins/cerberus-gate")
+const dirty = git("status", "--porcelain", "--", ...entries.map((item) => `plugins/${item.name}`))
   ? " + uncommitted changes"
   : "";
 console.log(
-  `Installed ${plugin} from ${git("rev-parse", "--short", "HEAD")}${dirty}. Restart Claude Code to apply.`,
+  `Installed ${entries.map((item) => `${item.name}@${marketplaceName}`).join(", ")} from ${git("rev-parse", "--short", "HEAD")}${dirty}. Restart Claude Code to apply.`,
 );

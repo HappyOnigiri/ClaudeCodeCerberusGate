@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { diagnostic, parse, sources, walk } from "./source.mjs";
 
 const registration = "plugins/cerberus-gate/hooks/register.ts";
+const displayRegistration = "plugins/cerberus-gate-display/hooks/register.ts";
 const api = new Set([
   "agent.list",
   "agent.register",
@@ -204,12 +205,17 @@ function inspectDependency(n, { file, privileged, literal, report }) {
       target.startsWith(".") &&
       posix.normalize(posix.join(posix.dirname(file), target));
     const allowedLocal =
+      file !== displayRegistration &&
       local &&
       local.startsWith("plugins/cerberus-gate/hooks/") &&
       !local.endsWith(".d.ts") &&
       (privileged ||
         local.replace(/\.(?:[cm]?js|tsx?)$/u, "") !== registration.replace(/\.ts$/u, ""));
-    if (!allowedLocal && !(privileged && target === "claude-code" && n.importKind === "type"))
+    const hostTypes =
+      (privileged || file === displayRegistration) &&
+      target === "claude-code" &&
+      n.importKind === "type";
+    if (!allowedLocal && !hostTypes)
       report(n, "dependency-boundary", `forbidden dependency ${target ?? "<dynamic>"}`);
   }
   if (

@@ -24,12 +24,12 @@ macOS／Linux の arm64・x64 に対応し、未対応環境やダウンロー�
 
 ## ローカルへのインストール
 
-`make install` で、作業ツリーの `plugins/cerberus-gate` を未コミットの変更も含めて常用の Claude Code にインストールする。
-ローカル marketplace `~/.claude/local-marketplaces/happyonigiri`（`happyonigiri-plugins`）へ実行時に読むファイルだけを複製し、`cerberus-gate@happyonigiri-plugins` としてユーザースコープに入れる。
+`make install` で、作業ツリーの `plugins/cerberus-gate` と `plugins/cerberus-gate-display` を未コミットの変更も含めて常用の Claude Code にインストールする。
+ローカル marketplace `~/.claude/local-marketplaces/happyonigiri`（`happyonigiri-plugins`）へ実行時に読むファイルだけを複製し、同名の2プラグインをユーザースコープに入れる。
 テスト、`tsconfig.json`、生成された型定義は複製しない。
 `CLAUDE_CONFIG_DIR` を設定していれば、その配下を使う。
 
-marketplace.json は watchdog など他のプラグインと共有するため、`cerberus-gate` の項目だけを差し替え、他の項目は残す。
+marketplace.json は watchdog など他のプラグインと共有するため、審査・描画用の2項目だけを差し替え、他の項目は残す。
 `claude plugin update` は `version` が同じ版を入れ替えないため、アンインストールしてから入れ直す。
 アンインストールで消える `/config` の設定値は、事前に読み取ってインストール後に戻す。
 
@@ -67,6 +67,7 @@ npm run test:live
 通常回答ではモデルと effort の継承も確認する。
 通常回答、レビュアーによる `Grep`・`Glob` の実行、誤った下書きからの修正・再審査、不正な審査応答による注記付きの表示、保留中の取消、10秒を超える審査、審査タイムアウト、作業中と審査中の Mod 再ロードを確認する。
 追加プロンプトが修正依頼のときだけ送信され、合格・検証不能時には送信されないことも記録から検査する。
+修正と審査中の再ロードでは、通常画面に制御プロンプトの見出しだけが残り、Ctrl+O で本文の展開・再折りたたみができることも確認する。
 `reload-work` は使い捨ての設定ディレクトリで設定を変更して Mod を再ロードし、`reload-review` は検証用コピーのモジュールを更新して再ロードする。
 常用設定やインストール済みプラグインは変更しない。
 各ケースで `/cgate log` の経過表示を確認し、通常回答のケースでは `/clear` によるログ消去も確認する。
