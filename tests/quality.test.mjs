@@ -24,6 +24,12 @@ async function fixture(t) {
 }
 test("architecture permits current registration and rejects forbidden dependencies and API indirection", async () => {
   assert.deepEqual(await check(root), []);
+  assert.ok(
+    architecture(
+      "plugins/cerberus-gate/hooks/session-log.mjs",
+      'import { rm } from "node:fs/promises";',
+    ).length,
+  );
   for (const source of [
     'import x from "node:fs";',
     'export * from "./register.ts";',
@@ -34,10 +40,15 @@ test("architecture permits current registration and rejects forbidden dependenci
     "const x = import(name);",
     'import type { EngineInterface } from "claude-code";',
     'const x = require("node:fs");',
+    'import { snapshot } from "./session-log.mjs";',
   ])
     assert.ok(architecture("plugins/cerberus-gate/hooks/pure.ts", source).length, source);
   for (const source of [
     '$.fs.write("file", "text");',
+    '$.process.run(["sh", "-c", "touch file"], {});',
+    '$.process.run(["node", `${$.plugin.root}/hooks/other.mjs`, "create"], {});',
+    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "create"], {cwd: "/"});',
+    '$.process.spawn({argv:["node"]});',
     '$["tool"].list();',
     "const call = $.tool.call;",
     "const host = $;",
@@ -103,6 +114,10 @@ test("display registration can import host types but cannot call APIs or import 
   );
   for (const source of [
     '$.fs.write("file", "text");',
+    '$.process.run(["sh", "-c", "touch file"], {});',
+    '$.process.run(["node", `${$.plugin.root}/hooks/other.mjs`, "create"], {});',
+    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mjs`, "create"], {cwd: "/"});',
+    '$.process.spawn({argv:["node"]});',
     "$.session.messages();",
     'import { Register } from "claude-code";',
     'import x from "node:fs";',

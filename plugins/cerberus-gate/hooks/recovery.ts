@@ -4,6 +4,7 @@ import type { GateState } from "./state.ts";
 export function snapshotRecovery(gate: GateState) {
   return {
     sessionEnabled: gate.sessionEnabled,
+    material: gate.material,
     prompt: gate.prompt,
     epoch: gate.epoch,
     serial: gate.serial,
@@ -15,7 +16,10 @@ export function snapshotRecovery(gate: GateState) {
 export function restoreRecovery(
   gate: GateState,
   value:
-    | (Omit<ReturnType<typeof snapshotRecovery>, "sessionEnabled"> & { sessionEnabled?: boolean })
+    | (Omit<ReturnType<typeof snapshotRecovery>, "sessionEnabled" | "material"> & {
+        sessionEnabled?: boolean;
+        material?: string;
+      })
     | null
     | undefined,
 ): boolean {

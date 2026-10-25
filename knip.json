@@ -7,7 +7,13 @@
     "tests/*.test.mjs",
     "scripts/install.mjs"
   ],
-  "project": ["plugins/**/*.ts", "scripts/**/*.mjs", "tests/**/*.mjs", "types/**/*.d.ts"],
+  "project": [
+    "plugins/**/*.ts",
+    "plugins/**/*.mjs",
+    "scripts/**/*.mjs",
+    "tests/**/*.mjs",
+    "types/**/*.d.ts"
+  ],
   "ignoreDependencies": ["claude-code", "claude-code/testing"],
   "ignoreUnresolved": ["claude-code", "claude-code-tools"]
 }

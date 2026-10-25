@@ -13,6 +13,7 @@ export function coverage(files, destination, stdio = "inherit") {
       "--test",
       "--experimental-test-coverage",
       "--test-coverage-include=plugins/*/hooks/*.ts",
+      "--test-coverage-include=plugins/*/hooks/*.mjs",
       "--test-reporter=spec",
       "--test-reporter-destination=stdout",
       "--test-reporter=lcov",
