@@ -744,7 +744,7 @@ test("reviewer model and effort inherit the answer step or use independent overr
   assert.equal(h.events.models[1].request.effort, undefined);
 });
 
-test("model picker saves selection and applies it to the next review", async () => {
+test("model picker saves model then effort and preserves both across repeated selections", async () => {
   const h = harness({ reviewerModel: "custom-model", reviewerEffort: "low" });
   await h.fire("command.run", { command: "cgate", args: "model" });
   assert.equal(h.events.pane.id, "reviewer-model");
@@ -762,10 +762,31 @@ test("model picker saves selection and applies it to the next review", async () 
   await picker.onSelect("haiku");
   assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerModel", value: "haiku" });
   assert.equal(h.events.closed, true);
+  assert.equal(h.events.pane.id, "reviewer-effort");
+  const effort = await h.fire("ui.render", {
+    component: "Pane",
+    requestId: "reviewer-effort",
+    surface: "terminal",
+  });
+  assert.equal(effort.value, "low");
+  assert.deepEqual(
+    effort.options.map((o) => o.value),
+    ["inherit", "low", "medium", "high", "xhigh", "max"],
+  );
+  await effort.onSelect("high");
+  assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerEffort", value: "high" });
   await h.prompt("request");
   await h.step();
   assert.equal(h.events.models[0].request.model, "haiku");
-  assert.equal(h.events.models[0].request.effort, "low");
+  assert.equal(h.events.models[0].request.effort, "high");
+  await picker.onSelect("sonnet");
+  await h.step();
+  assert.equal(h.events.models[1].request.model, "sonnet");
+  assert.equal(h.events.models[1].request.effort, "high");
+  await effort.onSelect("inherit");
+  await h.step({ effort: "medium" });
+  assert.equal(h.events.models[2].request.model, "sonnet");
+  assert.equal(h.events.models[2].request.effort, "medium");
 });
 
 test("a denied or failed model save preserves the previous reviewer model", async () => {
@@ -785,5 +806,33 @@ test("a denied or failed model save preserves the previous reviewer model", asyn
     await h.prompt("request");
     await h.step();
     assert.equal(h.events.models[0].request.model, "haiku");
+  }
+});
+
+test("a denied or failed effort save preserves the saved model and previous effort", async () => {
+  for (const fails of [false, true]) {
+    const h = harness({ reviewerEffort: "low" });
+    const model = await h.fire("ui.render", {
+      component: "Pane",
+      requestId: "reviewer-model",
+      surface: "terminal",
+    });
+    await model.onSelect("sonnet");
+    h.events.closed = undefined;
+    h.engine.config.set = async () => {
+      if (fails) throw new Error("save failed");
+      return { deny: "locked" };
+    };
+    const effort = await h.fire("ui.render", {
+      component: "Pane",
+      requestId: "reviewer-effort",
+      surface: "terminal",
+    });
+    await effort.onSelect("high");
+    assert.equal(h.events.closed, undefined);
+    await h.prompt("request");
+    await h.step();
+    assert.equal(h.events.models[0].request.model, "sonnet");
+    assert.equal(h.events.models[0].request.effort, "low");
   }
 });

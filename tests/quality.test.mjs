@@ -48,6 +48,7 @@ test("architecture permits current registration and rejects forbidden dependenci
     "$.state.get(ref);",
     '$.config.set({key: "model", value: "opus"});',
     "$.config.set(options);",
+    '$.config.set({key: "cerberus-gate.maxRevisions", value: 5});',
     '$.state.set({plugin: "cerberus-gate", key: "recovery", ...options}, null);',
     '$.tool.call({tool: "TaskStop", ...options});',
     '$.agent.register({name: "other"});',

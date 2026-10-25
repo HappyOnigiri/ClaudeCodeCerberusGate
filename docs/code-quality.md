@@ -40,7 +40,7 @@
 - `agent.list/register/spawn`
 - `clock.now/after`
 - `command.register`
-- `config.set`（自分の `reviewerModel` 設定のみ）
+- `config.set`（自分の `reviewerModel`・`reviewerEffort` 設定のみ）
 - `prompt.submit`
 - `model.complete`
 - `turn.abort`

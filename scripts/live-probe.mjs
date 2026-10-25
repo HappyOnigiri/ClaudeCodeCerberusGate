@@ -82,7 +82,7 @@ for (const mode of cases) {
       settings,
       mode === "model"
         ? JSON.stringify({
-            pluginConfigs: { "cerberus-gate@inline": { options: { reviewerEffort: "low" } } },
+            pluginConfigs: { "cerberus-gate@inline": { options: { reviewerEffort: "inherit" } } },
           })
         : reloadSettings(2),
     );
@@ -275,6 +275,28 @@ for (const mode of cases) {
         !Object.values(saved.pluginConfigs ?? {}).some((p) => p.options?.reviewerModel === "haiku")
       )
         throw new Error("Model selection was not persisted to user settings");
+      await pause(1000);
+      const effortScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-200");
+      await writeFile(join(artifacts, "effort-picker.txt"), effortScreen);
+      if (!effortScreen.includes("検査用 effort")) throw new Error("Effort picker did not open");
+      tmux("send-keys", "-t", session, "Down", "Enter");
+      const effortDeadline = Date.now() + 15_000;
+      while (Date.now() < effortDeadline) {
+        saved = JSON.parse(await readFile(settings, "utf8"));
+        if (
+          Object.values(saved.pluginConfigs ?? {}).some(
+            (p) => p.options?.reviewerModel === "haiku" && p.options?.reviewerEffort === "low",
+          )
+        )
+          break;
+        await pause(250);
+      }
+      if (
+        !Object.values(saved.pluginConfigs ?? {}).some(
+          (p) => p.options?.reviewerModel === "haiku" && p.options?.reviewerEffort === "low",
+        )
+      )
+        throw new Error("Model and effort selections were not persisted to user settings");
       await writeFile(join(artifacts, "saved-settings.json"), JSON.stringify(saved, null, 2));
     }
     await submit(
