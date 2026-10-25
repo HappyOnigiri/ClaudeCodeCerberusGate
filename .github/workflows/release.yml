@@ -33,10 +33,20 @@ jobs:
   prepare:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       AUTOMATIC_RELEASE: ${{ github.event_name == 'schedule' || inputs.automatic }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+
       - name: Select release inputs
         id: inputs
         env:
@@ -67,8 +77,8 @@ jobs:
             RELEASES=$(gh release list --repo "$GH_REPO" --exclude-drafts \
               --exclude-pre-releases --limit 1 --json tagName --jq 'length')
             if [ "$RELEASES" -eq 0 ]; then
-              BUMP="patch"
-              echo "初回リリースは manifest のバージョンから patch を上げます。" >> "$GITHUB_STEP_SUMMARY"
+              node scripts/initial-release-bump.ts
+              exit 0
             fi
           fi
           echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
@@ -85,12 +95,6 @@ jobs:
             plugins/cerberus-gate/.claude-plugin/plugin.json
             plugins/cerberus-gate-display/.claude-plugin/plugin.json
           github-token: ${{ secrets.GH_TOKEN }}
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        if: steps.prepare.outputs.pr-number != ''
-        with:
-          node-version: 24
-          cache: npm
 
       - name: Format release manifests
         if: steps.prepare.outputs.pr-number != ''
@@ -111,10 +115,14 @@ jobs:
             git push origin "HEAD:refs/heads/release/v${RELEASE_VERSION}"
           fi
 
-      - name: Enable auto-merge for automatic releases
+      - name: Wait for checks and merge automatic release
         if: env.AUTOMATIC_RELEASE == 'true' && steps.prepare.outputs.pr-number != ''
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_PR: ${{ steps.prepare.outputs.pr-number }}
-        run: gh pr merge "$RELEASE_PR" --repo "$GH_REPO" --auto --squash
+        run: |
+          set -euo pipefail
+          RELEASE_SHA=$(git rev-parse HEAD)
+          node scripts/wait-release-checks.ts "$RELEASE_PR" "$RELEASE_SHA"
+          gh pr merge "$RELEASE_PR" --repo "$GH_REPO" --squash --match-head-commit "$RELEASE_SHA"

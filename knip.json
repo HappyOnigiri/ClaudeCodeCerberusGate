@@ -5,7 +5,9 @@
     "plugins/cerberus-gate-display/hooks/register.ts",
     "plugins/cerberus-gate/tests/*.test.ts",
     "tests/*.test.ts",
-    "scripts/install.ts"
+    "scripts/install.ts",
+    "scripts/wait-release-checks.ts",
+    "scripts/initial-release-bump.ts"
   ],
   "project": [
     "plugins/**/*.ts",
