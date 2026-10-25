@@ -12,6 +12,11 @@ const cases = process.argv.slice(2).length
   : [
       "pass",
       "model",
+      "prompt",
+      "bounds",
+      "environment",
+      "causal",
+      "choice",
       "toggle",
       "search",
       "revise",
@@ -25,8 +30,8 @@ const cases = process.argv.slice(2).length
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
-// Terminal wrapping and Markdown rendering can consume whitespace and escape backslashes.
-const compact = (text) => text.replace(/[\s\\]/gu, "");
+// Terminal wrapping and Markdown rendering consume whitespace, escape backslashes and code ticks.
+const compact = (text) => text.replace(/[\s\\`]/gu, "");
 const withoutFindings = (screen, findings) =>
   findings.reduce(
     (text, finding) => text.replaceAll(compact(JSON.stringify(finding)), ""),
@@ -45,12 +50,49 @@ const submit = async (session, text) => {
   );
   await pause(500);
 };
+const customPrompt =
+  "Check the release channel against fact.txt.\nAlways read fact.txt before deciding. CUSTOM_REVIEW_CRITERIA";
+const drafts = {
+  bounds: "stable. A closing hour of 26 is a valid configuration example.",
+  environment: "stable. The default is false, so this feature has no effect in production.",
+  causal: "stable. The provider watch waits for timeline rendering to complete.",
+  choice:
+    "stable. I propose CreatedAt as the origin of the 720-day retention period; this is an unresolved specification choice requiring approval.",
+};
+const facts = {
+  bounds: "The closing hour accepts integers from 12 through 24 inclusive.",
+  environment:
+    "The feature default is false. The production deployment manifest sets it to true. The running cluster has not been inspected.",
+  causal:
+    "The provider watches data changes. No implementation or other evidence about waiting for timeline rendering is available.",
+  choice:
+    "CreatedAt is set at creation and unchanged on re-entry. The retention duration is 720 days. The specification does not define the retention origin.",
+};
+const requests = {
+  bounds: "Assess whether a closing hour of 26 is a valid configuration example.",
+  environment:
+    "Assess whether the feature default establishes that it has no effect in production.",
+  causal:
+    "Using only fact.txt as evidence, assess whether its contents support the assertion that the provider watch waits for timeline rendering to complete. Do not search other files; if the file does not establish the behavior, state that limit.",
+  choice:
+    "Propose an origin for the 720-day retention period, explicitly identifying any unresolved specification choice requiring approval.",
+};
+const expectedFindings = {
+  bounds: /26|12.*24/u,
+  environment: /production|manifest/u,
+  causal: /render|causal|wait/u,
+};
 const summary = [];
 for (const mode of cases) {
   if (
     ![
       "pass",
       "model",
+      "prompt",
+      "bounds",
+      "environment",
+      "causal",
+      "choice",
       "toggle",
       "search",
       "revise",
@@ -63,6 +105,7 @@ for (const mode of cases) {
     ].includes(mode)
   )
     throw new Error(`Unknown case ${mode}`);
+  const needsRevision = ["revise", "bounds", "environment", "causal"].includes(mode);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
   const visibleFindings = [];
@@ -81,7 +124,7 @@ for (const mode of cases) {
   const settings = join(configDir, "settings.json");
   const reloadSettings = (maxRevisions) =>
     JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
-  if (mode === "reload-work" || mode === "model" || mode === "toggle") {
+  if (mode === "reload-work" || mode === "model" || mode === "toggle" || mode === "prompt") {
     await mkdir(configDir);
     const accountPath = process.env.CLAUDE_CONFIG_DIR
       ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
@@ -95,9 +138,16 @@ for (const mode of cases) {
     await writeFile(join(configDir, ".claude.json"), JSON.stringify(account));
     await writeFile(
       settings,
-      mode === "model" || mode === "toggle"
+      mode === "model" || mode === "toggle" || mode === "prompt"
         ? JSON.stringify({
-            pluginConfigs: { "cerberus-gate@inline": { options: { reviewerEffort: "inherit" } } },
+            pluginConfigs: {
+              "cerberus-gate@inline": {
+                options: {
+                  reviewerEffort: "inherit",
+                  ...(mode === "prompt" ? { reviewPrompt: customPrompt } : {}),
+                },
+              },
+            },
           })
         : reloadSettings(2),
     );
@@ -124,9 +174,9 @@ for (const mode of cases) {
  let first=true,review=0,prompts=0,tools=0;
  export const register=on=>{
   on('turn.step',async function*($,e,next){
-   if(!e.agentId && first && ['revise','reload-review'].includes(${JSON.stringify(mode)})){
+   if(!e.agentId && first && ['revise','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)})){
     first=false;
-    const text='The release channel is beta. CERBERUS_REJECTED_DRAFT';
+    const text=${JSON.stringify(drafts[mode] ?? "The release channel is beta. CERBERUS_REJECTED_DRAFT")};
     yield {kind:'text',index:0,text};yield {kind:'stop',stopReason:'end_turn',usage:null};
     return {turnId:e.turnId,index:e.index,answer:text,toolUses:[],stopReason:'end_turn',usage:null};
    }
@@ -201,7 +251,8 @@ for (const mode of cases) {
       ),
     );
   }
-  await writeFile(join(work, "fact.txt"), "The release channel is stable.\n");
+  const factText = "The release channel is stable.\n" + (facts[mode] ? facts[mode] + "\n" : "");
+  await writeFile(join(work, "fact.txt"), factText);
   const session = `cerberus-${mode}-${process.pid}`;
   const args = [
     "claude",
@@ -222,7 +273,7 @@ for (const mode of cases) {
     fixture,
     ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
-    mode === "reload-work" || mode === "model" || mode === "toggle"
+    mode === "reload-work" || mode === "model" || mode === "toggle" || mode === "prompt"
       ? "user,project,local"
       : "project,local",
     "--strict-mcp-config",
@@ -233,7 +284,7 @@ for (const mode of cases) {
     "--debug-file",
     join(artifacts, "debug.log"),
   ];
-  if (mode === "reload-work" || mode === "model" || mode === "toggle")
+  if (mode === "reload-work" || mode === "model" || mode === "toggle" || mode === "prompt")
     args.unshift(
       "env",
       `CLAUDE_CONFIG_DIR=${configDir}`,
@@ -381,7 +432,10 @@ for (const mode of cases) {
     }
     await submit(
       session,
-      "Read fact.txt and reply with exactly the release channel, with no other text.",
+      requests[mode]
+        ? "Read fact.txt. Start your answer with the release channel in lowercase plain text, then: " +
+            requests[mode]
+        : "Read fact.txt and reply with exactly the release channel, with no other text.",
     );
     let reloaded = false;
     let cancelled = false;
@@ -435,10 +489,12 @@ for (const mode of cases) {
       }
       if (
         (mode === "pass" ||
+          mode === "prompt" ||
+          mode === "choice" ||
           mode === "toggle" ||
           mode === "model" ||
           mode === "search" ||
-          mode === "revise" ||
+          needsRevision ||
           mode === "slow" ||
           mode.startsWith("reload-")) &&
         /⏺\s+stable\b/u.test(latest)
@@ -449,9 +505,9 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
-    if (mode === "revise" && latest.includes("回答を検証中です。"))
+    if (needsRevision && latest.includes("回答を検証中です。"))
       throw new Error("Waiting notice remained in the completed answer");
-    if (mode === "revise" || mode === "reload-review") {
+    if (needsRevision || mode === "reload-review") {
       for (const name of (await readdir(artifacts)).filter((entry) =>
         /^review-\d+\.json$/u.test(entry),
       )) {
@@ -463,6 +519,8 @@ for (const mode of cases) {
           // Tool requests and malformed responses contain no displayed findings.
         }
       }
+      if (expectedFindings[mode] && !visibleFindings.some((f) => expectedFindings[mode].test(f)))
+        throw new Error("Reviewer did not identify the intended material evidence problem");
       const heading = "Prompt from the cerberus-gate plugin";
       const body = "Cerberus Gate: 検証処理を継続します。";
       const findingsHeading = "指摘と根拠:";
@@ -505,6 +563,11 @@ for (const mode of cases) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       const expected = {
         pass: "検証済みの本文を公開しました。",
+        prompt: "検証済みの本文を公開しました。",
+        choice: "検証済みの本文を公開しました。",
+        bounds: "修正を依頼しました",
+        environment: "修正を依頼しました",
+        causal: "修正を依頼しました",
         model: "検証済みの本文を公開しました。",
         toggle: "検証済みの本文を公開しました。",
         search: "検証済みの本文を公開しました。",
@@ -524,9 +587,9 @@ for (const mode of cases) {
     }
     await writeFile(join(artifacts, "log-screen.txt"), latest);
     if (!logSeen) throw new Error("Expected session log not observed");
-    if (mode === "revise" && !latest.includes("指摘と根拠:"))
+    if (needsRevision && !latest.includes("指摘と根拠:"))
       throw new Error("Session log did not show reviewer findings");
-    if (mode === "revise")
+    if (needsRevision)
       for (const finding of visibleFindings)
         if (!compact(latest).includes(compact(JSON.stringify(finding))))
           throw new Error("Session log omitted a reviewer finding");
@@ -562,7 +625,7 @@ for (const mode of cases) {
       throw new Error("Pending review log not observed");
     if (mode === "cancel" && /⏺\s+stable\b/u.test(latest))
       throw new Error("Cancelled answer published");
-    if ((await readFile(join(work, "fact.txt"), "utf8")) !== "The release channel is stable.\n")
+    if ((await readFile(join(work, "fact.txt"), "utf8")) !== factText)
       throw new Error("Evidence modified");
     const records = await readdir(artifacts);
     const verdicts = [];
@@ -576,10 +639,12 @@ for (const mode of cases) {
       if (name.startsWith("prompt-")) {
         const prompt = JSON.parse(await readFile(join(artifacts, name), "utf8"));
         origins.push(prompt.origin);
+        // This fixture observes submissions before the gate attaches hidden context.
+        // Restart controls have no findings; correction controls always include them.
         if (
-          prompt.context?.some((text) =>
-            text.includes("The answer review was interrupted by a plugin reload."),
-          )
+          prompt.origin.kind === "plugin" &&
+          prompt.origin.name === "cerberus-gate" &&
+          /^Cerberus Gate: 検証処理を継続します。 \[\d+-\d+\]$/u.test(prompt.text)
         )
           restartPrompts++;
       }
@@ -603,10 +668,28 @@ for (const mode of cases) {
           throw new Error("Reviewer effort did not match the configured or inherited effort");
       }
     }
+    if (mode === "prompt") {
+      const reviews = await Promise.all(
+        records
+          .filter((n) => /^review-\d+\.json$/u.test(n))
+          .map(async (n) => JSON.parse(await readFile(join(artifacts, n), "utf8"))),
+      );
+      if (!reviews.length || reviews.some((r) => !r.request.system.startsWith(customPrompt)))
+        throw new Error("Saved multiline review prompt did not reach the model");
+      if (
+        !reviews.some(
+          (r) =>
+            r.result.text.includes('"tool":"Read"') || /"tool"\s*:\s*"Read"/u.test(r.result.text),
+        )
+      )
+        throw new Error("Custom criteria did not produce a real Read request");
+    }
+    if (mode === "choice" && verdicts.some((v) => v.includes('"REVISE"')))
+      throw new Error("An unresolved specification proposal was incorrectly rejected");
     const pluginPrompts = origins.filter(
       (origin) => origin.kind === "plugin" && origin.name === "cerberus-gate",
     ).length;
-    if (mode === "revise" && !verdicts.some((v) => v.includes('"REVISE"')))
+    if (needsRevision && !verdicts.some((v) => v.includes('"REVISE"')))
       throw new Error("No real reviewer REVISE verdict observed");
     const revisions = verdicts.filter((text) => {
       try {
@@ -616,10 +699,10 @@ for (const mode of cases) {
       }
     }).length;
     const expectedPrompts =
-      (mode === "revise" || mode === "reload-review" ? revisions : 0) + restartPrompts;
+      (needsRevision || mode === "reload-review" ? revisions : 0) + restartPrompts;
     if (
       restartPrompts > (mode === "reload-review" ? 1 : 0) ||
-      (mode === "revise" && revisions < 1) ||
+      (needsRevision && revisions < 1) ||
       pluginPrompts !== expectedPrompts
     )
       throw new Error(`Unexpected control prompt count: ${pluginPrompts}`);

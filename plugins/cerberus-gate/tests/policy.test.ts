@@ -1,5 +1,5 @@
 import { describe, expect, test } from "claude-code/testing";
-import { allowedTool, parseVerdict, readConfig } from "../hooks/policy.ts";
+import { allowedTool, parseVerdict, readConfig, REVIEW_PROMPT } from "../hooks/policy.ts";
 import { createState, current, disposition, reset } from "../hooks/state.ts";
 
 describe("review contract", () => {
@@ -32,6 +32,16 @@ describe("review contract", () => {
     expect(() => readConfig({ readOnlyMcpTools: "mcp__notes__*" })).toThrow();
     expect(() => readConfig({ maxRevisions: -1 })).toThrow();
     expect(() => readConfig({ reviewTimeoutSeconds: 0 })).toThrow();
+  });
+  test("review criteria default, preserve multiline text and reject invalid values", () => {
+    for (const reviewPrompt of [undefined, "", " \n "])
+      expect(readConfig({ reviewPrompt }).reviewPrompt).toBe(REVIEW_PROMPT);
+    expect(readConfig({ reviewPrompt: "Check sources.\nCheck assumptions." }).reviewPrompt).toBe(
+      "Check sources.\nCheck assumptions.",
+    );
+    expect(readConfig({ reviewPrompt: "x".repeat(20_000) }).reviewPrompt.length).toBe(20_000);
+    for (const reviewPrompt of [null, false, 42, {}, [], "x".repeat(20_001)])
+      expect(() => readConfig({ reviewPrompt })).toThrow();
   });
   test("a new user request invalidates an in-flight review", () => {
     const state = createState();

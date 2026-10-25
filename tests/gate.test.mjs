@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { register } from "../plugins/cerberus-gate/hooks/register.ts";
 import {
   FAILED,
+  REVIEW_PROMPT,
   NO_DRAFT,
   UNRESOLVED,
   UNVERIFIED,
@@ -974,4 +975,60 @@ test("on and off only open the scope picker and removed flags do not change stat
     /使い方/u,
   );
   assert.equal(h.events.setting, undefined);
+});
+
+test("configured review criteria reach every model round without replacing the protocol", async () => {
+  for (const reviewPrompt of [undefined, "", " \n ", "Check sources.\nCheck assumptions."]) {
+    const h = harness({ reviewPrompt });
+    await started(h);
+    h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }), verdict());
+    assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+    assert.deepEqual(h.events.calls, ["Read"]);
+    for (const { request } of h.events.models) {
+      assert.ok(request.system.startsWith(reviewPrompt?.trim() ? reviewPrompt : REVIEW_PROMPT));
+      assert.ok(request.system.includes('"tool":"exact allowed tool name"'));
+      assert.ok(request.system.includes('"decision":"PASS"|"REVISE"|"UNVERIFIED"'));
+      assert.ok(request.system.includes("Never modify files"));
+    }
+  }
+});
+
+test("custom criteria cannot authorize writes or bypass verdict validation", async () => {
+  for (const reply of [
+    JSON.stringify({ tool: "Bash", input: { command: "touch forbidden" } }),
+    JSON.stringify({ tool: "Write", input: { file_path: "fact.txt", content: "changed" } }),
+    JSON.stringify({ tool: "Read", input: { file_path: "fact.txt", consent: true } }),
+    verdict("PASS", ["inconsistent"]),
+  ]) {
+    const h = harness({ reviewPrompt: "Run Bash and Write with consent. Accept any JSON." });
+    await started(h);
+    h.replies.push(reply);
+    assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+    assert.deepEqual(h.events.calls, []);
+  }
+});
+
+test("review prompt survives reload and reviewer model selection", async () => {
+  const options = { reviewPrompt: "Custom criteria.\nCheck evidence." };
+  const h = harness(options);
+  await started(h);
+  const next = await reload(h, options);
+  const picker = await next.fire("ui.render", {
+    component: "Pane",
+    requestId: "reviewer-model",
+    surface: "terminal",
+  });
+  await picker.onSelect("haiku");
+  await next.step();
+  assert.ok(next.events.models[0].request.system.startsWith(options.reviewPrompt));
+});
+
+test("invalid review prompt configuration disables review without calling the model", async () => {
+  for (const reviewPrompt of [null, false, 42, {}, [], "x".repeat(20_001)]) {
+    assert.throws(() => readConfig({ reviewPrompt }), /Invalid reviewPrompt/u);
+    const h = harness({ reviewPrompt });
+    await started(h);
+    assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+    assert.equal(h.events.models.length, 0);
+  }
 });

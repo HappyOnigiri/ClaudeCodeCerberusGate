@@ -77,3 +77,34 @@ MCP の初期状態は不許可。検索ツールの完全一致の名前を明�
 無効の間は回答を審査せず、通常どおり表示する。
 審査中・修正依頼の配信待ちに無効化した場合は、保留中の回答と修正依頼を取り消し、新しい依頼が必要な旨を表示する。
 有効化は次の回答ステップから適用する。
+
+## 検証プロンプトの変更
+
+`reviewPrompt` で審査の観点・手順を変更できる。
+未設定、空文字、空白だけの文字列では既定文を使い、それ以外は指定した本文で既定文全体を置き換える。
+上限は JavaScript の文字列長で20,000文字とする。
+文字列以外や上限超過は不正設定として審査を無効にし、通常の回答を表示する。
+
+`/config` の「Review prompt」で文面を編集して保存でき、複数行の貼り付けにも対応する。
+保存後はプラグインが再ロードされ、次の審査から適用する。
+`claude plugin configure --values-stdin` は複数行を拒否するため、複数行の保存には設定画面または設定ファイルを使う。
+複数行は設定ファイルの `pluginConfigs` 内の対象プラグインの `options.reviewPrompt` に、改行を `\n` として保存できる。
+ローカルインストール時の ID は `cerberus-gate@happyonigiri-plugins`、`--plugin-dir` 起動時は `cerberus-gate@inline` となる。
+`reviewPrompt` を空文字へ戻して再ロードすると、既定の審査に戻る。
+`make install` による再インストールでも保存済みの本文を復元する。
+
+```json
+{
+  "pluginConfigs": {
+    "cerberus-gate@happyonigiri-plugins": {
+      "options": {
+        "reviewPrompt": "Check material claims against sources.\nPrioritize assumptions that could change the conclusion."
+      }
+    }
+  }
+}
+```
+
+設定は審査の本文だけを変更する。
+読み取り専用の制約、許可ツール、権限判定、ツール要求と判定の JSON 契約は固定であり、設定では解除できない。
+設定した観点によって審査結果は変わるため、重要な根拠や完了条件を確認する指示を含める。
