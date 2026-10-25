@@ -79,6 +79,9 @@ for (const mode of cases) {
   on('turn.complete',async($,e,next)=>{
    await $.fs.write(${JSON.stringify(artifacts)}+'/complete-'+e.turnId+'.json',JSON.stringify(e));return next(e);
   });
+  on('session.end',async($,e,next)=>{
+   await $.fs.write(${JSON.stringify(artifacts)}+'/session-end.json',JSON.stringify(e));return next(e);
+  });
  };
  `,
   );
@@ -154,7 +157,19 @@ for (const mode of cases) {
         throw new Error("Private draft or verdict leaked to the TUI");
       if (/\berror\b|hook skipped|hook failed/iu.test(latest)) throw new Error("Hook error in TUI");
       if (mode === "cancel" && !cancelled && latest.includes("回答を検証中です。")) {
-        await submit(session, "/cerberus cancel");
+        await submit(session, "/cgate log");
+        const logDeadline = Date.now() + 10_000;
+        let pendingLogSeen = false;
+        while (Date.now() < logDeadline) {
+          const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+          if (screen.includes("このセッションのログ（時刻は UTC）")) {
+            pendingLogSeen = true;
+            break;
+          }
+          await pause(250);
+        }
+        if (!pendingLogSeen) throw new Error("Pending review log not observed");
+        await submit(session, "/cgate cancel");
         cancelled = true;
         await pause(8500);
         continue;
@@ -174,6 +189,43 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
+    await submit(session, "/cgate log");
+    const logDeadline = Date.now() + 15_000;
+    let logSeen = false;
+    while (Date.now() < logDeadline) {
+      latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+      const expected = {
+        pass: "検証済みの本文を公開しました。",
+        revise: "修正を依頼しました",
+        unverified: "UNVERIFIED",
+        cancel: "コマンドで検証処理を取り消しました。",
+      }[mode];
+      if (latest.includes("このセッションのログ（時刻は UTC）") && latest.includes(expected)) {
+        logSeen = true;
+        break;
+      }
+      await pause(250);
+    }
+    await writeFile(join(artifacts, "log-screen.txt"), latest);
+    if (!logSeen) throw new Error("Expected session log not observed");
+    if (!/\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]/u.test(latest))
+      throw new Error("UTC timestamp not observed in session log");
+    if (latest.includes("CERBERUS_REJECTED_DRAFT") || latest.includes("INVALID_REVIEW"))
+      throw new Error("Private draft or verdict leaked through session log");
+    if (mode === "pass") {
+      // 末尾の空白でコマンド候補のメニューを閉じてから送信する。
+      await submit(session, "/clear ");
+      const clearDeadline = Date.now() + 10_000;
+      while (!(await readdir(artifacts)).includes("session-end.json")) {
+        if (Date.now() >= clearDeadline) throw new Error("/clear did not end the session");
+        await pause(250);
+      }
+      await submit(session, "/cgate log");
+      const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+      await writeFile(join(artifacts, "clear-screen.txt"), screen);
+      if (!screen.includes("このセッションのログはありません。"))
+        throw new Error("Session log survived /clear");
+    }
     if (mode === "cancel" && /⏺\s+stable\b/u.test(latest))
       throw new Error("Cancelled answer published");
     if ((await readFile(join(work, "fact.txt"), "utf8")) !== "The release channel is stable.\n")
@@ -194,6 +246,11 @@ for (const mode of cases) {
     summary.push({ case: mode, status: "PASS", workspace: work });
     console.log(`PASS ${mode}`);
   } catch (error) {
+    if (started)
+      await writeFile(
+        join(artifacts, "failure-screen.txt"),
+        tmux("capture-pane", "-p", "-t", session, "-S", "-1000"),
+      );
     summary.push({ case: mode, status: "FAIL", error: String(error), workspace: work });
     console.error(`FAIL ${mode}: ${String(error)}`);
     process.exitCode = 1;

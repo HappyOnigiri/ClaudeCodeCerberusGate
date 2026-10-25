@@ -5,7 +5,7 @@ import { WAITING, UNVERIFIED } from "../plugins/cerberus-gate/hooks/policy.ts";
 
 function harness(options = {}) {
   const handlers = new Map();
-  const events = { prompts: [], calls: [], inputs: [], agents: [], timers: [] };
+  const events = { prompts: [], calls: [], inputs: [], agents: [], timers: [], commands: [] };
   let counter = 0;
   let draft = "UNPUBLISHED DRAFT";
   const matches = (m, e) =>
@@ -24,7 +24,12 @@ function harness(options = {}) {
   }, options);
   const engine = {
     ui: { status() {} },
-    command: { register: async () => ({}) },
+    command: {
+      register: async (spec) => {
+        events.commands.push(spec);
+        return {};
+      },
+    },
     session: {
       version: async () => ({ version: "2.1.310", base: "2.1.310" }),
       messages: async () => [{ role: "user", content: "original request" }],
@@ -57,6 +62,7 @@ function harness(options = {}) {
       },
     },
     clock: {
+      now: async () => 0,
       after: (ms, fn) => {
         const timer = {
           ms,
@@ -318,4 +324,67 @@ test("headless mode fails closed without generating an unreviewed answer", async
   await h.prompt("request");
   assert.ok((await h.step()).text.includes("対話セッション"));
   assert.equal(h.events.agents.length, 0);
+});
+
+test("cgate is registered for immediate use and log does not disturb a pending review", async () => {
+  const h = harness();
+  await h.fire("session.start", { isInteractive: true });
+  assert.ok(h.events.commands.some((c) => c.name === "cgate" && c.immediate));
+  await h.prompt("SECRET REQUEST");
+  await h.step();
+  const before = await h.fire("command.run", { command: "cgate", args: "log" });
+  assert.match(before.text, /審査 #\d+: 開始/u);
+  assert.match(before.text, /1970-01-01T00:00:00.000Z/u);
+  assert.doesNotMatch(before.text, /SECRET REQUEST|UNPUBLISHED DRAFT/u);
+  assert.equal(h.events.prompts.length, 0);
+  await h.finish();
+  assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
+  const after = await h.fire("command.run", { command: "cgate", args: " log " });
+  assert.match(after.text, /PASS[\s\S]*検証済みの本文を公開/u);
+  assert.equal(after.context, undefined);
+});
+
+test("session logs survive requests and cancellation, hide findings, and clear at session end", async () => {
+  const h = harness();
+  await h.prompt("first");
+  await h.step();
+  await h.finish("REVISE", ["SECRET FINDING"]);
+  await h.step();
+  await h.fire("command.run", { command: "cgate", args: "cancel" });
+  const cancelled = await h.fire("command.run", { command: "cgate", args: "log" });
+  assert.match(cancelled.text, /REVISE[\s\S]*修正を依頼[\s\S]*取り消しました/u);
+  assert.doesNotMatch(cancelled.text, /SECRET FINDING|UNPUBLISHED DRAFT/u);
+  await h.prompt("second");
+  await h.step();
+  await h.finish();
+  await h.step();
+  const text = (await h.fire("command.run", { command: "cgate", args: "log" })).text;
+  assert.match(text, /REVISE[\s\S]*PASS/u);
+  await h.fire("session.end", { reason: "clear" });
+  assert.match(
+    (await h.fire("command.run", { command: "cgate", args: "log" })).text,
+    /ログはありません/u,
+  );
+});
+
+test("cgate reports timeout and errors; unknown arguments are harmless and cerberus stays available", async () => {
+  const h = harness();
+  await h.prompt("request");
+  await h.step();
+  const invalid = await h.fire("command.run", { command: "cgate", args: "unknown" });
+  assert.match(invalid.text, /使い方/u);
+  await h.events.timers[0].fn();
+  await h.step();
+  const text = (await h.fire("command.run", { command: "cgate", args: "log" })).text;
+  assert.match(text, /タイムアウト[\s\S]*UNVERIFIED[\s\S]*本文を公開しませんでした/u);
+  await h.prompt("next");
+  await h.step({ fail: true });
+  assert.match(
+    (await h.fire("command.run", { command: "cgate", args: "log" })).text,
+    /エラーが発生/u,
+  );
+  assert.match(
+    (await h.fire("command.run", { command: "cerberus", args: "cancel" })).text,
+    /cancelled/u,
+  );
 });
