@@ -7,6 +7,7 @@ import {
   UNRESOLVED,
   UNVERIFIED,
   WAITING,
+  readConfig,
   withNote,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
@@ -58,16 +59,30 @@ function harness(
     };
   }, options);
   const engine = {
+    ui: {
+      status(value) {
+        events.statuses.push(value);
+      },
+      open: async (pane) => {
+        events.pane = pane;
+        return { isPlaced: true };
+      },
+      close: async () => {
+        events.closed = true;
+      },
+      resolve: () => ({ Select: (props) => props, Text: (props) => props }),
+    },
+    config: {
+      set: async (setting) => {
+        events.setting = setting;
+        return { value: setting.value };
+      },
+    },
     state: {
       get: async (ref) => ({ value: structuredClone(host.states.get(ref.key)) }),
       set: async (ref, value) => {
         host.states.set(ref.key, structuredClone(value));
         return { isSet: true, version: 1 };
-      },
-    },
-    ui: {
-      status(value) {
-        events.statuses.push(value);
       },
     },
     turn: { abort: async () => fire("turn.abort", {}) },
@@ -168,11 +183,14 @@ function harness(
     tools = [],
     stopReason = "end_turn",
     fail = false,
+    model = "haiku",
+    effort,
   } = {}) {
     const e = {
       turnId: "t",
       index: 0,
-      model: "haiku",
+      model,
+      effort,
       messageCount: 1,
       ...(agentId ? { agentId } : {}),
     };
@@ -698,4 +716,74 @@ test("new requests supersede a queued reload restart and failed restart delivery
     (await again.fire("command.run", { command: "cgate", args: "log" })).text,
     /再開に失敗/u,
   );
+});
+
+test("reviewer model and effort inherit the answer step or use independent overrides", async () => {
+  for (const [options, expectedModel, expectedEffort] of [
+    [{}, "haiku", "high"],
+    [{ reviewerModel: "sonnet" }, "sonnet", "high"],
+    [{ reviewerEffort: "low" }, "haiku", "low"],
+    [{ reviewerModel: "opus", reviewerEffort: "max" }, "opus", "max"],
+  ]) {
+    const h = harness(options);
+    await h.prompt("request");
+    await h.step({ effort: "high" });
+    assert.equal(h.events.models[0].request.model, expectedModel);
+    assert.equal(h.events.models[0].request.effort, expectedEffort);
+  }
+  assert.equal(readConfig({}).reviewerEffort, "inherit");
+  for (const effort of ["inherit", "low", "medium", "high", "xhigh", "max"])
+    assert.equal(readConfig({ reviewerEffort: effort }).reviewerEffort, effort);
+  for (const effort of ["", "unknown", 10, false])
+    assert.throws(() => readConfig({ reviewerEffort: effort }), /Invalid reviewerEffort/u);
+  const h = harness();
+  await h.prompt("request");
+  await h.step();
+  assert.equal(h.events.models[0].request.effort, undefined);
+  await h.step({ effort: 10 });
+  assert.equal(h.events.models[1].request.effort, undefined);
+});
+
+test("model picker saves selection and applies it to the next review", async () => {
+  const h = harness({ reviewerModel: "custom-model", reviewerEffort: "low" });
+  await h.fire("command.run", { command: "cgate", args: "model" });
+  assert.equal(h.events.pane.id, "reviewer-model");
+  const picker = await h.fire("ui.render", {
+    component: "Pane",
+    requestId: "reviewer-model",
+    surface: "terminal",
+  });
+  assert.equal(picker.value, "custom-model");
+  assert.deepEqual(
+    picker.options.map((o) => o.value),
+    ["inherit", "haiku", "sonnet", "opus", "custom-model"],
+  );
+  assert.equal(h.events.setting, undefined);
+  await picker.onSelect("haiku");
+  assert.deepEqual(h.events.setting, { key: "cerberus-gate.reviewerModel", value: "haiku" });
+  assert.equal(h.events.closed, true);
+  await h.prompt("request");
+  await h.step();
+  assert.equal(h.events.models[0].request.model, "haiku");
+  assert.equal(h.events.models[0].request.effort, "low");
+});
+
+test("a denied or failed model save preserves the previous reviewer model", async () => {
+  for (const fails of [false, true]) {
+    const h = harness();
+    h.engine.config.set = async () => {
+      if (fails) throw new Error("save failed");
+      return { deny: "locked" };
+    };
+    const picker = await h.fire("ui.render", {
+      component: "Pane",
+      requestId: "reviewer-model",
+      surface: "terminal",
+    });
+    await picker.onSelect("opus");
+    assert.equal(h.events.closed, undefined);
+    await h.prompt("request");
+    await h.step();
+    assert.equal(h.events.models[0].request.model, "haiku");
+  }
 });

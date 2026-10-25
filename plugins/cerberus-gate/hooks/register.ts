@@ -105,6 +105,7 @@ async function review(
   candidate: Candidate,
   request: string,
   model: string,
+  effort: TurnStepInput["effort"],
 ): Promise<Verdict> {
   const signal = candidate.controller.signal;
   try {
@@ -118,6 +119,12 @@ async function review(
       const response = await $.model.complete(
         {
           model: reviewConfig.reviewerModel === "inherit" ? model : reviewConfig.reviewerModel,
+          effort:
+            reviewConfig.reviewerEffort === "inherit"
+              ? typeof effort === "number"
+                ? undefined
+                : effort
+              : reviewConfig.reviewerEffort,
           system: REVIEW_SYSTEM,
           prompt: JSON.stringify({
             request,
@@ -233,7 +240,7 @@ async function verify(
     await saveRecovery($, gate);
     candidate.context = JSON.stringify(await $.session.messages({ as: "api" })).slice(-80_000);
     if (!current(gate, candidate) || signal.aborted) return "";
-    let verdict = await review($, config, candidate, gate.prompt, e.model);
+    let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort);
     if (!current(gate, candidate) || signal.aborted) return "";
     if (candidate.timedOut) {
       log.record($.clock.now(), `審査 #${candidate.token}: タイムアウト`);
@@ -434,7 +441,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: "cgate",
       description: "Cerberus Gate の状態・セッションログを表示",
-      argumentHint: "[log|cancel]",
+      argumentHint: "[model|log|cancel]",
       immediate: true,
     });
     if (pending && gate.prompt && configured && interactive) {
@@ -453,8 +460,18 @@ export const register: Register = (on, options) => {
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
     const argument = e.args.trim();
+    if (argument === "model") {
+      await $.ui.open({
+        id: "reviewer-model",
+        title: "検査用モデル",
+        focus: true,
+        closeOnEscape: true,
+      });
+      return {};
+    }
     if (argument === "log") return { text: await log.text() };
-    if (argument !== "" && argument !== "cancel") return { text: "使い方: /cgate [log|cancel]" };
+    if (argument !== "" && argument !== "cancel")
+      return { text: "使い方: /cgate [model|log|cancel]" };
     if (argument === "cancel") {
       const turnId = gate.active?.turnId;
       reset(gate, gate.prompt);
@@ -465,6 +482,36 @@ export const register: Register = (on, options) => {
       if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
     }
     return { text: `Cerberus Gate: ${gate.phase}; corrections=${gate.revisions}` };
+  });
+  on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
+    if (e.surface === "mobile") {
+      const { Text } = $.ui.resolve(e);
+      return Text({ children: "検査用モデルは /config で変更してください。" });
+    }
+    const { Select } = $.ui.resolve(e);
+    return Select({
+      key: "reviewer-model",
+      label: "検査用モデル",
+      options: [...new Set(["inherit", "haiku", "sonnet", "opus", config.reviewerModel])].map(
+        (value) => ({ value }),
+      ),
+      value: config.reviewerModel,
+      autoFocus: true,
+      onSelect: async (value) => {
+        try {
+          const result = await $.config.set({ key: "cerberus-gate.reviewerModel", value });
+          if (result.deny !== undefined) {
+            $.ui.status(`Cerberus Gate: モデルを保存できませんでした。${result.deny}`);
+            return;
+          }
+          config = readConfig({ ...options, reviewerModel: result.value });
+          await $.ui.close({ id: "reviewer-model" });
+          $.ui.status(`Cerberus Gate: 検査用モデルを ${config.reviewerModel} に設定しました。`);
+        } catch {
+          $.ui.status("Cerberus Gate: モデルを保存できませんでした。");
+        }
+      },
+    });
   });
   on("agent.offer", { agent: REVIEWER }, () => ({ isOffered: false })).catch(() => ({
     isOffered: false,
