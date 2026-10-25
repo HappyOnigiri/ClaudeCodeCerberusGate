@@ -134,6 +134,7 @@ async function startReview($: EngineInterface, e: TurnStepInput, text: string): 
     prompt: REVIEW_PROMPT,
     tools,
     model: config.reviewerModel === "inherit" ? e.model : config.reviewerModel,
+    effort: config.reviewerEffort === "inherit" ? e.effort : config.reviewerEffort,
     maxTurns: 8,
     omitClaudeMd: true,
   });
@@ -404,7 +405,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: "cgate",
       description: "Cerberus Gate の状態・セッションログを表示",
-      argumentHint: "[log|cancel]",
+      argumentHint: "[model|log|cancel]",
       immediate: true,
     });
     if (pending && gate.prompt && configured && interactive) {
@@ -433,8 +434,18 @@ export const register: Register = (on, options) => {
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
     const argument = e.args.trim();
+    if (argument === "model") {
+      await $.ui.open({
+        id: "reviewer-model",
+        title: "検査用モデル",
+        focus: true,
+        closeOnEscape: true,
+      });
+      return {};
+    }
     if (argument === "log") return { text: await log.text() };
-    if (argument !== "" && argument !== "cancel") return { text: "使い方: /cgate [log|cancel]" };
+    if (argument !== "" && argument !== "cancel")
+      return { text: "使い方: /cgate [model|log|cancel]" };
     if (argument === "cancel") {
       const id = gate.active?.agentId;
       timer?.cancel();
@@ -446,6 +457,36 @@ export const register: Register = (on, options) => {
         await $.tool.call({ tool: "TaskStop", task_id: id }).catch(() => undefined);
     }
     return { text: `Cerberus Gate: ${gate.phase}; corrections=${gate.revisions}` };
+  });
+  on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
+    if (e.surface === "mobile") {
+      const { Text } = $.ui.resolve(e);
+      return Text({ children: "検査用モデルは /config で変更してください。" });
+    }
+    const { Select } = $.ui.resolve(e);
+    return Select({
+      key: "reviewer-model",
+      label: "検査用モデル",
+      options: [...new Set(["inherit", "haiku", "sonnet", "opus", config.reviewerModel])].map(
+        (value) => ({ value }),
+      ),
+      value: config.reviewerModel,
+      autoFocus: true,
+      onSelect: async (value) => {
+        try {
+          const result = await $.config.set({ key: "cerberus-gate.reviewerModel", value });
+          if (result.deny !== undefined) {
+            $.ui.status(`Cerberus Gate: モデルを保存できませんでした。${result.deny}`);
+            return;
+          }
+          config = readConfig({ ...options, reviewerModel: result.value });
+          await $.ui.close({ id: "reviewer-model" });
+          $.ui.status(`Cerberus Gate: 検査用モデルを ${config.reviewerModel} に設定しました。`);
+        } catch {
+          $.ui.status("Cerberus Gate: モデルを保存できませんでした。");
+        }
+      },
+    });
   });
   on("agent.offer", { agent: "cerberus-gate:reviewer" }, () => ({ isOffered: false })).catch(
     () => ({ isOffered: false }),

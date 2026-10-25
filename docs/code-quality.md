@@ -35,16 +35,17 @@
 登録用モジュールでも、外部への依存は `claude-code` の型 import に限る。
 生成型、テスト、検証スクリプト内の文字列 fixture は依存境界の検査対象外とする。
 
-許可する API は次の14種類とする。
+許可する API は次の18種類とする。
 
 - `agent.list/register/spawn`
 - `clock.now/after`
 - `command.register`
+- `config.set`（自分の `reviewerModel` 設定のみ）
 - `prompt.submit`
 - `session.messages/version`
 - `state.get/set`（自分の再ロード復元用の状態のみ）
 - `tool.list/call`
-- `ui.status`
+- `ui.status/open/close/resolve`
 
 `state.get/set` の対象は `plugin: "cerberus-gate", key: "recovery"` に限定する。
 `tool.call` は `TaskStop` だけ、エージェント登録・起動は既存のレビュアーだけに限定する。

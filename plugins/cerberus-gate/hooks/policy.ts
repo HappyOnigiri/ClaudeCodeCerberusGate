@@ -1,5 +1,6 @@
 export type Config = {
   reviewerModel: string;
+  reviewerEffort: "inherit" | "low" | "medium" | "high" | "xhigh" | "max";
   maxRevisions: number;
   reviewTimeoutMs: number;
   mcpTools: readonly string[];
@@ -22,6 +23,16 @@ export const MAX_DRAFT = 100_000;
 
 export function readConfig(options: Readonly<Record<string, unknown>>): Config {
   const model = options.reviewerModel ?? "inherit";
+  const effort = options.reviewerEffort ?? "inherit";
+  if (
+    effort !== "inherit" &&
+    effort !== "low" &&
+    effort !== "medium" &&
+    effort !== "high" &&
+    effort !== "xhigh" &&
+    effort !== "max"
+  )
+    throw new Error("Invalid reviewerEffort");
   const revisions = options.maxRevisions ?? 2;
   const seconds = options.reviewTimeoutSeconds ?? 120;
   const tools = options.readOnlyMcpTools ?? "";
@@ -49,6 +60,7 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
     throw new Error("Use exact MCP tool names");
   return {
     reviewerModel: model,
+    reviewerEffort: effort,
     maxRevisions: revisions,
     reviewTimeoutMs: seconds * 1000,
     mcpTools,

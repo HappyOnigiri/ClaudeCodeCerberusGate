@@ -10,6 +10,10 @@ const api = new Set([
   "clock.now",
   "clock.after",
   "command.register",
+  "config.set",
+  "ui.open",
+  "ui.close",
+  "ui.resolve",
   "prompt.submit",
   "session.messages",
   "session.version",
@@ -156,6 +160,17 @@ function inspectMember(n, parent, { privileged, literal, report }) {
     if (!privileged || !api.has(name) || parent?.type !== "CallExpression" || parent.callee !== n) {
       report(n, "mods-api", `forbidden or indirect API reference ${parts.join(".")}`);
       return;
+    }
+    if (name === "config.set") {
+      const argument = parent.arguments[0];
+      const properties = argument?.type === "ObjectExpression" ? argument.properties : [];
+      const keys = properties.filter((p) => (p.key?.name ?? p.key?.value) === "key");
+      if (
+        properties.some((p) => p.type !== "Property" || p.computed) ||
+        keys.length !== 1 ||
+        literal(keys[0]?.value) !== "cerberus-gate.reviewerModel"
+      )
+        report(n, "mods-api-target", "config.set requires the reviewer model setting");
     }
     if (name === "state.get" || name === "state.set") {
       const argument = parent.arguments[0];

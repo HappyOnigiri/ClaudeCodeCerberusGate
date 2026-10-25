@@ -26,7 +26,16 @@ claude --plugin-dir "$PWD/plugins/cerberus-gate"
 非対話の `claude -p` は対象外で、未検証本文を出さずに通知する。
 検証を完了できなかった回答は、未検証である旨の注記を付けて本文をそのまま表示する。
 
-レビュアーのモデル、修正回数・審査時間の上限、読み取り専用 MCP ツールの一覧はプラグインの設定項目で変更する。
+`/cgate model` で検査用モデルの選択 UI を開き、`inherit`・`haiku`・`sonnet`・`opus` から選べる。
+現在の設定がモデル ID の場合は、その値も選択肢に表示する。Esc で変更せず閉じる。
+選択した値は Claude Code の設定 API で保存し、次の審査から使う。
+
+レビュアーのモデルと effort、修正回数・審査時間の上限、読み取り専用 MCP ツールの一覧はプラグインの設定項目で変更する。
+`reviewerModel` と `reviewerEffort` の既定値は `inherit` で、最終回答を生成したステップのモデルと effort を引き継ぐ。
+`/config` でモデル ID や effort（`inherit`・`low`・`medium`・`high`・`xhigh`・`max`）を設定できる。
+モデルが対応しない effort はエンジン側の制約に従う。
+選択 UI からの保存先はユーザースコープの `~/.claude/settings.json` の `pluginConfigs[<plugin>].options`。
+`CLAUDE_CONFIG_DIR` を指定した場合は、その配下の `settings.json` に保存する。
 MCP の初期状態は不許可。検索ツールの完全一致の名前を明示し、エンジンが読み取り専用と判定する呼び出しだけを許可する。
 
 ## 開発

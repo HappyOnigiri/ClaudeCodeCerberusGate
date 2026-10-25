@@ -9,7 +9,7 @@ const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceA
 await mkdir(report, { recursive: true });
 const cases = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ["pass", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"];
+  : ["pass", "model", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"];
 const tmux = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -29,9 +29,16 @@ const submit = async (session, text) => {
 const summary = [];
 for (const mode of cases) {
   if (
-    !["pass", "search", "revise", "unverified", "cancel", "reload-work", "reload-review"].includes(
-      mode,
-    )
+    ![
+      "pass",
+      "model",
+      "search",
+      "revise",
+      "unverified",
+      "cancel",
+      "reload-work",
+      "reload-review",
+    ].includes(mode)
   )
     throw new Error(`Unknown case ${mode}`);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
@@ -46,7 +53,7 @@ for (const mode of cases) {
   const settings = join(configDir, "settings.json");
   const reloadSettings = (maxRevisions) =>
     JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
-  if (mode === "reload-work") {
+  if (mode === "reload-work" || mode === "model") {
     await mkdir(configDir);
     const accountPath = process.env.CLAUDE_CONFIG_DIR
       ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
@@ -58,7 +65,14 @@ for (const mode of cases) {
         .map((key) => [key, original[key]]),
     );
     await writeFile(join(configDir, ".claude.json"), JSON.stringify(account));
-    await writeFile(settings, reloadSettings(2));
+    await writeFile(
+      settings,
+      mode === "model"
+        ? JSON.stringify({
+            pluginConfigs: { "cerberus-gate@inline": { options: { reviewerEffort: "low" } } },
+          })
+        : reloadSettings(2),
+    );
   }
   const fixture = join(work, "fixture");
   await mkdir(join(fixture, ".claude-plugin"), { recursive: true });
@@ -138,7 +152,7 @@ for (const mode of cases) {
     "--plugin-dir",
     fixture,
     "--setting-sources",
-    mode === "reload-work" ? "user,project,local" : "project,local",
+    mode === "reload-work" || mode === "model" ? "user,project,local" : "project,local",
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
@@ -147,7 +161,7 @@ for (const mode of cases) {
     "--debug-file",
     join(artifacts, "debug.log"),
   ];
-  if (mode === "reload-work")
+  if (mode === "reload-work" || mode === "model")
     args.unshift(
       "env",
       `CLAUDE_CONFIG_DIR=${configDir}`,
@@ -186,6 +200,30 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!ready) throw new Error("TUI did not become ready");
+    if (mode === "model") {
+      await submit(session, "/cgate model");
+      await pause(1000);
+      await writeFile(
+        join(artifacts, "model-picker.txt"),
+        tmux("capture-pane", "-p", "-t", session, "-S", "-200"),
+      );
+      tmux("send-keys", "-t", session, "Down", "Enter");
+      const savedDeadline = Date.now() + 15_000;
+      let saved;
+      while (Date.now() < savedDeadline) {
+        saved = JSON.parse(await readFile(settings, "utf8"));
+        if (
+          Object.values(saved.pluginConfigs ?? {}).some((p) => p.options?.reviewerModel === "haiku")
+        )
+          break;
+        await pause(250);
+      }
+      if (
+        !Object.values(saved.pluginConfigs ?? {}).some((p) => p.options?.reviewerModel === "haiku")
+      )
+        throw new Error("Model selection was not persisted to user settings");
+      await writeFile(join(artifacts, "saved-settings.json"), JSON.stringify(saved, null, 2));
+    }
     await submit(
       session,
       "Read fact.txt and reply with exactly the release channel, with no other text.",
@@ -240,7 +278,11 @@ for (const mode of cases) {
         break;
       }
       if (
-        (mode === "pass" || mode === "search" || mode === "revise" || mode.startsWith("reload-")) &&
+        (mode === "pass" ||
+          mode === "model" ||
+          mode === "search" ||
+          mode === "revise" ||
+          mode.startsWith("reload-")) &&
         /⏺\s+stable\b/u.test(latest)
       ) {
         passed = true;
@@ -256,6 +298,7 @@ for (const mode of cases) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       const expected = {
         pass: "検証済みの本文を公開しました。",
+        model: "検証済みの本文を公開しました。",
         search: "検証済みの本文を公開しました。",
         revise: "修正を依頼しました",
         unverified: "UNVERIFIED",
@@ -311,6 +354,18 @@ for (const mode of cases) {
     for (const name of await readdir(artifacts))
       if (name.startsWith("step-"))
         steps.push(JSON.parse(await readFile(join(artifacts, name), "utf8")));
+    if (mode === "model" || mode === "pass") {
+      const reviews = steps.filter((s) => s.event.agentId);
+      if (!reviews.length) throw new Error("No real reviewer step observed");
+      const main = steps.find((s) => !s.event.agentId);
+      if (!main) throw new Error("No main answer step observed");
+      for (const review of reviews) {
+        if (review.event.model !== main.event.model)
+          throw new Error("Reviewer model did not match haiku");
+        if (review.event.effort !== (mode === "model" ? "low" : main.event.effort))
+          throw new Error("Reviewer effort did not match the configured or inherited effort");
+      }
+    }
     if (mode === "search") {
       const tools = steps
         .filter((s) => s.event.agentId)
