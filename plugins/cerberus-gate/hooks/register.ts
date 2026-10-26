@@ -5,7 +5,6 @@ import {
   NO_DRAFT,
   PASSED,
   readConfig,
-  diagnoseVerdict,
   REVIEWER,
   revising,
   UNRESOLVED,
@@ -23,29 +22,12 @@ import {
   reset,
   resultOf,
 } from "./state.ts";
-import {
-  MAX_ROUNDS,
-  MAX_EVIDENCE,
-  reviewModelRequest,
-  reviewTools,
-  toolRequest,
-  reviewEvidence,
-  reviewFailureReason,
-  cancellable,
-} from "./review.ts";
-import type { Evidence, ReviewRequest } from "./review.ts";
+import { review, unverified } from "./review-loop.ts";
 import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
 import type { Candidate, Delivery, GateState, Shown } from "./state.ts";
 import type { Config, Verdict } from "./policy.ts";
-import type {
-  EngineInterface,
-  Hook,
-  Register,
-  TurnStepInput,
-  ToolCallArgs,
-  ToolCallResult,
-} from "claude-code";
+import type { EngineInterface, Hook, Register, TurnStepInput } from "claude-code";
 
 const gate = createState();
 const log = createLog();
@@ -233,147 +215,6 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
     }
   });
 }
-
-// The sole dynamic tool-call boundary forwards only tools advertised for this review.
-async function callReviewTool(
-  $: EngineInterface,
-  call: ReviewRequest,
-  tools: ReadonlySet<string>,
-): Promise<ToolCallResult> {
-  if (!tools.has(call.tool)) return { deny: "Cerberus: tool absent from review session." };
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the engine validates each dynamic tool schema after the checked envelope and session tool list
-  return $.tool.call({ ...call.input, tool: call.tool } as ToolCallArgs);
-}
-
-const unverified = (): Verdict => ({ decision: "UNVERIFIED", findings: [] });
-
-async function review(
-  $: EngineInterface,
-  reviewConfig: Config,
-  candidate: Candidate,
-  request: string,
-  model: string,
-  effort: TurnStepInput["effort"],
-): Promise<Verdict> {
-  const signal = candidate.controller.signal;
-  const logger = debug;
-  const correlation = {
-    turnId: candidate.turnId,
-    stepIndex: candidate.stepIndex,
-    epoch: candidate.epoch,
-    reviewToken: candidate.token,
-  };
-  let stage = "tool.list";
-  let activeOperationId = "";
-  const fail = (reason: string): Verdict => {
-    logger.record("review.unverified", { ...correlation, reason });
-    return unverified();
-  };
-  try {
-    const started = await $.clock.now();
-    const tools = reviewTools(await $.tool.list());
-    const names = new Set(tools.map((tool) => tool.name));
-    const evidence: Evidence[] = [];
-    let errors = 0;
-    for (let round = 0; round < MAX_ROUNDS; round++) {
-      const remaining = reviewConfig.reviewTimeoutMs - ((await $.clock.now()) - started);
-      if (remaining <= 0) candidate.timedOut = true;
-      if (signal.aborted || candidate.timedOut)
-        return fail(signal.aborted ? "cancelled" : "timeout");
-      const operationId = logger.operation();
-      stage = "model";
-      activeOperationId = operationId;
-      const modelRequest = reviewModelRequest(reviewConfig, {
-        model,
-        effort,
-        request,
-        workingDirectory: await $.session.cwd(),
-        candidate,
-        tools,
-        evidence,
-        remaining,
-      });
-      logger.record("model.start", {
-        ...correlation,
-        operationId,
-        round,
-        remaining,
-        request: modelRequest,
-      });
-      await flushDebug($, logger, false, signal);
-      const modelStarted = await $.clock.now();
-      const response = await cancellable(
-        $.model.complete(modelRequest, { signal }).then((result) => {
-          if (signal.aborted) {
-            logger.record("model.discarded", { ...correlation, operationId, response: result });
-          }
-          return result;
-        }),
-        signal,
-      );
-      logger.record("model.complete", {
-        ...correlation,
-        operationId,
-        round,
-        response,
-        elapsedMs: (await $.clock.now()) - modelStarted,
-      });
-      await flushDebug($, logger, false, signal);
-      if (signal.aborted) return fail("cancelled");
-      if (!response.isAnswered || !response.text) return fail("model_empty_or_failed");
-      if (response.text.length > MAX_DRAFT) return fail("response_size_limit");
-      if ((await $.clock.now()) - started >= reviewConfig.reviewTimeoutMs) {
-        candidate.timedOut = true;
-        return fail("timeout");
-      }
-      stage = "parse";
-      const call = toolRequest(response.text);
-      if (call === undefined) {
-        const parsed = diagnoseVerdict(response.text);
-        logger.record("verdict.parsed", { ...correlation, ...parsed });
-        return parsed.verdict;
-      }
-      stage = "tool";
-      const toolOperationId = logger.operation();
-      activeOperationId = toolOperationId;
-      logger.record("tool.start", { ...correlation, operationId: toolOperationId, call });
-      await flushDebug($, logger, false, signal);
-      const result = await cancellable(
-        callReviewTool($, call, names).then((value) => {
-          logger.record(signal.aborted ? "tool.discarded" : "tool.complete", {
-            ...correlation,
-            operationId: toolOperationId,
-            result: value,
-          });
-          return value;
-        }),
-        signal,
-      );
-      await flushDebug($, logger, false, signal);
-      if (signal.aborted) return fail("cancelled");
-      const outcome = reviewEvidence(call, result, errors);
-      if ("reason" in outcome) return fail(outcome.reason);
-      errors = outcome.errors;
-      evidence.push(outcome.entry);
-      if (JSON.stringify(evidence).length > MAX_EVIDENCE) return fail("evidence_size_limit");
-    }
-  } catch (error) {
-    logger.record(
-      "review.failed",
-      {
-        ...correlation,
-        stage,
-        operationId: activeOperationId,
-        reason: reviewFailureReason(stage, error, signal.aborted, candidate.timedOut),
-        error,
-      },
-      "error",
-    );
-    return unverified();
-  }
-  return fail("round_limit");
-}
-
 // Regular reviews queue only REVISE; reload recovery can also request a fresh answer.
 async function finishReview(
   $: EngineInterface,
@@ -498,7 +339,11 @@ async function verify(
     if (!current(gate, candidate) || signal.aborted) return hidden;
     gate.material = directory;
     await saveRecovery($, gate, signal);
-    let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort);
+    const reviewLogger = debug;
+    let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort, {
+      logger: reviewLogger,
+      flush: (s) => flushDebug($, reviewLogger, false, s),
+    });
     if (!current(gate, candidate) || signal.aborted) return hidden;
     if (candidate.timedOut) {
       log.record($.clock.now(), `審査 #${candidate.token}: タイムアウト`);
