@@ -144,6 +144,31 @@ void test("CLI resolves only the current session and deletes only its own materi
   assert.equal(await readFile(source, "utf8"), raw);
 });
 
+void test("CLI matches a large multibyte request split across stdin reads", async (t) => {
+  const work = await mkdtemp(join(tmpdir(), "cerberus-large-request-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  await mkdir(join(work, "projects", "project"), { recursive: true });
+  // Minimized from a pasted Japanese request: stdin exceeds one pipe read, so a
+  // 3-byte character straddles a read boundary unless the helper decodes once.
+  const request = `\n\n<pasted_content id="p1">\n${"ギフトタイムラインイベント視聴\n".repeat(6000)}</pasted_content id="p1">\n`;
+  const record = { type: "user", sessionId: "session", uuid: "u1", message: { content: request } };
+  await writeFile(
+    join(work, "projects", "project", "session.jsonl"),
+    `${JSON.stringify(record)}\n`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["plugins/cerberus-gate/hooks/session-log.mts", "create"],
+    {
+      input: JSON.stringify({ sessionId: "session", request }),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_CONFIG_DIR: work },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  await release(JSON.parse(result.stdout).directory);
+});
+
 void test("persistent material is byte-identical, indexed, private and retained after temporary release", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-preserve-"));
   t.after(() => rm(work, { recursive: true, force: true }));
