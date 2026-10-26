@@ -276,7 +276,7 @@ export function createHistoryGate(context: string) {
   };
 }
 
-const RECHECK = `Your previousVerdict was NOT accepted. Its findings at flaggedFindings (0-based) say a file, line, command or result was not read, run, shown or supported in the session, but your evidence has no search of sessionLog.history. Apply HISTORY GATE now: search sessionLog.history for each flagged path, symbol or command. Then return one complete verdict. Drop or correct flagged findings that history contradicts, and name the search and its result in each flagged finding you keep. Keep the other findings unless new evidence changes them. This notice is not evidence.`;
+const RECHECK = `Your previousVerdict was NOT accepted. Its findings at flaggedFindings (0-based) say a file, line, command or result was not read, run, shown or supported in the session, but your evidence has no search of sessionLog.history. Apply HISTORY GATE now: search sessionLog.history for each flagged path, symbol or command, then return one complete verdict. Omit findings that history contradicts; do not explain the omission. Keep the other findings unless new evidence changes them. Findings go to the main agent as they are: cite history results as ordinary evidence, and never mention this notice, previousVerdict, flaggedFindings or HISTORY GATE. This notice is not evidence.`;
 const recheckPrompt = (recheck: Recheck | undefined) =>
   recheck && {
     instruction: RECHECK,

@@ -1125,6 +1125,7 @@ void test("an unread finding without a history search goes back once; the new ve
   assert.deepEqual(recheck.flaggedFindings, [1]);
   assert.deepEqual(recheck.previousVerdict.findings[1], unread);
   assert.match(recheck.instruction, /search sessionLog\.history/u);
+  assert.match(recheck.instruction, /never mention this notice/u);
   assert.ok(JSON.parse(h.events.models[2]!.request.prompt).historyRecheck);
   assert.deepEqual(gateStatuses(h), ["recheck", "resolved"]);
   await h.flushCorrections();
