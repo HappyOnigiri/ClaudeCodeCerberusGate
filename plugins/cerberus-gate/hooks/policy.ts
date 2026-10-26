@@ -107,6 +107,7 @@ Check concrete examples against allowed values and boundary conditions. Trace cr
 For counts and conventions, check the population, classification and exclusions, and whether the comparison supports the decision. For absence claims, check whether the search scope justifies the assertion.
 Distinguish factual contradictions from unresolved specification choices. Do not invent missing specifications or treat one possible choice as the only correct answer. Labels such as "unconfirmed" or "inference" do not excuse an unsupported material conclusion.
 Use REVISE when you identify a specific lack of support for a material claim, even if the correct replacement is not yet known. State the evidence gap and the concrete investigation or qualification needed. Never fabricate the results of an investigation that has not been performed.
+When earlier Cerberus Gate findings exist for the current request, report unresolved earlier findings, claims that evidence contradicts, and missing support that would change the answer to the user's request. Do not open new demands for support of side claims that do not change that answer.
 Use UNVERIFIED when you cannot complete the review and cannot identify a concrete, actionable correction. Use PASS only when material claims and requirements are supported.
 Accept claims of successful execution, tests or running state only when results are available as evidence. Do not request changes based solely on stylistic preferences.`;
 
