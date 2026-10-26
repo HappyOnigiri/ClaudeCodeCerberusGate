@@ -10,6 +10,7 @@ import {
   UNVERIFIED,
   WAITING,
   readConfig,
+  supportedVersion,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
 import { harness, history, verdict, deferred, started, tick } from "./helpers/gate-harness.ts";
@@ -292,6 +293,14 @@ void test("tool steps, unrelated subagents and unsupported environments bypass r
   await started(old);
   assert.equal((await old.step()).text, "UNPUBLISHED DRAFT");
   assert.equal(old.events.models.length, 0);
+  const newer = harness({}, "2.1.311");
+  await started(newer);
+  newer.replies.push(verdict());
+  assert.deepEqual(shown(await newer.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  for (const version of ["2.1.310", "2.1.311", "2.2.0", "3.0.0", "2.1.310-beta"])
+    assert.ok(supportedVersion(version), version);
+  for (const version of ["2.1.309", "2.0.999", "1.9.400", "", "next", undefined])
+    assert.ok(!supportedVersion(version), version);
   const invalid = harness({ maxRevisions: -1 });
   await started(invalid);
   assert.equal((await invalid.step()).text, "UNPUBLISHED DRAFT");
