@@ -46,6 +46,17 @@ void test("missing closing braces are added once, ignoring braces and escapes in
     },
     salvaged: { unwrapped: false, addedBraces: 1 },
   });
+  // Unbalanced braces inside strings would close too early or add too many if counted.
+  for (const [text, input] of [
+    [`{"tool":"Bash","input":{"command":"sed 's/}//' a.txt"}`, { command: "sed 's/}//' a.txt" }],
+    ['{"tool":"Bash","input":{"command":"echo {"}', { command: "echo {" }],
+    ['{"tool":"Read","input":{"file_path":"C:\\\\"}', { file_path: "C:\\" }],
+  ] as const)
+    assert.deepEqual(toolRequest(text), {
+      tool: JSON.parse(`${text}}`).tool,
+      input,
+      salvaged: { unwrapped: false, addedBraces: 1 },
+    });
   assert.deepEqual(toolRequest(bash.slice(0, -1))?.salvaged, { unwrapped: false, addedBraces: 1 });
   assert.deepEqual(toolRequest(`<invoke:\n${read.slice(0, -2)}`)?.salvaged, {
     unwrapped: true,
