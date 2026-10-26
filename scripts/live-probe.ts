@@ -209,6 +209,7 @@ for (const mode of cases) {
     `
  let first=true,review=0,prompts=0,tools=0,userPrompts=0,materials=0;const seenMaterials=new Set();
  export const register=on=>{
+  if(${JSON.stringify(mode)}==='cli')on('tool.list',async($,e,next)=>{const r=await next(e);return {...r,value:r.value.filter(t=>t.name!=='Grep')};});
   on('turn.step',async function*($,e,next){
    if(!e.agentId && first && (['revise','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)}) || (${JSON.stringify(mode)}==='history' && userPrompts>=2))){
     first=false;
@@ -246,7 +247,7 @@ for (const mode of cases) {
    await $.fs.write(${JSON.stringify(artifacts)}+'/review-start-'+index+'.json',JSON.stringify({at:Date.now(),request:e}));
    if(['cancel','timeout'].includes(${JSON.stringify(mode)}))await $.clock.sleep(7000);
    if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
-   if(${JSON.stringify(mode)}==='cli')e={...e,prompt:e.prompt+'\\nBefore deciding, request Bash with command '+${JSON.stringify(JSON.stringify(cliCommand))}+' to inspect the latest commit subject. The evidence array must contain this successful CLI output. Verify both the release channel and evidence token in the draft against that output. Do not substitute file reads. If this command is already in evidence, use it and decide; do not repeat it.'};
+   if(${JSON.stringify(mode)}==='cli')e={...e,prompt:e.prompt+'\\nBefore deciding, request Bash with command '+${JSON.stringify(JSON.stringify(cliCommand))}+' to inspect the latest commit subject. The evidence array must contain this successful CLI output AND a successful read-only Bash grep search of sessionLog.history that returns matching lines. Grep is not listed; do not request it. Verify both the release channel and evidence token in the draft against that output. Do not substitute file reads. If this command is already in evidence, use it and decide; do not repeat it.'};
    if(${JSON.stringify(mode)}==='history' && JSON.parse(e.prompt).unpublishedDraft.includes('CERBERUS_REJECTED_DRAFT'))e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain both a successful Grep on sessionLog.history with output_mode content and a successful Read of narrow matching history.txt ranges around the prior LIMIT tool result. Do not substitute a read of limits.ts for reading history.txt. Do not decide based solely on the current draft or request.'};
    if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
    const result=${JSON.stringify(mode)}==='unverified'
@@ -356,7 +357,7 @@ for (const mode of cases) {
     "Glob",
     "SubagentHandback",
     ...(mode === "cli"
-      ? ["Bash(git log:*)", "Bash(git -C " + (await realpath(work)) + " log:*)"]
+      ? ["Bash(git log:*)", "Bash(git -C " + (await realpath(work)) + " log:*)", "Bash(grep:*)"]
       : []),
     ...(installedConfig ? [] : ["--plugin-dir", plugin, "--plugin-dir", display]),
     ...(installedConfig ? [] : ["--plugin-dir", fixture]),

@@ -1,6 +1,6 @@
 interface Evidence {
   tool: string;
-  input: { file_path?: string; path?: string };
+  input: { file_path?: string; path?: string; command?: string };
   result: string;
 }
 import { readFile } from "node:fs/promises";
@@ -20,12 +20,24 @@ export async function verifyMaterials(records: string[], artifacts: string, mode
   if (mode === "missing-log" && records.some((entry) => /^review-\d+\.json$/u.test(entry)))
     throw new Error("Unavailable log started a reviewer");
   const snapshots = new Map();
+  let cliHistorySearched = false;
   for (const name of records.filter((entry) => /^review-\d+\.json$/u.test(entry))) {
     const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
     const input = JSON.parse(review.request.prompt.split("\n")[0]);
     if (input.conversation !== undefined || !input.sessionLog?.source)
       throw new Error("Missing searchable log input");
     snapshots.set(input.sessionLog.source, input.sessionLog);
+    if (mode === "cli") {
+      if (input.tools.some((tool: { name: string }) => tool.name === "Grep"))
+        throw new Error("Grep was advertised in the CLI review");
+      cliHistorySearched ||= input.evidence.some(
+        (e: Evidence) =>
+          e.tool === "Bash" &&
+          e.input.command?.startsWith("grep ") &&
+          e.input.command?.includes(input.sessionLog.history) &&
+          e.result.length > 0,
+      );
+    }
     if (
       decisionOf(review.result.text) === "PASS" &&
       !input.evidence.some(
@@ -35,6 +47,8 @@ export async function verifyMaterials(records: string[], artifacts: string, mode
     )
       throw new Error("Reviewer passed without reading user history");
   }
+  if (mode === "cli" && !cliHistorySearched)
+    throw new Error("No successful CLI history search without Grep");
   for (const snapshot of snapshots.values()) {
     if (existsSync(snapshot.directory)) throw new Error("Review materials survived completion");
   }
