@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { asFixture } from "./fixture.ts";
 import type { CerberusRecovery } from "../../plugins/cerberus-gate/types/index.d.ts";
 import { register } from "../../plugins/cerberus-gate/hooks/register.ts";
@@ -23,6 +24,7 @@ interface Result {
   value: string;
   options: { value: string }[];
   onSelect: (value: string) => Promise<void>;
+  children: string;
 }
 type Event = Record<string, unknown>;
 type Handler = (engine: unknown, event: Event, next: unknown) => unknown;
@@ -437,3 +439,18 @@ export const started = async (h: ReturnType<typeof harness>) => {
   await h.prompt("original request");
 };
 export const tick = () => new Promise((resolve) => setImmediate(resolve));
+export const history = async (
+  h: ReturnType<typeof harness>,
+  command = "cgate",
+  args = "history",
+): Promise<string> => {
+  const result = await h.fire("command.run", { command, args });
+  assert.equal(result.text, undefined);
+  assert.equal(h.events.pane!.id, "history");
+  const pane = await h.fire("ui.render", {
+    component: "Pane",
+    requestId: "history",
+    surface: "terminal",
+  });
+  return pane.children;
+};
