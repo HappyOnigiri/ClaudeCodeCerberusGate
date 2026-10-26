@@ -226,6 +226,69 @@ void test("round, evidence and deadline limits never approve an incomplete revie
   assert.deepEqual(shown(await deadline.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
 });
 
+const readOf = (file_path: string) => JSON.stringify({ tool: "Read", input: { file_path } });
+const missing = {
+  result: "Error: File does not exist.",
+  text: "File does not exist.",
+  isError: true,
+};
+const reasonOf = (h: ReturnType<typeof harness>) =>
+  h.events.debug.find((e) => e.event === "review.unverified")?.data.reason;
+
+void test("execution errors return to the reviewer as evidence and the retry can pass", async () => {
+  const h = harness();
+  await started(h);
+  h.setCall((e: { file_path: string }) =>
+    e.file_path === "missing.txt" ? missing : { text: "fact.txt:1 stable" },
+  );
+  h.replies.push(readOf("missing.txt"), readOf("fact.txt"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read", "Read"]);
+  assert.deepEqual(JSON.parse(h.events.models[1]!.request.prompt).evidence, [
+    { tool: "Read", input: { file_path: "missing.txt" }, result: missing.text, isError: true },
+  ]);
+  assert.deepEqual(JSON.parse(h.events.models[2]!.request.prompt).evidence[1], {
+    tool: "Read",
+    input: { file_path: "fact.txt" },
+    result: "fact.txt:1 stable",
+  });
+  assert.match(h.events.models[0]!.request.system, /isError:true is a failed call/u);
+  assert.match(h.events.models[0]!.request.system, /proves nothing, including absence/u);
+  assert.match(h.events.models[0]!.request.system, /After 3 consecutive failed calls/u);
+});
+
+void test("consecutive execution errors stop at the cap; a success resets the count", async () => {
+  const capped = harness();
+  await started(capped);
+  capped.setCall(missing);
+  for (let i = 0; i < 4; i++) capped.replies.push(readOf(`missing-${i}.txt`));
+  assert.deepEqual(shown(await capped.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(capped.events.models.length, 3);
+  assert.equal(capped.events.calls.length, 3);
+  assert.equal(reasonOf(capped), "tool_error_limit");
+  const reset = harness();
+  await started(reset);
+  reset.setCall((e: { file_path: string }) =>
+    e.file_path.startsWith("missing") ? missing : { text: "fact.txt:1 stable" },
+  );
+  reset.replies.push(
+    ...["missing-1.txt", "missing-2.txt", "fact.txt", "missing-3.txt", "missing-4.txt"].map(readOf),
+    verdict(),
+  );
+  assert.deepEqual(shown(await reset.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.equal(reset.events.calls.length, 5);
+});
+
+void test("a denied reviewer tool still ends the review without a retry round", async () => {
+  const h = harness();
+  await started(h);
+  h.setPermission("deny");
+  h.replies.push(readOf("fact.txt"), readOf("fact.txt"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(h.events.models.length, 1);
+  assert.equal(reasonOf(h), "tool_denied");
+});
+
 void test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
   const h = harness();
   await started(h);

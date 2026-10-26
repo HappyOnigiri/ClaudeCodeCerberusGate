@@ -29,10 +29,11 @@ import {
   reviewModelRequest,
   reviewTools,
   toolRequest,
+  reviewEvidence,
   reviewFailureReason,
   cancellable,
 } from "./review.ts";
-import type { ReviewRequest } from "./review.ts";
+import type { Evidence, ReviewRequest } from "./review.ts";
 import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
 import type { Candidate, Delivery, GateState, Shown } from "./state.ts";
@@ -268,7 +269,8 @@ async function review(
     const started = await $.clock.now();
     const tools = reviewTools(await $.tool.list());
     const names = new Set(tools.map((tool) => tool.name));
-    const evidence: { tool: string; input: Record<string, unknown>; result: string }[] = [];
+    const evidence: Evidence[] = [];
+    let errors = 0;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const remaining = reviewConfig.reviewTimeoutMs - ((await $.clock.now()) - started);
       if (remaining <= 0) candidate.timedOut = true;
@@ -345,13 +347,10 @@ async function review(
       );
       await flushDebug($, logger, false, signal);
       if (signal.aborted) return fail("cancelled");
-      if (result.deny !== undefined || result.isError)
-        return fail(result.deny !== undefined ? "tool_denied" : "tool_failed");
-      evidence.push({
-        tool: call.tool,
-        input: call.input,
-        result: result.text ?? JSON.stringify(result.result) ?? "",
-      });
+      const outcome = reviewEvidence(call, result, errors);
+      if ("reason" in outcome) return fail(outcome.reason);
+      errors = outcome.errors;
+      evidence.push(outcome.entry);
       if (JSON.stringify(evidence).length > MAX_EVIDENCE) return fail("evidence_size_limit");
     }
   } catch (error) {
