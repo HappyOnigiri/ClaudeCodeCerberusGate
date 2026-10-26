@@ -418,6 +418,58 @@ void test("recovery saved before the marker field checks the plain request", asy
   assert.deepEqual(next.events.materialRequests, ["original request"]);
 });
 
+const notification = (turnId?: string) => ({
+  text: "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>",
+  origin: { kind: "task-notification" },
+  wait: false,
+  ...(turnId === undefined ? {} : { turnId }),
+});
+
+void test("task notifications keep the user's request for material and review, mid-turn or idle", async () => {
+  for (const turnId of ["t", undefined]) {
+    const h = harness();
+    await started(h);
+    if (turnId === undefined) {
+      h.replies.push(verdict());
+      await h.step();
+    } else await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
+    await h.fire("prompt.submit", notification(turnId));
+    h.replies.push(verdict());
+    assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+    assert.deepEqual(h.events.materialRequests.at(-1), "original request");
+    assert.equal(JSON.parse(h.events.models.at(-1)!.request.prompt).request, "original request");
+    assert.equal(h.host.states.get("recovery")!.prompt, "original request");
+  }
+});
+
+void test("task notifications keep a slash command marker and survive reload", async () => {
+  const h = harness();
+  await h.fire("session.start", { isInteractive: true });
+  await h.fire("prompt.submit", {
+    text: "/check-fact",
+    command: { name: "check-fact", args: "" },
+    origin: { kind: "composer" },
+    wait: false,
+  });
+  await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
+  await h.fire("prompt.submit", notification("t"));
+  const next = await reload(h);
+  next.replies.push(verdict());
+  await next.step();
+  assert.deepEqual(next.events.materialRequests, ["<command-name>/check-fact</command-name>"]);
+  assert.equal(JSON.parse(next.events.models[0]!.request.prompt).request, "/check-fact");
+});
+
+void test("a task notification without an earlier request is checked as its own text", async () => {
+  const h = harness();
+  await h.fire("session.end", {});
+  await h.fire("session.start", { isInteractive: true });
+  await h.fire("prompt.submit", notification());
+  h.replies.push(verdict());
+  await h.step();
+  assert.deepEqual(h.events.materialRequests, [notification().text]);
+});
+
 void test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
   const h = harness();
   await started(h);
