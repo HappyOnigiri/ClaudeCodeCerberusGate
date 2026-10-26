@@ -2,9 +2,10 @@ import { MAX_DRAFT, diagnoseVerdict } from "./policy.ts";
 import {
   MAX_ROUNDS,
   MAX_EVIDENCE,
+  backgroundTask,
   reviewModelRequest,
   reviewTools,
-  toolRequest,
+  reviewReply,
   reviewEvidence,
   reviewFailureReason,
   cancellable,
@@ -17,9 +18,12 @@ import type { Config, Verdict } from "./policy.ts";
 import type { EngineInterface, TurnStepInput, ToolCallArgs, ToolCallResult } from "claude-code";
 
 // Debug sink of the caller; flush writes the logger's pending records for this review.
+// rememberTask and saveTasks keep the reviewer's background tasks in the caller's state.
 export interface ReviewIo {
   logger: ReturnType<typeof createDebug>;
   flush: (signal: AbortSignal) => Promise<void>;
+  rememberTask: (id: string) => void;
+  saveTasks: () => Promise<void>;
 }
 
 // The sole dynamic tool-call boundary forwards only tools advertised for this review.
@@ -33,6 +37,23 @@ async function callReviewTool(
   return $.tool.call({ ...call.input, tool: call.tool } as ToolCallArgs);
 }
 
+// The reviewer's command left in the background would notify the main session after the review.
+// Stopping it is the Mod's own cleanup; dropping its notification in onPrompt is the guarantee.
+async function stopReviewerTask(
+  $: EngineInterface,
+  { logger, rememberTask, saveTasks }: ReviewIo,
+  id: string,
+) {
+  rememberTask(id);
+  const operationId = logger.operation();
+  logger.record("task.stop.start", { operationId, taskId: id });
+  const result = await $.tool
+    .call({ tool: "TaskStop", task_id: id })
+    .catch((error: unknown) => ({ error }));
+  logger.record("task.stop.complete", { operationId, taskId: id, result });
+  await saveTasks().catch(() => undefined);
+}
+
 export const unverified = (): Verdict => ({ decision: "UNVERIFIED", findings: [] });
 
 export async function review(
@@ -42,8 +63,9 @@ export async function review(
   request: string,
   model: string,
   effort: TurnStepInput["effort"],
-  { logger, flush }: ReviewIo,
+  io: ReviewIo,
 ): Promise<Verdict> {
+  const { logger, flush } = io;
   const signal = candidate.controller.signal;
   const correlation = {
     turnId: candidate.turnId,
@@ -64,6 +86,7 @@ export async function review(
     const names = new Set(tools.map((tool) => tool.name));
     const evidence: Evidence[] = [];
     let errors = 0;
+    let retryRound: number | undefined;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const remaining = reviewConfig.reviewTimeoutMs - ((await $.clock.now()) - started);
       if (remaining <= 0) candidate.timedOut = true;
@@ -82,6 +105,7 @@ export async function review(
         evidence,
         remaining,
         recheck: history.recheck,
+        formatRetry: retryRound === round - 1,
       });
       logger.record("model.start", {
         ...correlation,
@@ -118,7 +142,12 @@ export async function review(
         return fail("timeout");
       }
       stage = "parse";
-      const call = toolRequest(response.text);
+      const call = reviewReply(response.text, retryRound !== undefined);
+      if (call === "retry") {
+        retryRound = round;
+        logger.record("review.format_retry", { ...correlation, operationId, round });
+        continue;
+      }
       if (call === undefined) {
         const parsed = diagnoseVerdict(response.text);
         logger.record("verdict.parsed", { ...correlation, ...parsed });
@@ -134,12 +163,14 @@ export async function review(
       logger.record("tool.start", { ...correlation, operationId: toolOperationId, call });
       await flush(signal);
       const result = await cancellable(
-        callReviewTool($, call, names).then((value) => {
+        callReviewTool($, call, names).then(async (value) => {
           logger.record(signal.aborted ? "tool.discarded" : "tool.complete", {
             ...correlation,
             operationId: toolOperationId,
             result: value,
           });
+          const task = backgroundTask(value);
+          if (task !== undefined) await stopReviewerTask($, io, task.id);
           return value;
         }),
         signal,

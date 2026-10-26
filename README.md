@@ -16,7 +16,7 @@ Claude Code の最終回答を、表示する前に審査するプラグイン�
 
 ## インストール
 
-**Claude Code 2.1.310**、**Node.js 24 以降** が必要です。
+**Claude Code 2.1.310 以降**、**Node.js 24 以降** が必要です。
 対象は Claude Code の対話セッションで、非対話の `claude -p` は対象外です。
 
 Claude Code で次の2つを実行してください。

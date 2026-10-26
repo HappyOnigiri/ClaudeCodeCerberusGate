@@ -1,3 +1,4 @@
+import { rememberTask } from "./state.ts";
 import type { GateState } from "./state.ts";
 
 // 原稿・指摘は保持せず、同じセッションで作業を続けるための状態だけを残す。
@@ -10,6 +11,7 @@ export function snapshotRecovery(gate: GateState) {
     epoch: gate.epoch,
     serial: gate.serial,
     revisions: gate.revisions,
+    tasks: [...gate.tasks],
     pending: gate.active !== undefined || gate.delivery !== undefined || gate.action !== undefined,
   };
 }
@@ -17,10 +19,14 @@ export function snapshotRecovery(gate: GateState) {
 export function restoreRecovery(
   gate: GateState,
   value:
-    | (Omit<ReturnType<typeof snapshotRecovery>, "sessionEnabled" | "material" | "marker"> & {
+    | (Omit<
+        ReturnType<typeof snapshotRecovery>,
+        "sessionEnabled" | "material" | "marker" | "tasks"
+      > & {
         sessionEnabled?: boolean;
         material?: string;
         marker?: string;
+        tasks?: readonly string[];
       })
     | null
     | undefined,
@@ -32,5 +38,6 @@ export function restoreRecovery(
   gate.epoch = value.epoch + 1;
   gate.serial = value.serial;
   gate.revisions = value.revisions;
+  for (const id of value.tasks ?? []) rememberTask(gate, id);
   return value.pending;
 }

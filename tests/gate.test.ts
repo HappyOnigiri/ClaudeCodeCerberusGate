@@ -10,6 +10,7 @@ import {
   UNVERIFIED,
   WAITING,
   readConfig,
+  supportedVersion,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
 import { harness, history, verdict, deferred, started, tick } from "./helpers/gate-harness.ts";
@@ -280,6 +281,107 @@ void test("a denied reviewer tool still ends the review without a retry round", 
   assert.equal(reasonOf(h), "tool_denied");
 });
 
+const bashOf = (command: string) => JSON.stringify({ tool: "Bash", input: { command } });
+const backgrounded = (id: string, extra: Record<string, unknown> = { timedOutAfterMs: 60000 }) => ({
+  result: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: id, ...extra },
+  text: `Command did not complete within its 60s timeout and was moved to the background (ID: ${id}).`,
+});
+const taskNotice = (id: string) => ({
+  ...notification(),
+  text: `<task-notification>\n<task-id>${id}</task-id>\n<status>killed</status>\n</task-notification>`,
+});
+// A slow reviewer command goes to the background; other calls succeed.
+const slowShell = (h: ReturnType<typeof harness>, id: string) =>
+  h.setCall((e: { tool: string; command?: string }) => {
+    if (e.tool === "TaskStop") return { result: { message: "stopped", task_id: id } };
+    return e.command === "slow" ? backgrounded(id) : { text: "fact.txt:1 stable" };
+  });
+
+void test("a reviewer command moved to the background is stopped and returned as its own error", async () => {
+  const h = harness();
+  await started(h);
+  slowShell(h, "bslow");
+  h.replies.push(bashOf("slow"), bashOf("narrow"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Bash", "TaskStop", "Bash"]);
+  assert.equal(h.events.inputs[1]!.task_id, "bslow");
+  const [entry] = JSON.parse(h.events.models[1]!.request.prompt).evidence;
+  assert.equal(entry.isError, true);
+  assert.match(entry.result, /stopped YOUR command: it did not finish within its 60s timeout/u);
+  assert.match(entry.result, /not the main agent's[\s\S]*do not mention it in findings/u);
+  assert.doesNotMatch(entry.result, /bslow/u);
+  assert.match(h.events.models[0]!.request.system, /never set run_in_background/u);
+  assert.deepEqual(h.host.states.get("recovery")!.tasks, ["bslow"]);
+  const epoch = h.host.states.get("recovery")!.epoch;
+  assert.ok((await h.fire("prompt.submit", taskNotice("bslow"))).drop);
+  assert.equal(h.host.states.get("recovery")!.epoch, epoch);
+  for (const other of [taskNotice("b1"), { ...taskNotice("b1"), text: "bslow mentioned" }])
+    assert.equal((await h.fire("prompt.submit", other)).drop, undefined);
+});
+
+void test("background commands count toward the error cap and run_in_background gets a generic error", async () => {
+  const h = harness();
+  await started(h);
+  h.setCall((e: { tool: string }) =>
+    e.tool === "TaskStop" ? { result: {} } : backgrounded("bbg", {}),
+  );
+  h.replies.push(bashOf("a"), bashOf("b"), bashOf("c"));
+  assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(reasonOf(h), "tool_error_limit");
+  const [entry] = JSON.parse(h.events.models[1]!.request.prompt).evidence;
+  assert.match(entry.result, /it was moved to the background\./u);
+});
+
+void test("the reviewer's own notification during the review neither cancels nor reaches it", async () => {
+  const h = harness();
+  await started(h);
+  slowShell(h, "bmid");
+  let dropped: unknown;
+  h.replies.push(bashOf("slow"), async () => {
+    dropped = (await h.fire("prompt.submit", taskNotice("bmid"))).drop;
+    return { isAnswered: true, text: verdict() };
+  });
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.ok(dropped);
+});
+
+void test("a command backgrounded after its review was cancelled is still stopped and muted", async () => {
+  for (const stop of ["ok", "throw"] as const) {
+    const h = harness();
+    await started(h);
+    const held = deferred();
+    h.setCall((e: { tool: string }) => {
+      if (e.tool === "TaskStop" && stop === "throw") throw new Error("turn cancelled");
+      return e.tool === "TaskStop" ? { result: {} } : held.promise;
+    });
+    h.replies.push(bashOf("slow"));
+    const running = h.step();
+    await tick();
+    await h.prompt("new request");
+    assert.equal((await running).text, "");
+    held.resolve(backgrounded("blate"));
+    for (let i = 0; i < 5; i++) await tick();
+    assert.deepEqual(h.events.calls, ["Bash", "TaskStop"]);
+    assert.ok((await h.fire("prompt.submit", taskNotice("blate"))).drop);
+  }
+});
+
+void test("reviewer task IDs survive reload, accept legacy recovery and end with the session", async () => {
+  const h = harness();
+  await started(h);
+  slowShell(h, "breload");
+  h.replies.push(bashOf("slow"), verdict());
+  await h.step();
+  const next = await reload(h);
+  assert.ok((await next.fire("prompt.submit", taskNotice("breload"))).drop);
+  const { tasks: _tasks, ...legacy } = next.host.states.get("recovery")!;
+  next.host.states.set("recovery", legacy);
+  const old = await reload(next);
+  assert.equal((await old.fire("prompt.submit", taskNotice("breload"))).drop, undefined);
+  await old.fire("session.end", {});
+  assert.equal(old.host.states.get("recovery"), null);
+});
+
 void test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
   const h = harness();
   await started(h);
@@ -292,6 +394,14 @@ void test("tool steps, unrelated subagents and unsupported environments bypass r
   await started(old);
   assert.equal((await old.step()).text, "UNPUBLISHED DRAFT");
   assert.equal(old.events.models.length, 0);
+  const newer = harness({}, "2.1.311");
+  await started(newer);
+  newer.replies.push(verdict());
+  assert.deepEqual(shown(await newer.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  for (const version of ["2.1.310", "2.1.311", "2.2.0", "3.0.0", "2.1.310-beta"])
+    assert.ok(supportedVersion(version), version);
+  for (const version of ["2.1.309", "2.0.999", "1.9.400", "", "next", undefined])
+    assert.ok(!supportedVersion(version), version);
   const invalid = harness({ maxRevisions: -1 });
   await started(invalid);
   assert.equal((await invalid.step()).text, "UNPUBLISHED DRAFT");
@@ -1037,8 +1147,10 @@ void test("diagnostics distinguish malformed, contradictory and explicit unverif
   ] as const) {
     const h = harness();
     await started(h);
-    h.replies.push(reply);
+    // An unreadable reply is requested once more; the second one ends the review.
+    h.replies.push(reply, reply);
     assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+    assert.equal(h.events.models.length, reason === "invalid_json" ? 2 : 1, reason);
     const diagnostic = h.events.debug.find((e) => e.event === event && e.data.reason === reason);
     assert.ok(diagnostic, reason);
     if (reason === "model_exception") assert.equal(diagnostic.data.error.cause, "unavailable");
@@ -1056,14 +1168,81 @@ void test("a tag-wrapped tool request runs once with a debug marker, while mixed
   assert.ok(!("salvaged" in h.events.inputs[0]!));
   const start = h.events.debug.find((e) => e.event === "tool.start")!;
   assert.deepEqual(start.data.call.salvaged, { unwrapped: true, addedBraces: 1 });
+  // The marker is debug-only: the reviewer's next evidence has the tool, input and result alone.
+  assert.deepEqual(JSON.parse(h.events.models[1]!.request.prompt).evidence, [
+    { tool: "Read", input: { file_path: "fact.txt" }, result: "fact.txt:1 stable" },
+  ]);
   const mixed = harness();
   await started(mixed);
-  mixed.replies.push(`<invoke_tool>\n${request}${verdict()}`);
+  mixed.replies.push(`<invoke_tool>\n${request}${verdict()}`, request);
   assert.deepEqual(shown(await mixed.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.deepEqual(mixed.events.calls, []);
+  // A verdict-like reply is never requested again.
+  assert.equal(mixed.events.models.length, 1);
   assert.ok(
     mixed.events.debug.some((e) => e.event === "review.failed" && e.data.reason === "invalid_json"),
   );
+});
+
+const formatErrorOf = (h: ReturnType<typeof harness>, index: number) =>
+  JSON.parse(h.events.models[index]!.request.prompt).formatError;
+
+void test("an unreadable reply is requested again once within the same rounds and deadline", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push("<invoke_tool_placeholder>\n\n\n<invoke_tool_placeholder>", readOf("fact.txt"));
+  h.replies.push(verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read"]);
+  assert.deepEqual(
+    [0, 1, 2].map((i) => formatErrorOf(h, i) === undefined),
+    [true, false, true],
+  );
+  assert.doesNotMatch(h.events.models[1]!.request.prompt, /placeholder/u);
+  assert.equal(JSON.parse(h.events.models[1]!.request.prompt).evidence.length, 0);
+  const retries = h.events.debug.filter((e) => e.event === "review.format_retry");
+  const first = h.events.debug.find((e) => e.event === "model.complete")!;
+  assert.deepEqual(
+    retries.map((e) => e.data.operationId),
+    [first.data.operationId],
+  );
+  // A second unreadable reply later in the same review ends it without another request.
+  const again = harness();
+  await started(again);
+  again.replies.push("_pending", readOf("fact.txt"), "_pending", verdict());
+  assert.deepEqual(shown(await again.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(again.events.models.length, 3);
+  assert.equal(
+    again.events.debug.find((e) => e.event === "review.failed")?.data.reason,
+    "invalid_json",
+  );
+  // The retry is one of the 16 model replies, so the round cap is unchanged.
+  const capped = harness();
+  await started(capped);
+  capped.replies.push("_pending");
+  for (let i = 0; i < 16; i++) capped.replies.push(readOf(`fact-${i}.txt`));
+  assert.deepEqual(shown(await capped.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(capped.events.models.length, 16);
+  assert.equal(reasonOf(capped), "round_limit");
+});
+
+void test("an XML-form request runs with a marker, and an unlisted XML tool is still denied", async () => {
+  const xml = (tool: string) =>
+    `<invoke:\n<parameter name="tool">${tool}</parameter>\n<parameter name="input">{"file_path":"fact.txt"}</parameter>\n</invoke>`;
+  const h = harness();
+  await started(h);
+  h.replies.push(xml("Read"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read"]);
+  const start = h.events.debug.find((e) => e.event === "tool.start")!;
+  assert.deepEqual(start.data.call.salvaged, { unwrapped: true, addedBraces: 0, xml: true });
+  assert.doesNotMatch(h.events.models[1]!.request.prompt, /salvaged/u);
+  const unlisted = harness();
+  await started(unlisted);
+  unlisted.replies.push(xml("Agent"), verdict());
+  assert.deepEqual(shown(await unlisted.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(unlisted.events.calls, []);
+  assert.equal(reasonOf(unlisted), "tool_denied");
 });
 
 void test("debug append failures and helper timeouts leave PASS publication intact and expose save state", async () => {
@@ -1187,7 +1366,9 @@ void test("a history search, a source search or a PASS needs no recheck", async 
 });
 
 void test("after a recheck, failures keep the earlier REVISE and a repeated unread REVISE is accepted", async () => {
-  for (const reply of ["not json", verdict("UNVERIFIED"), readOf("missing.txt")]) {
+  // A truncated verdict is not requested again, so it fails the recheck at once.
+  const truncated = '{"decision":"PASS","findings":[]';
+  for (const reply of [truncated, verdict("UNVERIFIED"), readOf("missing.txt")]) {
     const h = harness();
     await started(h);
     h.replies.push(verdict("REVISE", [unread]), reply);

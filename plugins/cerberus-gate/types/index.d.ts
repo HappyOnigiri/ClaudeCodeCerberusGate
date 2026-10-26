@@ -6,6 +6,7 @@ export type CerberusRecovery = {
   epoch: number;
   serial: number;
   revisions: number;
+  tasks?: string[];
   pending: boolean;
 };
 

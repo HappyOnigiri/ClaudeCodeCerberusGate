@@ -24,6 +24,18 @@ export const CONTROL = "Cerberus Gate: 検証処理を継続します。";
 export const REVIEWER = "cerberus-gate:reviewer";
 export const MAX_DRAFT = 100_000;
 
+// Claude Code 2.1.310 is the oldest version whose engine API this plugin was built and verified against.
+export function supportedVersion(base: string | undefined): boolean {
+  const parts = /^(\d+)\.(\d+)\.(\d+)/u
+    .exec(base ?? "")
+    ?.slice(1)
+    .map(Number);
+  if (parts === undefined) return false;
+  for (const [i, minimum] of [2, 1, 310].entries())
+    if (parts[i] !== minimum) return (parts[i] ?? 0) > minimum;
+  return true;
+}
+
 export function readConfig(options: Readonly<Record<string, unknown>>): Config {
   const enabled = options.enabled ?? true;
   if (typeof enabled !== "boolean") throw new Error("Invalid enabled");

@@ -38,6 +38,9 @@ export function createState() {
     delivery: undefined as Delivery | undefined,
     action: undefined as Delivery | undefined,
     reviewers: new Set<string>(),
+    // Background commands of reviewer tool calls. Kept across requests and reloads because their
+    // notifications arrive after the review; never cleared by reset().
+    tasks: new Set<string>(),
     prompt: "",
     // Text that proves the request reached the transcript; slash commands are stored in tag form.
     marker: "",
@@ -111,3 +114,31 @@ export type Shown = { text: string; note?: string };
 export const hidden: Shown = { text: "" };
 export const controlText = (delivery: Delivery): string =>
   `${CONTROL} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings)}` : ""}`;
+
+const MAX_TASKS = 32;
+export function rememberTask(state: GateState, id: string): void {
+  state.tasks.delete(id);
+  state.tasks.add(id);
+  for (const old of state.tasks) {
+    if (state.tasks.size <= MAX_TASKS) break;
+    state.tasks.delete(old);
+  }
+}
+// TaskStop is the Mod's own cleanup only for its reviewers and their background commands.
+export function ownTask(state: GateState, input: unknown): boolean {
+  if (typeof input !== "object" || input === null || !("task_id" in input)) return false;
+  const id = input.task_id;
+  return typeof id === "string" && (state.reviewers.has(id) || state.tasks.has(id));
+}
+const TASK_ID = /<task-id>([^<]*)<\/task-id>/u;
+// Late notifications of reviewers left by an older plugin, or of a reviewer's background command.
+export function staleNotification(
+  state: GateState,
+  e: { text: string; origin: { kind: string } },
+): boolean {
+  const kind = e.origin.kind;
+  if (kind !== "task-notification" && kind !== "peer" && kind !== "peer-send-message") return false;
+  const task = kind === "task-notification" ? TASK_ID.exec(e.text)?.[1] : undefined;
+  if (task !== undefined && state.tasks.has(task)) return true;
+  return [...state.reviewers].some((id) => e.text.includes(id));
+}
