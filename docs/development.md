@@ -94,7 +94,7 @@ main への直接 push はこの判定の対象に含めない。
 現在の `0.1.1` を起点とし、`feat:` を含む初回は `0.2.0` になる。
 手動の version 指定時は、manifest の現在の番号より大きい値を使う。
 
-自動運用はリリース PR を作成し、CI の成功を確認した後に自身で squash merge を実行する。
+自動運用はリリース PR を作成し、CI の成功を確認した後に自身で merge commit によるマージを実行する。
 採番後は `post-bump-command` で manifest を整形し、整形済みの1つのコミットでリリース PR を作成する。
 その最終コミットに対する `ci.yml` の push・pull_request 両方の実行と、各実行の `checks` ジョブの成功を待つ。
 チェック未登録・実行中・GitHub のマージ可否の計算中は最大10分待機し、時間切れでは失敗する。
@@ -129,7 +129,8 @@ gh workflow run release.yml --ref main -f automatic=true -f bump=auto
 
 - repository secret の `GH_TOKEN` に、ブランチの push・PR 作成とマージ・ラベル作成・CI 参照・Release 公開が可能な PAT を登録する。
   `GITHUB_TOKEN` に置き換えると後続の PR / マージイベントの CI が起動しないため、PAT を使う。
-- リポジトリの squash merge を有効にする。
+- リポジトリの merge commit を有効にする。
+  squash merge と rebase merge は無効のため、リリース PR も merge commit でマージする。
 
 GitHub の自動マージ予約は使わず、CI 成功の判定をリリース CI 内で行う。
 リポジトリの自動マージの有効化と、main の必須チェックの設定は、この運用の必須条件ではない。
