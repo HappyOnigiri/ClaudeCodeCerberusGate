@@ -72,4 +72,5 @@ jobs:
             pull_request
           check-name: checks
           timeout-seconds: "600"
+          merge-method: merge
           github-token: ${{ secrets.GH_TOKEN }}

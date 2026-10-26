@@ -76,6 +76,15 @@ export function requestOf(
   if (e.origin.kind === "task-notification" && state.prompt) return [state.prompt, state.marker];
   return [e.text, transcriptMarker(e)];
 }
+// A notification during a review or correction joins that cycle: resetting would void the queued
+// correction, and the engine skips the model call of a queue batch led by a dropped prompt.
+export function joinsCycle(state: GateState, e: { origin: { kind: string } }): boolean {
+  return (
+    e.origin.kind === "task-notification" &&
+    state.prompt !== "" &&
+    (state.active !== undefined || state.delivery !== undefined || state.action !== undefined)
+  );
+}
 export function current(state: GateState, candidate: Candidate): boolean {
   return state.active === candidate && candidate.epoch === state.epoch && !state.blocked;
 }
