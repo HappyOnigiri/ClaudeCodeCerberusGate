@@ -61,6 +61,7 @@ interface Captured {
   pane?: { id: string };
   closed?: boolean;
   released?: boolean;
+  materialRequests: unknown[];
   setting?: { key: string; value: unknown };
 }
 interface Host {
@@ -124,6 +125,7 @@ export function harness(
     commands: [],
     inputs: [],
     debug: [],
+    materialRequests: [],
   };
   const replies: Reply[] = [];
   let draft = "UNPUBLISHED DRAFT";
@@ -178,6 +180,7 @@ export function harness(
           events.released = true;
           return { exitCode: 0 };
         }
+        events.materialRequests.push(JSON.parse(processOptions.stdin).request);
         await prepareMaterial();
         return {
           exitCode: 0,

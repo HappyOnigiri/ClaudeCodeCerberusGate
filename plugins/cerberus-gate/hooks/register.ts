@@ -14,7 +14,7 @@ import {
   withNote,
 } from "./policy.ts";
 import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
-import { createState, current, disposition, reset, resultOf } from "./state.ts";
+import { createState, current, disposition, reset, resultOf, transcriptMarker } from "./state.ts";
 import {
   MAX_ROUNDS,
   MAX_EVIDENCE,
@@ -161,7 +161,7 @@ async function applyEnabled($: EngineInterface, desired: boolean | undefined, pe
   const pending =
     gate.active !== undefined || gate.delivery !== undefined || gate.action !== undefined;
   if (!enabled() && pending) {
-    reset(gate, gate.prompt);
+    reset(gate, gate.prompt, gate.marker);
     gate.phase = "cancelled";
     $.ui.status(undefined);
   }
@@ -466,7 +466,7 @@ async function verify(
       {
         stdin: JSON.stringify({
           sessionId: await $.session.id(),
-          request: gate.prompt,
+          request: gate.marker,
           debug: { ...debug.identity(), reviewId: `${epoch}-${candidate.token}` },
         }),
         timeoutMs: 15_000,
@@ -683,7 +683,7 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     return { drop: "Cerberus: 検証結果を処理済みです。" };
   if (gate.active !== undefined || gate.delivery !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
-  reset(gate, e.text);
+  reset(gate, e.text, transcriptMarker(e));
   await saveRecovery($, gate);
   $.ui.status(undefined);
   return next(e);
@@ -824,7 +824,7 @@ export const register: Register = (on, options) => {
       return { text: "使い方: /cgate [on|off|reset|model|history|log|cancel]" };
     if (argument === "cancel") {
       const turnId = gate.active?.turnId;
-      reset(gate, gate.prompt);
+      reset(gate, gate.prompt, gate.marker);
       gate.phase = "cancelled";
       await saveRecovery($, gate);
       $.ui.status(undefined);
@@ -966,7 +966,7 @@ export const register: Register = (on, options) => {
   });
   on("turn.abort", async ($, e, next) => {
     log.record($.clock.now(), "回答処理が中断されました。");
-    reset(gate, gate.prompt);
+    reset(gate, gate.prompt, gate.marker);
     gate.phase = "cancelled";
     await saveRecovery($, gate);
     $.ui.status(undefined);

@@ -38,12 +38,14 @@ export function createState() {
     action: undefined as Delivery | undefined,
     reviewers: new Set<string>(),
     prompt: "",
+    // Text that proves the request reached the transcript; slash commands are stored in tag form.
+    marker: "",
     phase: "idle" as Phase,
     blocked: false,
   };
 }
 export type GateState = ReturnType<typeof createState>;
-export function reset(state: GateState, prompt: string): void {
+export function reset(state: GateState, prompt: string, marker = prompt): void {
   state.active?.controller.abort();
   state.epoch++;
   state.revisions = 0;
@@ -51,8 +53,15 @@ export function reset(state: GateState, prompt: string): void {
   state.delivery = undefined;
   state.action = undefined;
   state.prompt = prompt;
+  state.marker = marker;
   state.phase = "idle";
   state.blocked = false;
+}
+export function transcriptMarker(e: { text: string; command?: { name: string; args: string } }) {
+  if (e.command === undefined) return e.text;
+  const name = `<command-name>/${e.command.name}</command-name>`;
+  // The transcript omits the args tag when nothing follows the command.
+  return e.command.args ? `${name}\n<command-args>${e.command.args}</command-args>` : name;
 }
 export function current(state: GateState, candidate: Candidate): boolean {
   return state.active === candidate && candidate.epoch === state.epoch && !state.blocked;
