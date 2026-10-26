@@ -279,14 +279,86 @@ void test("consecutive execution errors stop at the cap; a success resets the co
   assert.equal(reset.events.calls.length, 5);
 });
 
-void test("a denied reviewer tool still ends the review without a retry round", async () => {
+// A deny rule that matches words in a read-only search pattern, as in a live review.
+const RULE = "Bash(*db:drop*)";
+const grepOf = (pattern: string) =>
+  JSON.stringify({ tool: "Bash", input: { command: `grep -n -E '${pattern}' history.txt` } });
+const ruleDeny = (e: { input: { command?: string } }) =>
+  e.input.command?.includes("db:drop")
+    ? { decision: "deny", reason: "Permission to use Bash has been denied.", rule: RULE }
+    : "allow";
+const toolStarts = (h: ReturnType<typeof harness>) =>
+  h.events.debug.filter((e) => e.event === "tool.start").length;
+
+void test("a settings rule's denial of a read-only call returns to the reviewer for a retry", async () => {
   const h = harness();
   await started(h);
-  h.setPermission("deny");
-  h.replies.push(readOf("fact.txt"), readOf("fact.txt"), verdict());
+  h.setPermission(ruleDeny);
+  h.setCall({ text: "12:main" });
+  h.replies.push(grepOf("db:drop|main"), grepOf("main"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Bash"]);
+  assert.deepEqual(JSON.parse(h.events.models[1]!.request.prompt).evidence, [
+    {
+      ...JSON.parse(grepOf("db:drop|main")),
+      result: "Permission to use Bash has been denied.",
+      isError: true,
+      denied: true,
+      rule: RULE,
+    },
+  ]);
+  assert.match(h.events.models[0]!.request.system, /never reach that target with another tool/u);
+});
+
+void test("ask, rule-less, MCP, write and unlisted-tool denials still end the review", async () => {
+  const ruled = { decision: "deny", reason: "denied", rule: RULE };
+  for (const [tool, permission, readOnly] of [
+    // A person's refusal at the dialog, or dontAsk's refusal, follows an ask verdict.
+    ["Bash", { decision: "ask", reason: "The user doesn't want to proceed." }, true],
+    ["Bash", { decision: "deny", reason: "denied" }, true],
+    ["Bash", ruled, false],
+    ["mcp__notes__search", ruled, true],
+    ["unavailable", ruled, true],
+  ] as const) {
+    const h = harness();
+    await started(h);
+    h.setPermission(permission);
+    h.setReadOnly(readOnly);
+    h.replies.push(JSON.stringify({ tool, input: { command: "db:drop" } }), verdict());
+    assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"), tool);
+    assert.equal(h.events.models.length, 1, tool);
+    assert.deepEqual(h.events.calls, [], tool);
+    assert.equal(reasonOf(h), "tool_denied", tool);
+  }
+});
+
+void test("a resent denied request stops before the tool runs again", async () => {
+  const h = harness();
+  await started(h);
+  h.setPermission(ruleDeny);
+  h.replies.push(grepOf("db:drop"), grepOf("db:drop"), verdict());
   assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
-  assert.equal(h.events.models.length, 1);
-  assert.equal(reasonOf(h), "tool_denied");
+  assert.equal(h.events.models.length, 2);
+  assert.equal(toolStarts(h), 1);
+  assert.equal(reasonOf(h), "tool_denied_repeat");
+});
+
+void test("denials have a per-review cap even when successes reset the error count", async () => {
+  const h = harness();
+  await started(h);
+  h.setPermission(ruleDeny);
+  h.setCall({ text: "12:main" });
+  h.replies.push(...["db:drop|a", "a", "db:drop|b", "b", "db:drop|c"].map(grepOf), verdict());
+  assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(h.events.models.length, 5);
+  assert.equal(reasonOf(h), "tool_denial_limit");
+  const mixed = harness();
+  await started(mixed);
+  mixed.setPermission(ruleDeny);
+  mixed.setCall(missing);
+  mixed.replies.push(grepOf("db:drop"), readOf("missing-1.txt"), readOf("missing-2.txt"));
+  assert.deepEqual(shown(await mixed.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(reasonOf(mixed), "tool_error_limit");
 });
 
 void test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {

@@ -19,6 +19,7 @@ interface Result {
   result?: string;
   drop?: boolean;
   decision: string;
+  reason?: string;
   deny?: string;
   value: string;
   options: { value: string }[];
@@ -140,7 +141,8 @@ export function harness(
     isReadOnly: true,
   };
   let promptFailure = false;
-  let permission = "allow";
+  // A decision, a core verdict, or a function of the tool.check event returning either.
+  let permission: unknown = "allow";
   let readOnly = true;
   let prepareMaterial: () => Promise<unknown> = async () => ({});
   const matches = (m: Record<string, unknown>, e: Event) =>
@@ -291,14 +293,17 @@ export function harness(
   };
   const core = async (name: string, e: Event, origin: string): Promise<unknown> => {
     if (name === "prompt.submit") return { text: e.text, context: e.context };
-    if (name === "tool.check") return { decision: permission };
+    if (name === "tool.check") {
+      const answer = typeof permission === "function" ? permission(e) : permission;
+      return typeof answer === "string" ? { decision: answer } : answer;
+    }
     if (name === "tool.call") {
       const check = await fire(
         "tool.check",
         { tool: e.tool, input: e, ...(readOnly ? { isReadOnly: true } : {}) },
         origin,
       );
-      if (check.decision !== "allow") return { deny: check.decision };
+      if (check.decision !== "allow") return { deny: check.reason ?? check.decision };
       events.calls.push(String(e.tool));
       events.inputs.push(e);
       return typeof callResult === "function" ? callResult(e) : callResult;
@@ -415,7 +420,7 @@ export function harness(
     setCall: (value: unknown) => {
       callResult = value;
     },
-    setPermission: (value: string) => {
+    setPermission: (value: unknown) => {
       permission = value;
     },
     setReadOnly: (value: boolean) => {

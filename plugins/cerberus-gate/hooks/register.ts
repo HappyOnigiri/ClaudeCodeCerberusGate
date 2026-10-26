@@ -25,15 +25,13 @@ import {
 } from "./state.ts";
 import {
   MAX_ROUNDS,
-  MAX_EVIDENCE,
   reviewModelRequest,
-  reviewTools,
   toolRequest,
-  reviewEvidence,
+  createInvestigation,
   reviewFailureReason,
   cancellable,
 } from "./review.ts";
-import type { Evidence, ReviewRequest } from "./review.ts";
+import type { Permission, ReviewRequest } from "./review.ts";
 import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
 import type { Candidate, Delivery, GateState, Shown } from "./state.ts";
@@ -230,6 +228,9 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
   });
 }
 
+// Core's permission verdict for the reviewer call in flight; onCheck sets it, review clears it per call.
+let reviewPermission: Permission | undefined;
+
 // The sole dynamic tool-call boundary forwards only tools advertised for this review.
 async function callReviewTool(
   $: EngineInterface,
@@ -267,10 +268,7 @@ async function review(
   };
   try {
     const started = await $.clock.now();
-    const tools = reviewTools(await $.tool.list());
-    const names = new Set(tools.map((tool) => tool.name));
-    const evidence: Evidence[] = [];
-    let errors = 0;
+    const investigation = createInvestigation(await $.tool.list());
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const remaining = reviewConfig.reviewTimeoutMs - ((await $.clock.now()) - started);
       if (remaining <= 0) candidate.timedOut = true;
@@ -285,8 +283,8 @@ async function review(
         request,
         workingDirectory: await $.session.cwd(),
         candidate,
-        tools,
-        evidence,
+        tools: investigation.tools,
+        evidence: investigation.evidence,
         remaining,
       });
       logger.record("model.start", {
@@ -329,17 +327,20 @@ async function review(
         logger.record("verdict.parsed", { ...correlation, ...parsed });
         return parsed.verdict;
       }
+      if (investigation.resent(call)) return fail("tool_denied_repeat");
       stage = "tool";
       const toolOperationId = logger.operation();
       activeOperationId = toolOperationId;
       logger.record("tool.start", { ...correlation, operationId: toolOperationId, call });
       await flushDebug($, logger, false, signal);
+      reviewPermission = undefined;
       const result = await cancellable(
-        callReviewTool($, call, names).then((value) => {
+        callReviewTool($, call, investigation.names).then((value) => {
           logger.record(signal.aborted ? "tool.discarded" : "tool.complete", {
             ...correlation,
             operationId: toolOperationId,
             result: value,
+            permission: reviewPermission,
           });
           return value;
         }),
@@ -347,11 +348,8 @@ async function review(
       );
       await flushDebug($, logger, false, signal);
       if (signal.aborted) return fail("cancelled");
-      const outcome = reviewEvidence(call, result, errors);
-      if ("reason" in outcome) return fail(outcome.reason);
-      errors = outcome.errors;
-      evidence.push(outcome.entry);
-      if (JSON.stringify(evidence).length > MAX_EVIDENCE) return fail("evidence_size_limit");
+      const failure = investigation.record(call, result, reviewPermission);
+      if (failure !== undefined) return fail(failure);
     }
   } catch (error) {
     logger.record(
@@ -728,7 +726,15 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
       decision: "deny",
       reason: "Cerberus: no active review.",
     };
-  return next(e);
+  const verdict = await next(e);
+  const rule = verdict.rule === undefined ? {} : { rule: verdict.rule };
+  reviewPermission = {
+    tool: e.tool,
+    decision: verdict.decision,
+    ...rule,
+    readOnly: e.isReadOnly === true,
+  };
+  return verdict;
 };
 
 export const register: Register = (on, options) => {
