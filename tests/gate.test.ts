@@ -1101,3 +1101,86 @@ void test("late cancelled model results wait for a live dispatch after a new req
     h.events.debug.map((_, i) => i + 1),
   );
 });
+
+const unread = "base.rb was not read in the session, so the TTL claim is unsupported";
+const historyGrep = JSON.stringify({
+  tool: "Bash",
+  input: { command: "grep -n 'base.rb' /private/review/history.txt" },
+});
+const gateStatuses = (h: ReturnType<typeof harness>) =>
+  h.events.debug.filter((e) => e.event === "history_gate").map((e) => e.data.status);
+
+void test("an unread finding without a history search goes back once; the new verdict stands", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(
+    verdict("REVISE", ["fact.txt:1 contradicts the draft", unread]),
+    historyGrep,
+    verdict("REVISE", ["fact.txt:1 contradicts the draft"]),
+  );
+  assert.deepEqual(shown(await h.step()), noted(revising(1), ""));
+  assert.equal(h.events.models.length, 3);
+  assert.equal(JSON.parse(h.events.models[0]!.request.prompt).historyRecheck, undefined);
+  const recheck = JSON.parse(h.events.models[1]!.request.prompt).historyRecheck;
+  assert.deepEqual(recheck.flaggedFindings, [1]);
+  assert.deepEqual(recheck.previousVerdict.findings[1], unread);
+  assert.match(recheck.instruction, /search sessionLog\.history/u);
+  assert.ok(JSON.parse(h.events.models[2]!.request.prompt).historyRecheck);
+  assert.deepEqual(gateStatuses(h), ["recheck", "resolved"]);
+  await h.flushCorrections();
+  assert.doesNotMatch(h.events.prompts[0]!.text, /base\.rb/u);
+});
+
+void test("a history search, a source search or a PASS needs no recheck", async () => {
+  for (const reply of [
+    historyGrep,
+    JSON.stringify({ tool: "Read", input: { file_path: "/private/review/source.jsonl" } }),
+  ]) {
+    const h = harness();
+    await started(h);
+    h.replies.push(reply, verdict("REVISE", [unread]));
+    assert.deepEqual(shown(await h.step()), noted(revising(1), ""));
+    assert.equal(h.events.models.length, 2);
+    assert.deepEqual(gateStatuses(h), []);
+  }
+  const users = harness();
+  await started(users);
+  users.replies.push(readOf("/private/review/users.txt"), verdict("REVISE", [unread]), verdict());
+  assert.deepEqual(shown(await users.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(gateStatuses(users), ["recheck", "resolved"]);
+});
+
+void test("after a recheck, failures keep the earlier REVISE and a repeated unread REVISE is accepted", async () => {
+  for (const reply of ["not json", verdict("UNVERIFIED"), readOf("missing.txt")]) {
+    const h = harness();
+    await started(h);
+    h.replies.push(verdict("REVISE", [unread]), reply);
+    if (reply.includes("missing")) h.setCall(missing);
+    h.replies.push(readOf("missing.txt"), readOf("missing.txt"));
+    assert.deepEqual(shown(await h.step()), noted(revising(1), ""), reply);
+    await h.flushCorrections();
+    assert.match(h.events.prompts[0]!.text, /base\.rb/u);
+  }
+  const repeated = harness();
+  await started(repeated);
+  repeated.replies.push(verdict("REVISE", [unread]), verdict("REVISE", ["x.rb was never read"]));
+  assert.deepEqual(shown(await repeated.step()), noted(revising(1), ""));
+  assert.deepEqual(gateStatuses(repeated), ["recheck", "unresolved"]);
+  await repeated.flushCorrections();
+  assert.match(repeated.events.prompts[0]!.text, /x\.rb was never read/u);
+});
+
+void test("no recheck is sent without two rounds or the minimum time left", async () => {
+  const short = harness({ reviewTimeoutSeconds: 20 });
+  await started(short);
+  short.replies.push(verdict("REVISE", [unread]));
+  assert.deepEqual(shown(await short.step()), noted(revising(1), ""));
+  assert.equal(short.events.models.length, 1);
+  assert.deepEqual(gateStatuses(short), ["no_budget"]);
+  const late = harness();
+  await started(late);
+  for (let i = 0; i < 15; i++) late.replies.push(readOf("fact.txt"));
+  late.replies.push(verdict("REVISE", [unread]));
+  assert.deepEqual(shown(await late.step()), noted(revising(1), ""));
+  assert.deepEqual(gateStatuses(late), ["no_budget"]);
+});

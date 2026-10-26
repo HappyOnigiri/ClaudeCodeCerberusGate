@@ -1,4 +1,4 @@
-import type { Config } from "./policy.ts";
+import type { Config, Verdict } from "./policy.ts";
 import { BUILTIN_INPUTS } from "./tool-inputs.ts";
 
 export const MAX_ROUNDS = 16;
@@ -141,6 +141,7 @@ export function reviewModelRequest<Effort extends string>(
     tools: readonly unknown[];
     evidence: readonly unknown[];
     remaining: number;
+    recheck?: Recheck;
   },
 ) {
   return {
@@ -159,6 +160,7 @@ export function reviewModelRequest<Effort extends string>(
       unpublishedDraft: input.candidate.text,
       tools: input.tools,
       evidence: input.evidence,
+      historyRecheck: recheckPrompt(input.recheck),
       replyFormat:
         'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
     }),
@@ -196,6 +198,91 @@ export function reviewEvidence(
   if (errors + 1 >= MAX_TOOL_ERRORS) return { reason: "tool_error_limit" };
   return { entry: { ...call, result: text, isError: true }, errors: errors + 1 };
 }
+
+// Unread-type findings claim the session lacks a read, run, output or support. English and
+// Japanese phrasings both occur because reviewers may answer in the user's language.
+const UNREAD = new RegExp(
+  [
+    String.raw`\b(?:not|never)\s+(?:been\s+)?(?:read(?!\s+as\b)|run|inspected|shown|showed|seen|searched|checked|opened|examined|located|identified)\b`,
+    String.raw`\bnot\s+(?:visible|present|included|confirmed|shown|found)\s+in\s+(?:the|any|this)\b`,
+    String.raw`\bnot\s+in\s+(?:the|this|any)\s+(?:\S+\s+)?(?:evidence|history|session|output|excerpts?)\b`,
+    String.raw`\bno\s+(?:visible|read|diff|search|evidence|result|output|definition|supporting evidence)\b`,
+    String.raw`\bno\b[^.;]{0,80}\b(?:appears?|is shown|was shown|is visible)\s+in\s+(?:the|any)\b`,
+    String.raw`\bno\s+(?:\S+\s+){0,4}(?:was|were)\s+(?:checked|read|run|inspected|searched|shown|verified)\b`,
+    String.raw`\bnot\s+(?:supported|backed)\s+by\s+(?:any|the\s+(?:visible|cited|recorded|available))\b`,
+    String.raw`\b(?:has|have|had|with)\s+no\s+(?:support|evidence|matching read)\b`,
+    String.raw`\b(?:only|sole)\s+(?:\S+\s+){0,3}(?:evidence|search|read|result)\b`,
+    String.raw`\bno\s+tool\s+results?\b`,
+    String.raw`\bnothing\s+in\s+the\s+(?:evidence|history|session|transcript)\b`,
+    String.raw`\bnot\s+supported\s+by\s+the\s+(?:\S+\s+)?(?:evidence|history|session)\b`,
+    String.raw`\b(?:evidence|history|session|transcript)\s+(?:does\s+not|doesn't|did\s+not)\s+(?:show|include|contain|cover)\b`,
+    String.raw`\b(?:evidence|history|session|transcript)\s+(?:has|have|contains?|shows?|includes?)\s+(?:no|neither|nothing|only)\b`,
+    String.raw`\b(?:evidence|grep|search|output)\s+(?:\S+\s+){0,3}only\s+(?:lists|shows|reads|covers|contains)\b`,
+    "(?:読まれ|読ま|読んで|読み取られ|実行され|検索され|確認され|検証され|示され|含まれ|現れ|表示され)てい(?:な|ません)",
+    "確認でき(?:な|ません)|見当たら(?:な|ず)|見当たりません|根拠(?:が|は)(?:な|ありません)|未確認|未読",
+  ].join("|"),
+  "iu",
+);
+export const unreadFindings = (findings: readonly string[]): number[] =>
+  findings.flatMap((finding, index) => (UNREAD.test(finding) ? [index] : []));
+
+// Any call naming the snapshot's history or source counts, failed or not: a grep without a match
+// exits non-zero. A users.txt read alone shares the directory but does not search history.
+export function searchedHistory(evidence: readonly Evidence[], context: string): boolean {
+  const material: unknown = JSON.parse(context);
+  if (!record(material) || typeof material.directory !== "string" || !material.directory)
+    return false;
+  const directory = material.directory;
+  return evidence.some(({ input }) => {
+    const text = JSON.stringify(input);
+    if (!text.includes(directory)) return false;
+    return /history\.txt|source\.jsonl/u.test(text) || !text.includes("users.txt");
+  });
+}
+
+// A REVISE with unread-type findings but no history search goes back to the reviewer once.
+// The Mod never edits a verdict: after the recheck it accepts the reviewer's new verdict, or
+// keeps the reviewer's earlier verdict when the recheck ends UNVERIFIED or cannot finish.
+export const RECHECK_MIN_MS = 30_000;
+export type Recheck = { verdict: Verdict; flagged: number[] };
+type Gated = { status: string; flagged: number[] };
+export function createHistoryGate(context: string) {
+  let recheck: Recheck | undefined;
+  return {
+    get recheck() {
+      return recheck;
+    },
+    fallback: (): Verdict => recheck?.verdict ?? { decision: "UNVERIFIED", findings: [] },
+    // `log` is set whenever the gate acted; `verdict` is undefined only when a recheck is sent.
+    settle(
+      verdict: Verdict,
+      evidence: readonly Evidence[],
+      rounds: number,
+      ms: number,
+    ): { verdict?: Verdict; log?: Gated & { verdict: Verdict } } {
+      const flagged = verdict.decision === "REVISE" ? unreadFindings(verdict.findings) : [];
+      const searched = flagged.length > 0 && searchedHistory(evidence, context);
+      const done = (status: string, result = verdict) =>
+        status === "clear" ? { verdict } : { verdict: result, log: { status, flagged, verdict } };
+      if (recheck)
+        return verdict.decision === "UNVERIFIED"
+          ? done("fallback", recheck.verdict)
+          : done(flagged.length && !searched ? "unresolved" : "resolved");
+      if (!flagged.length || searched) return done("clear");
+      if (rounds < 2 || ms < RECHECK_MIN_MS) return done("no_budget");
+      recheck = { verdict, flagged };
+      return { log: { status: "recheck", flagged, verdict } };
+    },
+  };
+}
+
+const RECHECK = `Your previousVerdict was NOT accepted. Its findings at flaggedFindings (0-based) say a file, line, command or result was not read, run, shown or supported in the session, but your evidence has no search of sessionLog.history. Apply HISTORY GATE now: search sessionLog.history for each flagged path, symbol or command. Then return one complete verdict. Drop or correct flagged findings that history contradicts, and name the search and its result in each flagged finding you keep. Keep the other findings unless new evidence changes them. This notice is not evidence.`;
+const recheckPrompt = (recheck: Recheck | undefined) =>
+  recheck && {
+    instruction: RECHECK,
+    previousVerdict: recheck.verdict,
+    flaggedFindings: recheck.flagged,
+  };
 
 export function reviewFailureReason(
   stage: string,
