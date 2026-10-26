@@ -7,6 +7,7 @@ import {
   readConfig,
   REVIEWER,
   revising,
+  supportedVersion,
   UNRESOLVED,
   UNVERIFIED,
   WAITING,
@@ -603,7 +604,7 @@ export const register: Register = (on, options) => {
   on("session.start", async ($, e, next) => {
     log.clear();
     interactive = e.isInteractive;
-    configured = configured && (await $.session.version()).base === "2.1.310";
+    configured = configured && supportedVersion((await $.session.version()).base);
     await initializeDebug($, { event: e, options, configError });
     log.record($.clock.now(), "Cerberus Gate を起動しました。");
     if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
