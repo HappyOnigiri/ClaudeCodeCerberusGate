@@ -19,6 +19,7 @@ import {
   current,
   disposition,
   hidden,
+  joinsCycle,
   requestOf,
   reset,
   resultOf,
@@ -605,7 +606,12 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     return response;
   }
   let shown: Shown;
-  if (
+  if (gate.delivery !== undefined) {
+    // A queued correction supersedes this answer (a notification's turn); its own turn is reviewed.
+    debug.record("answer.superseded", { turnId: e.turnId, epoch, token: gate.delivery.token });
+    log.record($.clock.now(), "修正依頼の配信待ちのため、この回答は表示しません。");
+    shown = hidden;
+  } else if (
     (response.stopReason !== "end_turn" && response.stopReason !== "stop_sequence") ||
     text.length > MAX_DRAFT
   ) {
@@ -669,6 +675,7 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     prompt: e,
     epoch: gate.epoch,
     pending: gate.active !== undefined || gate.delivery !== undefined,
+    joins: joinsCycle(gate, e),
   });
   if (e.origin.kind === "plugin" && e.origin.name === "cerberus-gate") {
     const delivery = gate.delivery;
@@ -687,6 +694,7 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     [...gate.reviewers].some((id) => e.text.includes(id))
   )
     return { drop: "Cerberus: 検証結果を処理済みです。" };
+  if (joinsCycle(gate, e)) return next(e);
   if (gate.active !== undefined || gate.delivery !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
   reset(gate, ...requestOf(gate, e));
