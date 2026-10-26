@@ -4,7 +4,7 @@ import {
   MAX_EVIDENCE,
   reviewModelRequest,
   reviewTools,
-  toolRequest,
+  reviewReply,
   reviewEvidence,
   reviewFailureReason,
   cancellable,
@@ -62,6 +62,7 @@ export async function review(
     const names = new Set(tools.map((tool) => tool.name));
     const evidence: Evidence[] = [];
     let errors = 0;
+    let retryRound: number | undefined;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const remaining = reviewConfig.reviewTimeoutMs - ((await $.clock.now()) - started);
       if (remaining <= 0) candidate.timedOut = true;
@@ -79,6 +80,7 @@ export async function review(
         tools,
         evidence,
         remaining,
+        formatRetry: retryRound === round - 1,
       });
       logger.record("model.start", {
         ...correlation,
@@ -114,7 +116,12 @@ export async function review(
         return fail("timeout");
       }
       stage = "parse";
-      const call = toolRequest(response.text);
+      const call = reviewReply(response.text, retryRound !== undefined);
+      if (call === "retry") {
+        retryRound = round;
+        logger.record("review.format_retry", { ...correlation, operationId, round });
+        continue;
+      }
       if (call === undefined) {
         const parsed = diagnoseVerdict(response.text);
         logger.record("verdict.parsed", { ...correlation, ...parsed });

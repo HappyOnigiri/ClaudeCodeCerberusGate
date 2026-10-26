@@ -1037,8 +1037,10 @@ void test("diagnostics distinguish malformed, contradictory and explicit unverif
   ] as const) {
     const h = harness();
     await started(h);
-    h.replies.push(reply);
+    // An unreadable reply is requested once more; the second one ends the review.
+    h.replies.push(reply, reply);
     assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+    assert.equal(h.events.models.length, reason === "invalid_json" ? 2 : 1, reason);
     const diagnostic = h.events.debug.find((e) => e.event === event && e.data.reason === reason);
     assert.ok(diagnostic, reason);
     if (reason === "model_exception") assert.equal(diagnostic.data.error.cause, "unavailable");
@@ -1056,14 +1058,81 @@ void test("a tag-wrapped tool request runs once with a debug marker, while mixed
   assert.ok(!("salvaged" in h.events.inputs[0]!));
   const start = h.events.debug.find((e) => e.event === "tool.start")!;
   assert.deepEqual(start.data.call.salvaged, { unwrapped: true, addedBraces: 1 });
+  // The marker is debug-only: the reviewer's next evidence has the tool, input and result alone.
+  assert.deepEqual(JSON.parse(h.events.models[1]!.request.prompt).evidence, [
+    { tool: "Read", input: { file_path: "fact.txt" }, result: "fact.txt:1 stable" },
+  ]);
   const mixed = harness();
   await started(mixed);
-  mixed.replies.push(`<invoke_tool>\n${request}${verdict()}`);
+  mixed.replies.push(`<invoke_tool>\n${request}${verdict()}`, request);
   assert.deepEqual(shown(await mixed.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.deepEqual(mixed.events.calls, []);
+  // A verdict-like reply is never requested again.
+  assert.equal(mixed.events.models.length, 1);
   assert.ok(
     mixed.events.debug.some((e) => e.event === "review.failed" && e.data.reason === "invalid_json"),
   );
+});
+
+const formatErrorOf = (h: ReturnType<typeof harness>, index: number) =>
+  JSON.parse(h.events.models[index]!.request.prompt).formatError;
+
+void test("an unreadable reply is requested again once within the same rounds and deadline", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push("<invoke_tool_placeholder>\n\n\n<invoke_tool_placeholder>", readOf("fact.txt"));
+  h.replies.push(verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read"]);
+  assert.deepEqual(
+    [0, 1, 2].map((i) => formatErrorOf(h, i) === undefined),
+    [true, false, true],
+  );
+  assert.doesNotMatch(h.events.models[1]!.request.prompt, /placeholder/u);
+  assert.equal(JSON.parse(h.events.models[1]!.request.prompt).evidence.length, 0);
+  const retries = h.events.debug.filter((e) => e.event === "review.format_retry");
+  const first = h.events.debug.find((e) => e.event === "model.complete")!;
+  assert.deepEqual(
+    retries.map((e) => e.data.operationId),
+    [first.data.operationId],
+  );
+  // A second unreadable reply later in the same review ends it without another request.
+  const again = harness();
+  await started(again);
+  again.replies.push("_pending", readOf("fact.txt"), "_pending", verdict());
+  assert.deepEqual(shown(await again.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(again.events.models.length, 3);
+  assert.equal(
+    again.events.debug.find((e) => e.event === "review.failed")?.data.reason,
+    "invalid_json",
+  );
+  // The retry is one of the 16 model replies, so the round cap is unchanged.
+  const capped = harness();
+  await started(capped);
+  capped.replies.push("_pending");
+  for (let i = 0; i < 16; i++) capped.replies.push(readOf(`fact-${i}.txt`));
+  assert.deepEqual(shown(await capped.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(capped.events.models.length, 16);
+  assert.equal(reasonOf(capped), "round_limit");
+});
+
+void test("an XML-form request runs with a marker, and an unlisted XML tool is still denied", async () => {
+  const xml = (tool: string) =>
+    `<invoke:\n<parameter name="tool">${tool}</parameter>\n<parameter name="input">{"file_path":"fact.txt"}</parameter>\n</invoke>`;
+  const h = harness();
+  await started(h);
+  h.replies.push(xml("Read"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read"]);
+  const start = h.events.debug.find((e) => e.event === "tool.start")!;
+  assert.deepEqual(start.data.call.salvaged, { unwrapped: true, addedBraces: 0, xml: true });
+  assert.doesNotMatch(h.events.models[1]!.request.prompt, /salvaged/u);
+  const unlisted = harness();
+  await started(unlisted);
+  unlisted.replies.push(xml("Agent"), verdict());
+  assert.deepEqual(shown(await unlisted.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(unlisted.events.calls, []);
+  assert.equal(reasonOf(unlisted), "tool_denied");
 });
 
 void test("debug append failures and helper timeouts leave PASS publication intact and expose save state", async () => {
