@@ -63,6 +63,9 @@ function debugFailure($: EngineInterface, error: unknown): void {
     /* Diagnostic notifications must not interrupt publication. */
   }
 }
+async function openPane($: EngineInterface, id: string, title: string): Promise<void> {
+  await $.ui.open({ id, title, focus: true, closeOnEscape: true });
+}
 function showNote($: EngineInterface, note: string): void {
   try {
     $.ui.log(note);
@@ -138,6 +141,7 @@ let configured = true;
 let configError: unknown;
 let interactive = true;
 let pendingEnabled: boolean | undefined;
+let historyText = "";
 const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
 const status = (): string =>
   `Cerberus Gate: ${enabled() ? "on" : "off"} (${gate.sessionEnabled === undefined ? "saved" : "session"}); ${gate.phase}; corrections=${gate.revisions}`;
@@ -803,12 +807,7 @@ export const register: Register = (on, options) => {
     void flushDebug($, debug, true);
     if (argument === "on" || argument === "off") {
       pendingEnabled = argument === "on";
-      await $.ui.open({
-        id: "enabled-scope",
-        title: "有効・無効の適用範囲",
-        focus: true,
-        closeOnEscape: true,
-      });
+      await openPane($, "enabled-scope", "有効・無効の適用範囲");
       return {};
     }
     if (argument === "reset") {
@@ -816,15 +815,14 @@ export const register: Register = (on, options) => {
       return { text: (await applyEnabled($, undefined, false)).text };
     }
     if (argument === "model") {
-      await $.ui.open({
-        id: "reviewer-model",
-        title: "検査用モデル・effort",
-        focus: true,
-        closeOnEscape: true,
-      });
+      await openPane($, "reviewer-model", "検査用モデル・effort");
       return {};
     }
-    if (argument === "history") return { text: await log.text() };
+    if (argument === "history") {
+      historyText = await log.text();
+      await openPane($, "history", "Cerberus Gate の履歴");
+      return {};
+    }
     if (argument === "log") return { text: debug.text() };
     if (argument !== "" && argument !== "cancel")
       return { text: "使い方: /cgate [on|off|reset|model|history|log|cancel]" };
@@ -838,6 +836,10 @@ export const register: Register = (on, options) => {
       if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
     }
     return { text: status() };
+  });
+  on("ui.render", { component: "Pane", requestId: "history" }, ($, e) => {
+    const { Text } = $.ui.resolve(e);
+    return Text({ children: historyText });
   });
   on("ui.render", { component: "Pane", requestId: "enabled-scope" }, ($, e) => {
     const desired = pendingEnabled;
@@ -901,12 +903,7 @@ export const register: Register = (on, options) => {
             timeoutMs: 3000,
           });
           await $.ui.close({ id: "reviewer-model" });
-          await $.ui.open({
-            id: "reviewer-effort",
-            title: "検査用 effort",
-            focus: true,
-            closeOnEscape: true,
-          });
+          await openPane($, "reviewer-effort", "検査用 effort");
         } catch (error) {
           debug.record("settings.failed", { setting: "reviewerModel", error }, "error");
           await flushDebug($);
