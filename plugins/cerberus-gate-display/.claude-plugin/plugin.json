@@ -1,7 +1,7 @@
 {
   "name": "cerberus-gate-display",
   "displayName": "Cerberus Gate Display",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Collapse Cerberus Gate control prompts in the terminal, keeping their body available in the detailed transcript.",
   "author": {
     "name": "HappyOnigiri"
