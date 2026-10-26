@@ -12,7 +12,7 @@ import {
   readConfig,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
-import { harness, verdict, deferred, started, tick } from "./helpers/gate-harness.ts";
+import { harness, history, verdict, deferred, started, tick } from "./helpers/gate-harness.ts";
 
 // Notices go to the transcript log, never into the answer the model reads on later turns.
 const shown = (r: { text: string; notes: string[] }) => ({ notes: r.notes, text: r.text });
@@ -141,10 +141,7 @@ void test("timeout aborts the model and shows the original text without another 
   assert.deepEqual(shown(await running), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.ok(h.events.models[0]!.options.signal.aborted);
   assert.deepEqual(h.events.prompts, []);
-  assert.match(
-    (await h.fire("command.run", { command: "cgate", args: "history" })).text,
-    /タイムアウト[\s\S]*UNVERIFIED/u,
-  );
+  assert.match(await history(h), /タイムアウト[\s\S]*UNVERIFIED/u);
 });
 
 void test("timeout releases a pending read and ignores its later result", async () => {
@@ -168,20 +165,14 @@ void test("revision cap shows a note; correction delivery failure is reported wi
   cap.replies.push(verdict("REVISE", ["SECRET FINDING"]));
   assert.deepEqual(shown(await cap.step()), noted(UNRESOLVED, "UNPUBLISHED DRAFT"));
   assert.equal(cap.events.prompts.length, 0);
-  assert.match(
-    (await cap.fire("command.run", { command: "cgate", args: "history" })).text,
-    /REVISE[\s\S]*SECRET FINDING[\s\S]*修正回数の上限/u,
-  );
+  assert.match(await history(cap), /REVISE[\s\S]*SECRET FINDING[\s\S]*修正回数の上限/u);
   const failed = harness();
   await started(failed);
   failed.failPrompt();
   failed.replies.push(verdict("REVISE", ["SECRET FINDING"]));
   assert.equal((await failed.step()).text, "");
   await failed.flushCorrections();
-  assert.match(
-    (await failed.fire("command.run", { command: "cgate", args: "history" })).text,
-    /送信に失敗/u,
-  );
+  assert.match(await history(failed), /送信に失敗/u);
 });
 
 void test("new prompt, abort, cancel and session end invalidate an in-flight review", async () => {
@@ -333,7 +324,7 @@ void test("session log works during review, shows findings without the draft and
   h.replies.push(() => held.promise);
   const running = h.step();
   await tick();
-  const pending = (await h.fire("command.run", { command: "cgate", args: "history" })).text;
+  const pending = await history(h);
   assert.match(pending, /審査 #\d+: 開始/u);
   assert.doesNotMatch(pending, /UNPUBLISHED/u);
   assert.match(
@@ -344,16 +335,13 @@ void test("session log works during review, shows findings without the draft and
   await running;
   await h.flushCorrections();
   await h.step();
-  const log = (await h.fire("command.run", { command: "cerberus", args: " history " })).text;
+  const log = await history(h, "cerberus", " history ");
   assert.match(log, /REVISE[\s\S]*PASS[\s\S]*検証済みの本文を公開/u);
   assert.match(log, /指摘と根拠:[\s\S]*SECRET FINDING/u);
   assert.doesNotMatch(log, /UNPUBLISHED/u);
   assert.match(log, /1970-01-01T00:00:00.000Z/u);
   await h.fire("session.end", {});
-  assert.match(
-    (await h.fire("command.run", { command: "cgate", args: "history" })).text,
-    /ログはありません/u,
-  );
+  assert.match(await history(h), /ログはありません/u);
 });
 
 void test("cancellation while preparing session material does not start a reviewer", async () => {
@@ -624,10 +612,7 @@ void test("new requests supersede a queued reload restart and failed restart del
   again.failPrompt();
   await again.flushCorrections();
   assert.equal(again.host.states.get("recovery")!.pending, false);
-  assert.match(
-    (await again.fire("command.run", { command: "cgate", args: "history" })).text,
-    /再開に失敗/u,
-  );
+  assert.match(await history(again), /再開に失敗/u);
 });
 
 void test("reviewer model and effort inherit the answer step or use independent overrides", async () => {

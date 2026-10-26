@@ -116,6 +116,37 @@ void test("architecture permits only the session-guarded dynamic tool boundary",
   ])
     assert.ok(architecture(registration, altered).length, altered);
 });
+void test("the review loop may call only the reviewer APIs and receive the engine from registration", () => {
+  const reviewLoop = "plugins/cerberus-gate/hooks/review-loop.ts";
+  assert.deepEqual(
+    architecture(
+      reviewLoop,
+      'import type { EngineInterface } from "claude-code"; async function f($: EngineInterface) { await $.clock.now(); await $.session.cwd(); await $.tool.list(); await $.model.complete(request, { signal }); $.tool.call({tool: "TaskStop", task_id: id}); }',
+    ),
+    [],
+  );
+  for (const source of [
+    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mts`, "create"], {});',
+    '$.state.set({plugin: "cerberus-gate", key: "recovery"}, null);',
+    '$.prompt.submit({text: "x"});',
+    '$.tool.call({tool: "Write"});',
+    'import { register } from "./register.ts";',
+  ])
+    assert.ok(architecture(reviewLoop, source).length, source);
+  assert.deepEqual(
+    architecture(registration, 'import { review } from "./review-loop.ts"; review($, config);'),
+    [],
+  );
+  for (const [file, source] of [
+    [registration, 'import { review } from "./review.ts"; review($, config);'],
+    [
+      "plugins/cerberus-gate/hooks/pure.ts",
+      'import { review } from "./review-loop.ts"; review($);',
+    ],
+    ["plugins/cerberus-gate/hooks/pure.ts", "$.tool.list();"],
+  ] as const)
+    assert.ok(architecture(file, source).length, source);
+});
 void test("display registration can import host types but cannot call APIs or import runtime modules", () => {
   assert.deepEqual(
     architecture(displayRegistration, 'import type { Register } from "claude-code";'),
