@@ -20,9 +20,12 @@ import {
   disposition,
   hidden,
   joinsCycle,
+  ownTask,
+  rememberTask,
   requestOf,
   reset,
   resultOf,
+  staleNotification,
 } from "./state.ts";
 import { review, unverified } from "./review-loop.ts";
 import { createDebug } from "./debug.ts";
@@ -345,6 +348,8 @@ async function verify(
     let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort, {
       logger: reviewLogger,
       flush: (s) => flushDebug($, reviewLogger, false, s),
+      rememberTask: (id) => rememberTask(gate, id),
+      saveTasks: () => saveRecovery($, gate),
     });
     if (!current(gate, candidate) || signal.aborted) return hidden;
     if (candidate.timedOut) {
@@ -536,14 +541,8 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     await saveRecovery($, gate);
     return next({ ...e, context: [...(e.context ?? []), delivery.context] });
   }
-  // Suppress late notifications from reviewers left by an older plugin on reload.
-  if (
-    (e.origin.kind === "task-notification" ||
-      e.origin.kind === "peer" ||
-      e.origin.kind === "peer-send-message") &&
-    [...gate.reviewers].some((id) => e.text.includes(id))
-  )
-    return { drop: "Cerberus: 検証結果を処理済みです。" };
+  // Before reset(): the reviewer's own notification must not cancel the review it belongs to.
+  if (staleNotification(gate, e)) return { drop: "Cerberus: 検証結果を処理済みです。" };
   if (joinsCycle(gate, e)) return next(e);
   if (gate.active !== undefined || gate.delivery !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
@@ -560,8 +559,7 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
     return { deny: "Cerberus: stale reviewer stopped." };
   }
   if (next.origin.plugin !== "cerberus-gate") return next(e);
-  if (e.tool === "TaskStop" && e.task_id !== undefined && gate.reviewers.has(e.task_id))
-    return next(e);
+  if (e.tool === "TaskStop" && ownTask(gate, e)) return next(e);
   if (gate.active === undefined || gate.active.controller.signal.aborted)
     return { deny: "Cerberus reviewer: no active review." };
   return next(e);
@@ -572,15 +570,7 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
       ? next(e)
       : { decision: "deny", reason: "Cerberus: stale reviewer stopped." };
   if (next.origin.plugin !== "cerberus-gate") return next(e);
-  if (
-    e.tool === "TaskStop" &&
-    typeof e.input === "object" &&
-    e.input !== null &&
-    "task_id" in e.input &&
-    typeof e.input.task_id === "string" &&
-    gate.reviewers.has(e.input.task_id)
-  )
-    return next(e);
+  if (e.tool === "TaskStop" && ownTask(gate, e.input)) return next(e);
   if (gate.active === undefined || gate.active.controller.signal.aborted)
     return {
       decision: "deny",
@@ -834,6 +824,7 @@ export const register: Register = (on, options) => {
     await flushDebug($, debug, true);
     log.clear();
     reset(gate, "");
+    gate.tasks.clear();
     gate.sessionEnabled = undefined;
     pendingEnabled = undefined;
     await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);

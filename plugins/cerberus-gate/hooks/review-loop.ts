@@ -2,6 +2,7 @@ import { MAX_DRAFT, diagnoseVerdict } from "./policy.ts";
 import {
   MAX_ROUNDS,
   MAX_EVIDENCE,
+  backgroundTask,
   reviewModelRequest,
   reviewTools,
   reviewReply,
@@ -16,9 +17,12 @@ import type { Config, Verdict } from "./policy.ts";
 import type { EngineInterface, TurnStepInput, ToolCallArgs, ToolCallResult } from "claude-code";
 
 // Debug sink of the caller; flush writes the logger's pending records for this review.
+// rememberTask and saveTasks keep the reviewer's background tasks in the caller's state.
 export interface ReviewIo {
   logger: ReturnType<typeof createDebug>;
   flush: (signal: AbortSignal) => Promise<void>;
+  rememberTask: (id: string) => void;
+  saveTasks: () => Promise<void>;
 }
 
 // The sole dynamic tool-call boundary forwards only tools advertised for this review.
@@ -32,6 +36,23 @@ async function callReviewTool(
   return $.tool.call({ ...call.input, tool: call.tool } as ToolCallArgs);
 }
 
+// The reviewer's command left in the background would notify the main session after the review.
+// Stopping it is the Mod's own cleanup; dropping its notification in onPrompt is the guarantee.
+async function stopReviewerTask(
+  $: EngineInterface,
+  { logger, rememberTask, saveTasks }: ReviewIo,
+  id: string,
+) {
+  rememberTask(id);
+  const operationId = logger.operation();
+  logger.record("task.stop.start", { operationId, taskId: id });
+  const result = await $.tool
+    .call({ tool: "TaskStop", task_id: id })
+    .catch((error: unknown) => ({ error }));
+  logger.record("task.stop.complete", { operationId, taskId: id, result });
+  await saveTasks().catch(() => undefined);
+}
+
 export const unverified = (): Verdict => ({ decision: "UNVERIFIED", findings: [] });
 
 export async function review(
@@ -41,8 +62,9 @@ export async function review(
   request: string,
   model: string,
   effort: TurnStepInput["effort"],
-  { logger, flush }: ReviewIo,
+  io: ReviewIo,
 ): Promise<Verdict> {
+  const { logger, flush } = io;
   const signal = candidate.controller.signal;
   const correlation = {
     turnId: candidate.turnId,
@@ -133,12 +155,14 @@ export async function review(
       logger.record("tool.start", { ...correlation, operationId: toolOperationId, call });
       await flush(signal);
       const result = await cancellable(
-        callReviewTool($, call, names).then((value) => {
+        callReviewTool($, call, names).then(async (value) => {
           logger.record(signal.aborted ? "tool.discarded" : "tool.complete", {
             ...correlation,
             operationId: toolOperationId,
             result: value,
           });
+          const task = backgroundTask(value);
+          if (task !== undefined) await stopReviewerTask($, io, task.id);
           return value;
         }),
         signal,
