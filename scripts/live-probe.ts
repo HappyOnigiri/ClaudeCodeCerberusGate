@@ -24,29 +24,28 @@ if (
   throw new Error("Installed verification supports pass and revise only");
 const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceAll(":", "-"));
 await mkdir(report, { recursive: true });
-const cases = process.argv.slice(2).length
-  ? process.argv.slice(2)
-  : [
-      "pass",
-      "history",
-      "model",
-      "prompt",
-      "bounds",
-      "environment",
-      "causal",
-      "choice",
-      "toggle",
-      "search",
-      "cli",
-      "revise",
-      "unverified",
-      "missing-log",
-      "cancel",
-      "slow",
-      "timeout",
-      "reload-work",
-      "reload-review",
-    ];
+const allCases = [
+  "pass",
+  "history",
+  "model",
+  "prompt",
+  "bounds",
+  "environment",
+  "causal",
+  "choice",
+  "toggle",
+  "search",
+  "cli",
+  "revise",
+  "unverified",
+  "missing-log",
+  "cancel",
+  "slow",
+  "timeout",
+  "reload-work",
+  "reload-review",
+];
+const cases = process.argv.slice(2).length ? process.argv.slice(2) : allCases;
 const tmux = (...args: string[]) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -111,30 +110,7 @@ const expectedFindings: Record<string, RegExp> = {
 };
 const summary = [];
 for (const mode of cases) {
-  if (
-    ![
-      "pass",
-      "history",
-      "model",
-      "prompt",
-      "bounds",
-      "environment",
-      "causal",
-      "choice",
-      "toggle",
-      "search",
-      "cli",
-      "revise",
-      "unverified",
-      "missing-log",
-      "cancel",
-      "slow",
-      "timeout",
-      "reload-work",
-      "reload-review",
-    ].includes(mode)
-  )
-    throw new Error(`Unknown case ${mode}`);
+  if (!allCases.includes(mode)) throw new Error(`Unknown case ${mode}`);
   const needsRevision = ["history", "revise", "bounds", "environment", "causal"].includes(mode);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
