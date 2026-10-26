@@ -521,6 +521,56 @@ void test("a task notification without an earlier request is checked as its own 
   assert.deepEqual(h.events.materialRequests, [notification().text]);
 });
 
+void test("a task notification while a correction is queued keeps it and the correction count", async () => {
+  const h = harness({ maxRevisions: 2 });
+  await started(h);
+  h.replies.push(verdict("REVISE", ["first finding"]));
+  assert.equal((await h.step()).text, "");
+  // The engine runs the notification's turn before the correction that waits in its queue.
+  await h.fire("prompt.submit", notification());
+  const reviews = h.events.models.length;
+  h.setDraft("NOTIFICATION ANSWER");
+  assert.deepEqual(shown(await h.step()), { notes: [], text: "" });
+  assert.equal(h.events.models.length, reviews);
+  await h.flushCorrections();
+  assert.equal(h.events.prompts.length, 1);
+  assert.equal(h.events.prompts[0]!.drop, undefined);
+  assert.match(h.events.prompts[0]!.text, /first finding/u);
+  assert.ok(h.events.prompts[0]!.context.join("").includes("UNPUBLISHED DRAFT"));
+  h.setDraft("CORRECTED");
+  h.replies.push(verdict("REVISE", ["second finding"]));
+  assert.deepEqual(shown(await h.step()), noted(revising(2), ""));
+  await h.flushCorrections();
+  // The second correction stays in the first one's epoch: nothing voided the queued correction.
+  const epochOf = (i: number) => /\[(\d+)-\d+\]/u.exec(h.events.prompts[i]!.text)?.[1];
+  assert.equal(epochOf(1), epochOf(0));
+  assert.equal(h.events.prompts[1]!.drop, undefined);
+  h.replies.push(verdict("REVISE", ["third finding"]));
+  assert.deepEqual(shown(await h.step()), noted(UNRESOLVED, "CORRECTED"));
+});
+
+void test("a task notification during a review or a correction turn leaves it running", async () => {
+  const h = harness();
+  await started(h);
+  const held = deferred();
+  h.replies.push(() => held.promise);
+  const running = h.step();
+  await tick();
+  await h.fire("prompt.submit", notification("t"));
+  assert.ok(!h.events.models[0]!.options.signal.aborted);
+  held.resolve({ isAnswered: true, text: verdict("REVISE", ["first finding"]) });
+  assert.deepEqual(shown(await running), noted(revising(1), ""));
+  await h.flushCorrections();
+  await h.fire("prompt.submit", notification("t"));
+  h.replies.push(verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.equal(JSON.parse(h.events.models.at(-1)!.request.prompt).request, "original request");
+  // Once the answer is out, a later notification starts a fresh cycle as before.
+  await h.fire("prompt.submit", notification());
+  h.replies.push(verdict("REVISE", ["late finding"]));
+  assert.deepEqual(shown(await h.step()), noted(revising(1), ""));
+});
+
 void test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
   const h = harness();
   await started(h);
