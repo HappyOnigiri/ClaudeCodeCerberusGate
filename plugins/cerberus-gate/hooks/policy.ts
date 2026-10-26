@@ -8,15 +8,18 @@ export type Config = {
 };
 export type Verdict = { decision: "PASS" | "REVISE" | "UNVERIFIED"; findings: readonly string[] };
 export const WAITING = "回答を検証中です。";
+// Log-row notices lead with the outcome so PASS, REVISE, UNVERIFIED and errors read apart.
+export const PASSED = "Cerberus Gate: [PASS] 回答の検証に合格したため、本文を表示します。";
+export const revising = (count: number): string =>
+  `Cerberus Gate: [REVISE] 検証で指摘があったため、修正を依頼しました（${count} 回目）。`;
 export const UNVERIFIED =
-  "Cerberus Gate: 回答の検証を完了できなかったため、未検証の本文をそのまま表示します。";
+  "Cerberus Gate: [UNVERIFIED] 回答の検証を完了できなかったため、未検証の本文をそのまま表示します。";
 export const UNRESOLVED =
-  "Cerberus Gate: 修正回数の上限に達したため、検証の指摘が残る本文をそのまま表示します。";
+  "Cerberus Gate: [REVISE] 修正回数の上限に達したため、検証の指摘が残る本文をそのまま表示します。";
 export const FAILED =
-  "Cerberus Gate: 回答処理でエラーが発生したため、未検証の本文をそのまま表示します。";
+  "Cerberus Gate: [ERROR] 回答処理でエラーが発生したため、未検証の本文をそのまま表示します。";
 export const NO_DRAFT =
-  "Cerberus Gate: 回答処理でエラーが発生し、表示できる本文がありませんでした。";
-export const withNote = (note: string, text: string): string => `> ${note}\n\n${text}`;
+  "Cerberus Gate: [ERROR] 回答処理でエラーが発生し、表示できる本文がありませんでした。";
 export const CONTROL = "Cerberus Gate: 検証処理を継続します。";
 export const REVIEWER = "cerberus-gate:reviewer";
 export const MAX_DRAFT = 100_000;

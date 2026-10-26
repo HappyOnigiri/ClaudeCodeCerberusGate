@@ -1,24 +1,32 @@
 import {
-  CONTROL,
   correction,
   FAILED,
-  formatFindings,
   MAX_DRAFT,
   NO_DRAFT,
+  PASSED,
   readConfig,
   diagnoseVerdict,
   REVIEWER,
+  revising,
   UNRESOLVED,
   UNVERIFIED,
   WAITING,
-  withNote,
 } from "./policy.ts";
 import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
-import { createState, current, disposition, reset, resultOf, transcriptMarker } from "./state.ts";
+import {
+  controlText,
+  createState,
+  current,
+  disposition,
+  hidden,
+  reset,
+  resultOf,
+  transcriptMarker,
+} from "./state.ts";
 import {
   MAX_ROUNDS,
   MAX_EVIDENCE,
-  reviewSystem,
+  reviewModelRequest,
   reviewTools,
   toolRequest,
   reviewFailureReason,
@@ -27,7 +35,7 @@ import {
 import type { ReviewRequest } from "./review.ts";
 import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
-import type { Candidate, Delivery, GateState } from "./state.ts";
+import type { Candidate, Delivery, GateState, Shown } from "./state.ts";
 import type { Config, Verdict } from "./policy.ts";
 import type {
   EngineInterface,
@@ -52,6 +60,13 @@ function debugFailure($: EngineInterface, error: unknown): void {
     $.ui.toast("Cerberus Gate: デバッグログの保存に失敗しました。", { timeoutMs: 3000 });
   } catch {
     /* Diagnostic notifications must not interrupt publication. */
+  }
+}
+function showNote($: EngineInterface, note: string): void {
+  try {
+    $.ui.log(note);
+  } catch (error) {
+    debug.record("notice.failed", { note, error }, "error");
   }
 }
 async function flushDebug(
@@ -127,8 +142,6 @@ const status = (): string =>
   `Cerberus Gate: ${enabled() ? "on" : "off"} (${gate.sessionEnabled === undefined ? "saved" : "session"}); ${gate.phase}; corrections=${gate.revisions}`;
 let buffered = { key: "", text: "" };
 const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
-const controlText = (delivery: Delivery): string =>
-  `${CONTROL} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings)}` : ""}`;
 
 async function saveRecovery(
   $: EngineInterface,
@@ -264,28 +277,16 @@ async function review(
       const operationId = logger.operation();
       stage = "model";
       activeOperationId = operationId;
-      const modelRequest = {
-        model: reviewConfig.reviewerModel === "inherit" ? model : reviewConfig.reviewerModel,
-        effort:
-          reviewConfig.reviewerEffort === "inherit"
-            ? typeof effort === "number"
-              ? undefined
-              : effort
-            : reviewConfig.reviewerEffort,
-        system: reviewSystem(reviewConfig),
-        prompt: JSON.stringify({
-          request,
-          workingDirectory: await $.session.cwd(),
-          sessionLog: JSON.parse(candidate.context),
-          unpublishedDraft: candidate.text,
-          tools,
-          evidence,
-          replyFormat:
-            'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
-        }),
-        maxTokens: 4096,
-        timeoutMs: remaining,
-      };
+      const modelRequest = reviewModelRequest(reviewConfig, {
+        model,
+        effort,
+        request,
+        workingDirectory: await $.session.cwd(),
+        candidate,
+        tools,
+        evidence,
+        remaining,
+      });
       logger.record("model.start", {
         ...correlation,
         operationId,
@@ -375,7 +376,7 @@ async function finishReview(
   $: EngineInterface,
   candidate: Candidate,
   verdict: Verdict,
-): Promise<string> {
+): Promise<Shown> {
   const mode = disposition(verdict, gate.revisions, config.maxRevisions);
   debug.record("review.complete", {
     epoch: candidate.epoch,
@@ -398,23 +399,27 @@ async function finishReview(
     gate.delivery = delivery;
     gate.phase = "correction queued";
     log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
+    showNote($, revising(gate.revisions));
     await saveRecovery($, gate);
     queueContinuation($, delivery);
-    return "";
+    return hidden;
   }
   switch (mode) {
     case "publish":
       gate.phase = "published";
       log.record($.clock.now(), "検証済みの本文を公開しました。");
       await saveRecovery($, gate);
-      return candidate.text;
+      return { text: candidate.text, note: PASSED };
     case "notice":
       gate.phase = "unverified";
       if (verdict.decision === "REVISE")
         log.record($.clock.now(), "修正回数の上限に到達しました。");
       log.record($.clock.now(), "未検証の本文を注記付きで表示しました。");
       await saveRecovery($, gate);
-      return withNote(verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED, candidate.text);
+      return {
+        text: candidate.text,
+        note: verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED,
+      };
     default: {
       const exhaustive: never = mode;
       throw new Error(`Unknown delivery mode: ${String(exhaustive)}`);
@@ -427,7 +432,7 @@ async function verify(
   e: TurnStepInput,
   text: string,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<Shown> {
   const epoch = gate.epoch;
   const logger = debug;
   const candidate: Candidate = {
@@ -440,7 +445,7 @@ async function verify(
     controller: new AbortController(),
     timedOut: false,
   };
-  if (signal.aborted || epoch !== gate.epoch) return "";
+  if (signal.aborted || epoch !== gate.epoch) return hidden;
   const abort = () => candidate.controller.abort();
   signal.addEventListener("abort", abort, { once: true });
   gate.active = candidate;
@@ -475,7 +480,7 @@ async function verify(
     logger.record("material.complete", { operationId: materialOperationId, result: generated });
     if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
     if (generated.exitCode !== 0 || generated.isStdoutTruncated) {
-      if (!current(gate, candidate) || signal.aborted) return "";
+      if (!current(gate, candidate) || signal.aborted) return hidden;
       logger.record("review.unverified", {
         reason: "material_failed",
         epoch,
@@ -487,11 +492,11 @@ async function verify(
     if (material.debug?.state === "failed") debugFailure($, material.debug);
     directory = material.directory;
     candidate.context = generated.stdout;
-    if (!current(gate, candidate) || signal.aborted) return "";
+    if (!current(gate, candidate) || signal.aborted) return hidden;
     gate.material = directory;
     await saveRecovery($, gate, signal);
     let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort);
-    if (!current(gate, candidate) || signal.aborted) return "";
+    if (!current(gate, candidate) || signal.aborted) return hidden;
     if (candidate.timedOut) {
       log.record($.clock.now(), `審査 #${candidate.token}: タイムアウト`);
       verdict = { decision: "UNVERIFIED", findings: [] };
@@ -499,7 +504,7 @@ async function verify(
     return await finishReview($, candidate, verdict);
   } catch (error) {
     logger.record("review.exception", { epoch, reviewToken: candidate.token, error }, "error");
-    if (!current(gate, candidate) || signal.aborted) return "";
+    if (!current(gate, candidate) || signal.aborted) return hidden;
     return await finishReview($, candidate, unverified());
   } finally {
     if (directory !== undefined) {
@@ -600,7 +605,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     yield* chunks;
     return response;
   }
-  let shown: string;
+  let shown: Shown;
   if (
     (response.stopReason !== "end_turn" && response.stopReason !== "stop_sequence") ||
     text.length > MAX_DRAFT
@@ -614,7 +619,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
       stopReason: response.stopReason,
     });
     await flushDebug($, debug, false, next.signal);
-    shown = withNote(UNVERIFIED, text);
+    shown = { text, note: UNVERIFIED };
   } else {
     debug.record("status.changed", { value: WAITING });
     $.ui.status(WAITING);
@@ -624,10 +629,11 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     $.ui.status(undefined);
   }
   if (buffered.key === stepKey(e)) buffered.text = "";
-  if (next.signal.aborted || epoch !== gate.epoch || !shown) return resultOf(e, "");
-  yield { kind: "text", index: 0, text: shown };
+  if (next.signal.aborted || epoch !== gate.epoch || !shown.text) return resultOf(e, "");
+  if (shown.note !== undefined) showNote($, shown.note);
+  yield { kind: "text", index: 0, text: shown.text };
   yield { kind: "stop", stopReason: response.stopReason, usage: response.usage };
-  return { ...response, answer: shown };
+  return { ...response, answer: shown.text };
 };
 
 const stepFailure: Hook<"turn.step"> = async function* ($, e, next) {
@@ -652,10 +658,11 @@ const stepFailure: Hook<"turn.step"> = async function* ($, e, next) {
   gate.action = undefined;
   await saveRecovery($, gate);
   $.ui.status(undefined);
-  const shown = text.trim() ? withNote(FAILED, text) : NO_DRAFT;
-  yield { kind: "text", index: 0, text: shown };
+  showNote($, text.trim() ? FAILED : NO_DRAFT);
+  if (!text.trim()) return resultOf(e, "");
+  yield { kind: "text", index: 0, text };
   yield { kind: "stop", stopReason: "end_turn", usage: null };
-  return resultOf(e, shown);
+  return resultOf(e, text);
 };
 
 const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {

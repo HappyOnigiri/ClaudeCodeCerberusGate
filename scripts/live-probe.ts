@@ -607,8 +607,9 @@ for (const mode of cases) {
       }
       if (
         (mode === "unverified" || mode === "missing-log" || mode === "timeout") &&
-        latest.includes("未検証の本文をそのまま表示します") &&
-        /\bstable\b/u.test(latest)
+        // The notice is a log row of its own; the answer row starts with the held body.
+        /⏺ cerberus-gate: Cerberus Gate: [^\n]*未検証の本文をそのまま表示します/u.test(latest) &&
+        /⏺\s+stable\b/u.test(latest)
       ) {
         passed = true;
         break;
@@ -631,7 +632,8 @@ for (const mode of cases) {
               .some((line) => /⏺/u.test(line) && line.includes("ORCHID") && /\b7\b/u.test(line))
           : mode === "cli"
             ? latest.includes(cliToken) && /⏺\s*\{/u.test(latest)
-            : /⏺\s+stable\b/u.test(latest))
+            : /⏺\s+stable\b/u.test(latest) &&
+              (mode !== "pass" || latest.includes("⏺ cerberus-gate: Cerberus Gate: [PASS]")))
       ) {
         // A reload may queue another continuation after an earlier stable answer.
         // Observe an idle terminal before collecting the final control-prompt ledger.

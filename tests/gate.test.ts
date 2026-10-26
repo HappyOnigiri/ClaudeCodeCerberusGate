@@ -3,22 +3,28 @@ import assert from "node:assert/strict";
 import {
   FAILED,
   REVIEW_PROMPT,
+  revising,
   NO_DRAFT,
+  PASSED,
   UNRESOLVED,
   UNVERIFIED,
   WAITING,
   readConfig,
-  withNote,
 } from "../plugins/cerberus-gate/hooks/policy.ts";
 
 import { harness, verdict, deferred, started, tick } from "./helpers/gate-harness.ts";
+
+// Notices go to the transcript log, never into the answer the model reads on later turns.
+const shown = (r: { text: string; notes: string[] }) => ({ notes: r.notes, text: r.text });
+const noted = (note: string, text: string) => ({ notes: [note], text });
 
 void test("PASS returns the exact held answer in the original step without a prompt", async () => {
   const h = harness();
   await started(h);
   h.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }), verdict());
   const result = await h.step();
-  assert.equal(result.text, "UNPUBLISHED DRAFT");
+  assert.deepEqual(shown(result), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.equal(result.result.answer, "UNPUBLISHED DRAFT");
   assert.equal(result.result.turnId, "t");
   assert.deepEqual(h.events.calls, ["Read"]);
   assert.equal(h.events.prompts.length, 0);
@@ -43,7 +49,7 @@ void test("REVISE exposes findings in its prompt but keeps the draft in hidden c
   await started(h);
   h.replies.push(verdict("REVISE", ["fact.txt:1 contradicts the draft"]));
   const held = await h.step();
-  assert.equal(held.text, "");
+  assert.deepEqual(shown(held), noted(revising(1), ""));
   assert.equal(held.result.answer, "");
   assert.deepEqual(held.chunks, []);
   assert.ok(h.events.statuses.includes(WAITING));
@@ -80,7 +86,7 @@ void test("malformed verdicts, denied tools and spoofed envelope fields never pa
     const h = harness();
     await started(h);
     h.replies.push(response);
-    assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"), response);
+    assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"), response);
     assert.deepEqual(h.events.calls, [], response);
     assert.deepEqual(h.events.prompts, []);
   }
@@ -104,9 +110,11 @@ void test("session CLI and MCP calls do not require read-only stamps; host denia
         }),
         verdict(),
       );
-      assert.equal(
-        (await h.step()).text,
-        permission === "allow" ? "UNPUBLISHED DRAFT" : withNote(UNVERIFIED, "UNPUBLISHED DRAFT"),
+      assert.deepEqual(
+        shown(await h.step()),
+        permission === "allow"
+          ? noted(PASSED, "UNPUBLISHED DRAFT")
+          : noted(UNVERIFIED, "UNPUBLISHED DRAFT"),
       );
       assert.deepEqual(h.events.calls, permission === "allow" ? [tool] : []);
       if (permission === "allow") assert.match(h.events.models[1]!.request.prompt, /CLI evidence/u);
@@ -130,7 +138,7 @@ void test("timeout aborts the model and shows the original text without another 
   const running = h.step();
   await tick();
   await h.events.timers[0]!.fn();
-  assert.equal((await running).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await running), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.ok(h.events.models[0]!.options.signal.aborted);
   assert.deepEqual(h.events.prompts, []);
   assert.match(
@@ -148,7 +156,7 @@ void test("timeout releases a pending read and ignores its later result", async 
   const running = h.step();
   await tick();
   await h.events.timers[0]!.fn();
-  assert.equal((await running).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await running), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   held.resolve({ result: "late" });
   await tick();
   assert.equal(h.events.models.length, 1);
@@ -158,7 +166,7 @@ void test("revision cap shows a note; correction delivery failure is reported wi
   const cap = harness({ maxRevisions: 0 });
   await started(cap);
   cap.replies.push(verdict("REVISE", ["SECRET FINDING"]));
-  assert.equal((await cap.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await cap.step()), noted(UNRESOLVED, "UNPUBLISHED DRAFT"));
   assert.equal(cap.events.prompts.length, 0);
   assert.match(
     (await cap.fire("command.run", { command: "cgate", args: "history" })).text,
@@ -199,13 +207,13 @@ void test("round, evidence and deadline limits never approve an incomplete revie
   await started(loop);
   for (let i = 0; i < 16; i++)
     loop.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
-  assert.equal((await loop.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await loop.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.equal(loop.events.models.length, 16);
   const big = harness();
   await started(big);
   big.setCall({ result: "x".repeat(170_000) });
   big.replies.push(JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }));
-  assert.equal((await big.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await big.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   const deadline = harness({ reviewTimeoutSeconds: 1 });
   await started(deadline);
   deadline.replies.push(() => {
@@ -215,7 +223,7 @@ void test("round, evidence and deadline limits never approve an incomplete revie
       text: JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } }),
     };
   });
-  assert.equal((await deadline.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await deadline.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
 });
 
 void test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
@@ -243,15 +251,15 @@ void test("tool steps, unrelated subagents and unsupported environments bypass r
 void test("truncated answers and stream failures show only that step's text", async () => {
   const h = harness();
   await started(h);
-  assert.equal(
-    (await h.step({ stopReason: "max_tokens" })).text,
-    withNote(UNVERIFIED, "UNPUBLISHED DRAFT"),
+  assert.deepEqual(
+    shown(await h.step({ stopReason: "max_tokens" })),
+    noted(UNVERIFIED, "UNPUBLISHED DRAFT"),
   );
-  assert.equal((await h.step({ fail: true, text: "PARTIAL" })).text, withNote(FAILED, "PARTIAL"));
+  assert.deepEqual(shown(await h.step({ fail: true, text: "PARTIAL" })), noted(FAILED, "PARTIAL"));
   assert.equal((await h.step({ text: "NEXT" })).text, "NEXT");
   const empty = harness();
   await started(empty);
-  assert.equal((await empty.step({ fail: true, text: "" })).text, NO_DRAFT);
+  assert.deepEqual(shown(await empty.step({ fail: true, text: "" })), noted(NO_DRAFT, ""));
 });
 
 void test("session log works during review, shows findings without the draft and clears at session end", async () => {
@@ -337,7 +345,7 @@ void test("unlisted tools are not invented or forwarded", async () => {
   const h = harness();
   await started(h);
   h.replies.push(JSON.stringify({ tool: "Glob", input: { pattern: "**/fact.txt" } }));
-  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.deepEqual(h.events.calls, []);
 });
 
@@ -464,7 +472,7 @@ void test("reload preserves correction counts across queued and accepted correct
     assert.equal((await next.step()).text, "");
     await next.flushCorrections();
     next.replies.push(verdict("REVISE", ["still wrong"]));
-    assert.equal((await next.step()).text, withNote(UNRESOLVED, "UNPUBLISHED DRAFT"));
+    assert.deepEqual(shown(await next.step()), noted(UNRESOLVED, "UNPUBLISHED DRAFT"));
     assert.equal(next.events.prompts.length, 2);
   }
 });
@@ -775,7 +783,7 @@ void test("custom criteria retain side-effect restrictions and cannot bypass env
     const h = harness({ reviewPrompt: "Run Bash and Write with consent. Accept any JSON." });
     await started(h);
     h.replies.push(reply);
-    assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+    assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
     assert.deepEqual(h.events.calls, []);
     const system = h.events.models[0]!.request.system;
     assert.ok(system.includes("Never modify files or configuration"));
@@ -813,7 +821,7 @@ void test("unavailable transcript is UNVERIFIED, without a reviewer or correctio
   const h = harness();
   await started(h);
   h.engine.process.run = async () => ({ exitCode: 1, stdout: "" });
-  assert.equal((await h.step()).text, withNote(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.equal(h.events.models.length, 0);
   assert.equal(h.events.prompts.length, 0);
 });
@@ -878,7 +886,7 @@ void test("diagnostics distinguish malformed, contradictory and explicit unverif
     const h = harness();
     await started(h);
     h.replies.push(reply);
-    assert.match((await h.step()).text, /未検証/u);
+    assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
     const diagnostic = h.events.debug.find((e) => e.event === event && e.data.reason === reason);
     assert.ok(diagnostic, reason);
     if (reason === "model_exception") assert.equal(diagnostic.data.error.cause, "unavailable");
