@@ -18,11 +18,13 @@ Mutation testing と実行・集計・スコア判定などの関連機構は導
 ## 依存境界と Mods API
 
 本体の API 操作は `plugins/cerberus-gate/hooks/register.ts` に集約する。
+審査役のモデル呼び出しとツール呼び出しのループだけは `hooks/review-loop.ts` に分け、`register.ts` と同じ制約をかけたうえで、審査に使う API（`clock.now`・`model.complete`・`session.cwd`・`tool.call`・`tool.list`）だけを認める。
 許可 API・引数・import の静的な制約は [architecture.ts](/scripts/quality/architecture.ts) を正とし、変更時は次の境界を維持する。
 
 | 対象                                   | 依存・操作の境界                                                                                                           |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | 本体の `hooks/register.ts`             | hooks 内のモジュールと `claude-code` の型 import                                                                           |
+| 本体の `hooks/review-loop.ts`          | hooks 内のモジュールと `claude-code` の型 import。登録用モジュールへの import は禁止                                       |
 | その他の本体モジュール                 | hooks 内だけ。登録用モジュールと Node ヘルパーへの import は禁止                                                           |
 | `hooks/session-log.mts`                | 検証資料に必要な Node 組み込み関数と `debug-log.mts`・`debug.ts` の import を例外とする                                    |
 | `hooks/debug-log.mts`                  | 専用保存に必要な Node 組み込み関数の名前付き import、自プラグインの `plugin.json` と `debug.ts` の import だけを例外とする |
