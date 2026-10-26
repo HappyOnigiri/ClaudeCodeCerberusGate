@@ -65,8 +65,46 @@ Return ONLY JSON: {"decision":"PASS"|"REVISE"|"UNVERIFIED","findings":["finding 
 PASS requires an empty findings array. REVISE requires at least one actionable finding with evidence locations.
 If neither a supported PASS nor an actionable REVISE can be established, use UNVERIFIED.\n`;
 
-export function reviewSystem(config: Config): string {
+function reviewSystem(config: Config): string {
   return config.reviewPrompt + "\n" + CONTRACT + PROTOCOL;
+}
+
+// A numeric step effort is not accepted by the review API, so it falls back to the model default.
+export function reviewModelRequest<Effort extends string>(
+  config: Config,
+  input: {
+    model: string;
+    effort: Effort | number | undefined;
+    request: string;
+    workingDirectory: string;
+    candidate: { context: string; text: string };
+    tools: readonly unknown[];
+    evidence: readonly unknown[];
+    remaining: number;
+  },
+) {
+  return {
+    model: config.reviewerModel === "inherit" ? input.model : config.reviewerModel,
+    effort:
+      config.reviewerEffort === "inherit"
+        ? typeof input.effort === "number"
+          ? undefined
+          : input.effort
+        : config.reviewerEffort,
+    system: reviewSystem(config),
+    prompt: JSON.stringify({
+      request: input.request,
+      workingDirectory: input.workingDirectory,
+      sessionLog: JSON.parse(input.candidate.context),
+      unpublishedDraft: input.candidate.text,
+      tools: input.tools,
+      evidence: input.evidence,
+      replyFormat:
+        'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
+    }),
+    maxTokens: 4096,
+    timeoutMs: input.remaining,
+  };
 }
 
 // Preserve the entire host list, including MCP and tools capable of writes.

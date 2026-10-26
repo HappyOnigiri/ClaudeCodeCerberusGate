@@ -1,3 +1,4 @@
+import { CONTROL, formatFindings } from "./policy.ts";
 import type { Verdict } from "./policy.ts";
 export type Candidate = {
   token: number;
@@ -87,3 +88,8 @@ export function resultOf(e: { turnId: string; index: number }, answer: string) {
     usage: null,
   };
 }
+// The answer the model will read later carries no gate notice, so the notice is logged beside it.
+export type Shown = { text: string; note?: string };
+export const hidden: Shown = { text: "" };
+export const controlText = (delivery: Delivery): string =>
+  `${CONTROL} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings)}` : ""}`;

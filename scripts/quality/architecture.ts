@@ -46,6 +46,7 @@ const api = new Set([
   "tool.call",
   "ui.status",
   "ui.toast",
+  "ui.log",
   "model.complete",
   "turn.abort",
 ]);

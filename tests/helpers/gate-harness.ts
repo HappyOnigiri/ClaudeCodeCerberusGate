@@ -52,6 +52,7 @@ interface Captured {
   prompts: Result[];
   statuses: (string | undefined)[];
   toasts: { text: string; options: { timeoutMs?: number } }[];
+  notes: string[];
   calls: string[];
   models: { request: ModelRequest; options: ModelOptions }[];
   timers: Timer[];
@@ -119,6 +120,7 @@ export function harness(
     prompts: [],
     statuses: [],
     toasts: [],
+    notes: [],
     calls: [],
     models: [],
     timers: [],
@@ -196,6 +198,9 @@ export function harness(
     ui: {
       toast(text: string, toastOptions: { timeoutMs?: number }) {
         events.toasts.push({ text, options: toastOptions });
+      },
+      log(text: string) {
+        events.notes.push(text);
       },
       status(value: string | undefined) {
         events.statuses.push(value);
@@ -335,6 +340,7 @@ export function harness(
       messageCount: 1,
       ...(agentId ? { agentId } : {}),
     };
+    const notesBefore = events.notes.length;
     const chain = (handlers.get("turn.step") ?? []).filter((h) => matches(h.matcher, e));
     const invoke = (i: number): StepStream => {
       const entry = chain[i];
@@ -383,6 +389,7 @@ export function harness(
         .join(""),
       chunks,
       result: r.value,
+      notes: events.notes.slice(notesBefore),
     };
   }
   return {
