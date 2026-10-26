@@ -8,6 +8,7 @@ interface Context {
   helpers: Set<string>;
   typeName: (node: Node | undefined) => string | undefined;
   readCalls: Set<Node>;
+  allowedApi: ReadonlySet<string>;
 }
 import { resolve, posix } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,6 +23,15 @@ function annotationOf(node: Node | null | undefined): Node | undefined {
     : undefined;
 }
 const registration = "plugins/cerberus-gate/hooks/register.ts";
+// The review loop holds the reviewer API calls under the same API rules as registration.
+const reviewLoop = "plugins/cerberus-gate/hooks/review-loop.ts";
+const reviewLoopApi = new Set([
+  "clock.now",
+  "model.complete",
+  "session.cwd",
+  "tool.call",
+  "tool.list",
+]);
 const displayRegistration = "plugins/cerberus-gate-display/hooks/register.ts";
 const api = new Set([
   "agent.list",
@@ -148,7 +158,7 @@ export function inspect(
   const errors: string[] = [];
   const report: Context["report"] = (n, rule, message) =>
     errors.push(diagnostic(file, text, n, rule, message));
-  const privileged = file === registration;
+  const privileged = file === registration || file === reviewLoop;
   const values = new Map([...importedConstants, ...constants(program)]);
   const bindings = new Map<string, number>();
   const bind = (id: Node | null | undefined) =>
@@ -196,6 +206,12 @@ export function inspect(
   walk(program, (n) => {
     if ("params" in n) for (const p of n.params) if (nodeName(p) === "on") parameters.add(p);
   });
+  // Registration may pass the engine to the review loop exports, which are checked in their own file.
+  if (file === registration)
+    walk(program, (n) => {
+      if (n.type === "ImportDeclaration" && literal(n.source) === "./review-loop.ts")
+        for (const s of n.specifiers) if (s.type === "ImportSpecifier") helpers.add(s.local.name);
+    });
   for (const [name, count] of bindings) if (count > 1) helpers.delete(name);
   const context: Context = {
     privileged,
@@ -206,6 +222,7 @@ export function inspect(
     helpers,
     typeName,
     readCalls: guardedReadCalls(program),
+    allowedApi: file === reviewLoop ? reviewLoopApi : api,
   };
   walk(program, (n, parent) => {
     inspectDependency(n, context);
@@ -252,7 +269,7 @@ function inspectDependency(n: Node, { file, privileged, literal, report }: Conte
         file === "plugins/cerberus-gate/hooks/session-log.mts") &&
       local.startsWith("plugins/cerberus-gate/hooks/") &&
       !local.endsWith(".d.ts") &&
-      (privileged ||
+      (file === registration ||
         local.replace(/\.(?:[cm]?[jt]s|tsx)$/u, "") !== registration.replace(/\.ts$/u, ""));
     const hostTypes =
       (privileged || file === displayRegistration) &&
@@ -364,7 +381,7 @@ function propertyKey(property: ObjectPropertyKind): unknown {
 function inspectMember(
   n: Node,
   parent: Node | undefined,
-  { privileged, literal, report, readCalls }: Context,
+  { privileged, literal, report, readCalls, allowedApi }: Context,
 ) {
   if (n.type === "MemberExpression") {
     const parts = chain(n);
@@ -373,7 +390,7 @@ function inspectMember(
     const name = parts.slice(1).join(".");
     if (
       !privileged ||
-      !api.has(name) ||
+      !allowedApi.has(name) ||
       (name !== "plugin.root" && (parent?.type !== "CallExpression" || parent.callee !== n))
     ) {
       report(n, "mods-api", `forbidden or indirect API reference ${parts.join(".")}`);
