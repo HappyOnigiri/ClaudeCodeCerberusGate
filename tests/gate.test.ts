@@ -226,6 +226,69 @@ void test("round, evidence and deadline limits never approve an incomplete revie
   assert.deepEqual(shown(await deadline.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
 });
 
+const readOf = (file_path: string) => JSON.stringify({ tool: "Read", input: { file_path } });
+const missing = {
+  result: "Error: File does not exist.",
+  text: "File does not exist.",
+  isError: true,
+};
+const reasonOf = (h: ReturnType<typeof harness>) =>
+  h.events.debug.find((e) => e.event === "review.unverified")?.data.reason;
+
+void test("execution errors return to the reviewer as evidence and the retry can pass", async () => {
+  const h = harness();
+  await started(h);
+  h.setCall((e: { file_path: string }) =>
+    e.file_path === "missing.txt" ? missing : { text: "fact.txt:1 stable" },
+  );
+  h.replies.push(readOf("missing.txt"), readOf("fact.txt"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read", "Read"]);
+  assert.deepEqual(JSON.parse(h.events.models[1]!.request.prompt).evidence, [
+    { tool: "Read", input: { file_path: "missing.txt" }, result: missing.text, isError: true },
+  ]);
+  assert.deepEqual(JSON.parse(h.events.models[2]!.request.prompt).evidence[1], {
+    tool: "Read",
+    input: { file_path: "fact.txt" },
+    result: "fact.txt:1 stable",
+  });
+  assert.match(h.events.models[0]!.request.system, /isError:true is a failed call/u);
+  assert.match(h.events.models[0]!.request.system, /proves nothing, including absence/u);
+  assert.match(h.events.models[0]!.request.system, /After 3 consecutive failed calls/u);
+});
+
+void test("consecutive execution errors stop at the cap; a success resets the count", async () => {
+  const capped = harness();
+  await started(capped);
+  capped.setCall(missing);
+  for (let i = 0; i < 4; i++) capped.replies.push(readOf(`missing-${i}.txt`));
+  assert.deepEqual(shown(await capped.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(capped.events.models.length, 3);
+  assert.equal(capped.events.calls.length, 3);
+  assert.equal(reasonOf(capped), "tool_error_limit");
+  const reset = harness();
+  await started(reset);
+  reset.setCall((e: { file_path: string }) =>
+    e.file_path.startsWith("missing") ? missing : { text: "fact.txt:1 stable" },
+  );
+  reset.replies.push(
+    ...["missing-1.txt", "missing-2.txt", "fact.txt", "missing-3.txt", "missing-4.txt"].map(readOf),
+    verdict(),
+  );
+  assert.deepEqual(shown(await reset.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.equal(reset.events.calls.length, 5);
+});
+
+void test("a denied reviewer tool still ends the review without a retry round", async () => {
+  const h = harness();
+  await started(h);
+  h.setPermission("deny");
+  h.replies.push(readOf("fact.txt"), readOf("fact.txt"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(h.events.models.length, 1);
+  assert.equal(reasonOf(h), "tool_denied");
+});
+
 void test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
   const h = harness();
   await started(h);
@@ -416,6 +479,58 @@ void test("recovery saved before the marker field checks the plain request", asy
   next.replies.push(verdict());
   await next.step();
   assert.deepEqual(next.events.materialRequests, ["original request"]);
+});
+
+const notification = (turnId?: string) => ({
+  text: "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>",
+  origin: { kind: "task-notification" },
+  wait: false,
+  ...(turnId === undefined ? {} : { turnId }),
+});
+
+void test("task notifications keep the user's request for material and review, mid-turn or idle", async () => {
+  for (const turnId of ["t", undefined]) {
+    const h = harness();
+    await started(h);
+    if (turnId === undefined) {
+      h.replies.push(verdict());
+      await h.step();
+    } else await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
+    await h.fire("prompt.submit", notification(turnId));
+    h.replies.push(verdict());
+    assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+    assert.deepEqual(h.events.materialRequests.at(-1), "original request");
+    assert.equal(JSON.parse(h.events.models.at(-1)!.request.prompt).request, "original request");
+    assert.equal(h.host.states.get("recovery")!.prompt, "original request");
+  }
+});
+
+void test("task notifications keep a slash command marker and survive reload", async () => {
+  const h = harness();
+  await h.fire("session.start", { isInteractive: true });
+  await h.fire("prompt.submit", {
+    text: "/check-fact",
+    command: { name: "check-fact", args: "" },
+    origin: { kind: "composer" },
+    wait: false,
+  });
+  await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
+  await h.fire("prompt.submit", notification("t"));
+  const next = await reload(h);
+  next.replies.push(verdict());
+  await next.step();
+  assert.deepEqual(next.events.materialRequests, ["<command-name>/check-fact</command-name>"]);
+  assert.equal(JSON.parse(next.events.models[0]!.request.prompt).request, "/check-fact");
+});
+
+void test("a task notification without an earlier request is checked as its own text", async () => {
+  const h = harness();
+  await h.fire("session.end", {});
+  await h.fire("session.start", { isInteractive: true });
+  await h.fire("prompt.submit", notification());
+  h.replies.push(verdict());
+  await h.step();
+  assert.deepEqual(h.events.materialRequests, [notification().text]);
 });
 
 void test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
@@ -894,6 +1009,26 @@ void test("diagnostics distinguish malformed, contradictory and explicit unverif
     if (reason === "model_exception") assert.equal(diagnostic.data.error.cause, "unavailable");
     assert.ok(h.events.debug.some((e) => e.event === "review.complete"));
   }
+});
+
+void test("a tag-wrapped tool request runs once with a debug marker, while mixed replies run no tool", async () => {
+  const request = JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } });
+  const h = harness();
+  await started(h);
+  h.replies.push(`<invoke_tool>\n${request.slice(0, -1)}\n`, verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read"]);
+  assert.ok(!("salvaged" in h.events.inputs[0]!));
+  const start = h.events.debug.find((e) => e.event === "tool.start")!;
+  assert.deepEqual(start.data.call.salvaged, { unwrapped: true, addedBraces: 1 });
+  const mixed = harness();
+  await started(mixed);
+  mixed.replies.push(`<invoke_tool>\n${request}${verdict()}`);
+  assert.deepEqual(shown(await mixed.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(mixed.events.calls, []);
+  assert.ok(
+    mixed.events.debug.some((e) => e.event === "review.failed" && e.data.reason === "invalid_json"),
+  );
 });
 
 void test("debug append failures and helper timeouts leave PASS publication intact and expose save state", async () => {

@@ -6,6 +6,7 @@ interface Settings {
 }
 import { verifyDebug } from "./live-debug.ts";
 import { verifyMaterials } from "./live-materials.ts";
+import { verifyRecovery } from "./live-recovery.ts";
 import { installLiveFixture } from "./live-installed.ts";
 import { randomBytes } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
@@ -24,29 +25,29 @@ if (
   throw new Error("Installed verification supports pass and revise only");
 const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceAll(":", "-"));
 await mkdir(report, { recursive: true });
-const cases = process.argv.slice(2).length
-  ? process.argv.slice(2)
-  : [
-      "pass",
-      "history",
-      "model",
-      "prompt",
-      "bounds",
-      "environment",
-      "causal",
-      "choice",
-      "toggle",
-      "search",
-      "cli",
-      "revise",
-      "unverified",
-      "missing-log",
-      "cancel",
-      "slow",
-      "timeout",
-      "reload-work",
-      "reload-review",
-    ];
+const allCases = [
+  "pass",
+  "history",
+  "model",
+  "prompt",
+  "bounds",
+  "environment",
+  "causal",
+  "choice",
+  "toggle",
+  "search",
+  "recover",
+  "cli",
+  "revise",
+  "unverified",
+  "missing-log",
+  "cancel",
+  "slow",
+  "timeout",
+  "reload-work",
+  "reload-review",
+];
+const cases = process.argv.slice(2).length ? process.argv.slice(2) : allCases;
 const tmux = (...args: string[]) =>
   execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -111,30 +112,7 @@ const expectedFindings: Record<string, RegExp> = {
 };
 const summary = [];
 for (const mode of cases) {
-  if (
-    ![
-      "pass",
-      "history",
-      "model",
-      "prompt",
-      "bounds",
-      "environment",
-      "causal",
-      "choice",
-      "toggle",
-      "search",
-      "cli",
-      "revise",
-      "unverified",
-      "missing-log",
-      "cancel",
-      "slow",
-      "timeout",
-      "reload-work",
-      "reload-review",
-    ].includes(mode)
-  )
-    throw new Error(`Unknown case ${mode}`);
+  if (!allCases.includes(mode)) throw new Error(`Unknown case ${mode}`);
   const needsRevision = ["history", "revise", "bounds", "environment", "causal"].includes(mode);
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
@@ -249,6 +227,7 @@ for (const mode of cases) {
    if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
    if(${JSON.stringify(mode)}==='cli')e={...e,prompt:e.prompt+'\\nBefore deciding, request Bash with command '+${JSON.stringify(JSON.stringify(cliCommand))}+' to inspect the latest commit subject. The evidence array must contain this successful CLI output AND a successful read-only Bash grep search of sessionLog.history that returns matching lines. Grep is not listed; do not request it. Verify both the release channel and evidence token in the draft against that output. Do not substitute file reads. If this command is already in evidence, use it and decide; do not repeat it.'};
    if(${JSON.stringify(mode)}==='history' && JSON.parse(e.prompt).unpublishedDraft.includes('CERBERUS_REJECTED_DRAFT'))e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain both a successful Grep on sessionLog.history with output_mode content and a successful Read of narrow matching history.txt ranges around the prior LIMIT tool result. Do not substitute a read of limits.ts for reading history.txt. Do not decide based solely on the current draft or request.'};
+   if(${JSON.stringify(mode)}==='recover')e={...e,prompt:e.prompt+'\\nBefore deciding, after the required sessionLog.users Read, the evidence array must also contain a Read of '+${JSON.stringify(join(work, "missing-fact.txt"))}+' (it may not exist) followed by a successful Read of fact.txt. If the missing-file Read is already in evidence, request Read of fact.txt next; if both exist, return the verdict. Do not repeat completed reads.'};
    if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
    const result=${JSON.stringify(mode)}==='unverified'
     ? {value:{isAnswered:true,text:'INVALID_REVIEW',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
@@ -622,6 +601,7 @@ for (const mode of cases) {
           mode === "toggle" ||
           mode === "model" ||
           mode === "search" ||
+          mode === "recover" ||
           mode === "cli" ||
           needsRevision ||
           mode === "slow" ||
@@ -724,6 +704,7 @@ for (const mode of cases) {
         model: "検証済みの本文を公開しました。",
         toggle: "検証済みの本文を公開しました。",
         search: "検証済みの本文を公開しました。",
+        recover: "検証済みの本文を公開しました。",
         cli: "検証済みの本文を公開しました。",
         slow: "検証済みの本文を公開しました。",
         timeout: "タイムアウト",
@@ -881,6 +862,7 @@ for (const mode of cases) {
         )
           throw new Error(`Reviewer did not use ${tool}`);
     }
+    if (mode === "recover") await verifyRecovery(records, artifacts);
     if (mode === "cli") {
       const reviews = [];
       const calls = [];
