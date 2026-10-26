@@ -19,9 +19,9 @@ import {
   current,
   disposition,
   hidden,
+  requestOf,
   reset,
   resultOf,
-  transcriptMarker,
 } from "./state.ts";
 import {
   MAX_ROUNDS,
@@ -690,7 +690,7 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     return { drop: "Cerberus: 検証結果を処理済みです。" };
   if (gate.active !== undefined || gate.delivery !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
-  reset(gate, e.text, transcriptMarker(e));
+  reset(gate, ...requestOf(gate, e));
   await saveRecovery($, gate);
   $.ui.status(undefined);
   return next(e);

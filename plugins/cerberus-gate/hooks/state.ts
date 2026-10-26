@@ -64,6 +64,15 @@ export function transcriptMarker(e: { text: string; command?: { name: string; ar
   // The transcript omits the args tag when nothing follows the command.
   return e.command.args ? `${name}\n<command-args>${e.command.args}</command-args>` : name;
 }
+// A background task's notification is not a request: the review keeps the user's request it
+// continues. Mid-turn notifications leave no user record, so their text cannot be matched.
+export function requestOf(
+  state: GateState,
+  e: Parameters<typeof transcriptMarker>[0] & { origin: { kind: string } },
+): [prompt: string, marker: string] {
+  if (e.origin.kind === "task-notification" && state.prompt) return [state.prompt, state.marker];
+  return [e.text, transcriptMarker(e)];
+}
 export function current(state: GateState, candidate: Candidate): boolean {
   return state.active === candidate && candidate.epoch === state.epoch && !state.blocked;
 }
