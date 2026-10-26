@@ -771,6 +771,8 @@ void test("configured review criteria reach every model round without replacing 
       assert.ok(request.system.includes('"decision":"PASS"|"REVISE"|"UNVERIFIED"'));
       assert.ok(request.system.includes("Never modify files"));
       assert.ok(request.system.includes("FIRST Read sessionLog.users"));
+      assert.ok(request.system.includes("HISTORY GATE: before any finding"));
+      assert.ok(request.system.includes("List only defects that require a change"));
     }
   }
 });
