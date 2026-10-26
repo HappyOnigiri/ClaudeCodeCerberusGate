@@ -46,6 +46,7 @@ interface DebugRecord {
     request: ModelRequest;
     response: { text: string };
     error: { cause: string };
+    call: { salvaged?: unknown };
   };
 }
 interface Captured {
