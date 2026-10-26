@@ -41,7 +41,7 @@ jobs:
         with:
           node-version: 24
 
-      - uses: HappyOnigiri/ReleaseActions/actions/prepare-release@16cb118a622dd9219148928f60e60197a67029fc
+      - uses: HappyOnigiri/ReleaseActions/actions/prepare-release@main
         id: prepare
         with:
           version: ${{ inputs.version }}
@@ -61,7 +61,7 @@ jobs:
               plugins/cerberus-gate-display/.claude-plugin/plugin.json
           github-token: ${{ secrets.GH_TOKEN }}
 
-      - uses: HappyOnigiri/ReleaseActions/actions/merge-release@16cb118a622dd9219148928f60e60197a67029fc
+      - uses: HappyOnigiri/ReleaseActions/actions/merge-release@main
         if: env.AUTOMATIC_RELEASE == 'true' && steps.prepare.outputs.pr-number != ''
         with:
           pr-number: ${{ steps.prepare.outputs.pr-number }}

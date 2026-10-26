@@ -115,7 +115,7 @@ gh workflow run release.yml --ref main -f automatic=true -f bump=auto
 [Publish Release ワークフロー](/.github/workflows/publish-release.yml) は、同一リポジトリのリリース PR が main へマージされた後に動く。
 マージコミットにタグ `vX.Y.Z` を付け、PR 本文をノートにした GitHub Release を公開する。
 成功したリリースのブランチは削除する。
-共通 Action はコミット SHA で固定し、更新時は入力・採番規則・公開対象を確認する。
+共通 Action は自分で管理する ReleaseActions の main を参照し、最新の変更に追従する。
 初回採番・CI 待機の実装とテストは ReleaseActions 側で管理し、このリポジトリには運用設定を置く。
 
 | 設定・Action         | 担当                                                                            |
