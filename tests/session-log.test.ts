@@ -97,6 +97,28 @@ void test("missing current request never yields a seemingly complete snapshot", 
   await assert.rejects(snapshot(source, "session", "not flushed yet"), /Current request/u);
 });
 
+void test("slash command requests are found in their transcript tag form", async (t) => {
+  const work = await mkdtemp(join(tmpdir(), "cerberus-command-request-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const source = join(work, "session.jsonl");
+  const marker =
+    "<command-name>/dev-workflow</command-name>\n<command-args>https://example.test/prd \n本文</command-args>";
+  const record = {
+    type: "user",
+    sessionId: "session",
+    uuid: "c1",
+    parentUuid: null,
+    message: { content: `<command-message>dev-workflow</command-message>\n${marker}` },
+  };
+  await writeFile(source, `${JSON.stringify(record)}\n`);
+  await assert.rejects(
+    snapshot(source, "session", "/dev-workflow \nhttps://example.test/prd \n本文"),
+    /Current request/u,
+  );
+  const material = await snapshot(source, "session", marker);
+  await release(material.directory);
+});
+
 void test("CLI resolves only the current session and deletes only its own material", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-cli-"));
   t.after(() => rm(work, { recursive: true, force: true }));

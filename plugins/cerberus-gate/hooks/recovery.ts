@@ -6,6 +6,7 @@ export function snapshotRecovery(gate: GateState) {
     sessionEnabled: gate.sessionEnabled,
     material: gate.material,
     prompt: gate.prompt,
+    marker: gate.marker,
     epoch: gate.epoch,
     serial: gate.serial,
     revisions: gate.revisions,
@@ -16,9 +17,10 @@ export function snapshotRecovery(gate: GateState) {
 export function restoreRecovery(
   gate: GateState,
   value:
-    | (Omit<ReturnType<typeof snapshotRecovery>, "sessionEnabled" | "material"> & {
+    | (Omit<ReturnType<typeof snapshotRecovery>, "sessionEnabled" | "material" | "marker"> & {
         sessionEnabled?: boolean;
         material?: string;
+        marker?: string;
       })
     | null
     | undefined,
@@ -26,6 +28,7 @@ export function restoreRecovery(
   if (value === undefined || value === null) return false;
   gate.sessionEnabled = value.sessionEnabled;
   gate.prompt = value.prompt;
+  gate.marker = value.marker ?? value.prompt;
   gate.epoch = value.epoch + 1;
   gate.serial = value.serial;
   gate.revisions = value.revisions;

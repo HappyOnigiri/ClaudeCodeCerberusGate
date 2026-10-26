@@ -362,6 +362,54 @@ void test("reload during work restores the request and reviews without a restart
   assert.equal(next.host.states.get("recovery")!.pending, false);
 });
 
+void test("slash commands check their transcript tag form, also after reload", async () => {
+  const h = harness();
+  await h.fire("session.start", { isInteractive: true });
+  await h.fire("prompt.submit", {
+    text: "/dev-workflow \nhttps://example.test/prd \n本文",
+    command: { name: "dev-workflow", args: "https://example.test/prd \n本文" },
+    origin: { kind: "composer" },
+    wait: false,
+  });
+  await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
+  const next = await reload(h);
+  next.replies.push(verdict());
+  assert.equal((await next.step()).text, "UNPUBLISHED DRAFT");
+  assert.deepEqual(next.events.materialRequests, [
+    "<command-name>/dev-workflow</command-name>\n<command-args>https://example.test/prd \n本文</command-args>",
+  ]);
+  assert.equal(
+    JSON.parse(next.events.models[0]!.request.prompt).request,
+    "/dev-workflow \nhttps://example.test/prd \n本文",
+  );
+});
+
+void test("slash commands without arguments check only the command tag", async () => {
+  const h = harness();
+  await h.fire("session.start", { isInteractive: true });
+  await h.fire("prompt.submit", {
+    text: "/check-fact",
+    command: { name: "check-fact", args: "" },
+    origin: { kind: "composer" },
+    wait: false,
+  });
+  h.replies.push(verdict());
+  await h.step();
+  assert.deepEqual(h.events.materialRequests, ["<command-name>/check-fact</command-name>"]);
+});
+
+void test("recovery saved before the marker field checks the plain request", async () => {
+  const h = harness();
+  await started(h);
+  await h.step({ tools: [{ name: "Read", input: { file_path: "fact.txt" } }] });
+  const { marker: _marker, ...legacy } = h.host.states.get("recovery")!;
+  h.host.states.set("recovery", legacy);
+  const next = await reload(h);
+  next.replies.push(verdict());
+  await next.step();
+  assert.deepEqual(next.events.materialRequests, ["original request"]);
+});
+
 void test("reload during review restarts without restoring a private draft or accepting old controls", async () => {
   const h = harness();
   await started(h);
