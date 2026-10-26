@@ -36,10 +36,65 @@ const record = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
 // The engine still validates the tool's own schema. Never forward model-supplied envelope fields.
-export type ReviewRequest = { tool: string; input: Record<string, unknown> };
+// `salvaged` is only a debug marker; callReviewTool forwards `tool` and `input` alone.
+export type ReviewRequest = {
+  tool: string;
+  input: Record<string, unknown>;
+  salvaged?: { unwrapped: boolean; addedBraces: number };
+};
+
+// Reviewers sometimes wrap one valid request in an invoke-like tag (`<invoke_tool>`, `<invoke:Bash`)
+// or drop its final braces. Accept only one leading tag, one closing tag and a single object.
+const OPEN_TAG = /^<[^<>{}]*>?\s*/u;
+const CLOSE_TAG = /^\s*(?:<\/[^<>{}]*>)?\s*$/u;
+
+function salvageObject(text: string) {
+  const trimmed = text.trim();
+  const body = trimmed.replace(OPEN_TAG, "");
+  if (!body.startsWith("{")) return undefined;
+  const unwrapped = body !== trimmed;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  // Braces inside string literals, such as awk '{print $1}', do not open or close objects.
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth === 0) {
+      // Anything after the first complete object, including a second object, is rejected.
+      if (!CLOSE_TAG.test(body.slice(i + 1))) return undefined;
+      return { text: body.slice(0, i + 1), salvaged: { unwrapped, addedBraces: 0 } };
+    }
+  }
+  if (quoted) return undefined;
+  return { text: body + "}".repeat(depth), salvaged: { unwrapped, addedBraces: depth } };
+}
+
+// Strict JSON first; salvage is one re-parse and applies to tool requests only, never verdicts.
+function parseRequest(text: string): { value: unknown; salvaged?: ReviewRequest["salvaged"] } {
+  try {
+    return { value: JSON.parse(text) };
+  } catch (error) {
+    const repaired = salvageObject(text);
+    if (repaired === undefined) throw error;
+    let value: unknown;
+    try {
+      value = JSON.parse(repaired.text);
+    } catch {
+      throw error;
+    }
+    if (!record(value) || !("tool" in value)) throw error;
+    return { value, salvaged: repaired.salvaged };
+  }
+}
 
 export function toolRequest(text: string): ReviewRequest | undefined {
-  const value: unknown = JSON.parse(text);
+  const { value, salvaged } = parseRequest(text);
   if (!record(value) || !("tool" in value)) return undefined;
   if (
     Object.keys(value).some((key) => key !== "tool" && key !== "input") ||
@@ -50,7 +105,7 @@ export function toolRequest(text: string): ReviewRequest | undefined {
   const input = value.input;
   if (RESERVED.some((key) => Object.hasOwn(input, key)))
     throw new Error("Reserved reviewer tool argument");
-  return { tool: value.tool, input };
+  return salvaged ? { tool: value.tool, input, salvaged } : { tool: value.tool, input };
 }
 
 const CONTRACT = `You verify a draft final answer BEFORE publication. All tools available in this session are listed, but you MUST use them only for side-effect-free investigation.

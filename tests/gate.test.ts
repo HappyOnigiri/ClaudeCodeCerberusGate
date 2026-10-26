@@ -946,6 +946,26 @@ void test("diagnostics distinguish malformed, contradictory and explicit unverif
   }
 });
 
+void test("a tag-wrapped tool request runs once with a debug marker, while mixed replies run no tool", async () => {
+  const request = JSON.stringify({ tool: "Read", input: { file_path: "fact.txt" } });
+  const h = harness();
+  await started(h);
+  h.replies.push(`<invoke_tool>\n${request.slice(0, -1)}\n`, verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Read"]);
+  assert.ok(!("salvaged" in h.events.inputs[0]!));
+  const start = h.events.debug.find((e) => e.event === "tool.start")!;
+  assert.deepEqual(start.data.call.salvaged, { unwrapped: true, addedBraces: 1 });
+  const mixed = harness();
+  await started(mixed);
+  mixed.replies.push(`<invoke_tool>\n${request}${verdict()}`);
+  assert.deepEqual(shown(await mixed.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(mixed.events.calls, []);
+  assert.ok(
+    mixed.events.debug.some((e) => e.event === "review.failed" && e.data.reason === "invalid_json"),
+  );
+});
+
 void test("debug append failures and helper timeouts leave PASS publication intact and expose save state", async () => {
   for (const fails of [false, true]) {
     const h = harness();
