@@ -153,6 +153,7 @@ npm run test:live
 
 特定ケースは `npm run test:live -- pass` のように指定する。
 ケースの検査内容を変えるときは、スクリプトと [live-materials.ts](/scripts/live-materials.ts) を確認する。
+`npm run test:live -- cli` は審査ツール一覧から `Grep` を外し、CLI による履歴検索と審査完了を確認する。
 変更した公開条件・権限境界も実地で確認する。
 既定の送信キーは Ctrl+Enter。
 Enter で送信する環境では `CERBERUS_SUBMIT=enter npm run test:live` を使う。
