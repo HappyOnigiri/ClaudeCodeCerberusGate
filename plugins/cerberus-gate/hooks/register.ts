@@ -19,13 +19,17 @@ import {
   current,
   disposition,
   hidden,
+  ownTask,
+  rememberTask,
   requestOf,
   reset,
   resultOf,
+  staleNotification,
 } from "./state.ts";
 import {
   MAX_ROUNDS,
   MAX_EVIDENCE,
+  backgroundTask,
   reviewModelRequest,
   reviewTools,
   toolRequest,
@@ -241,6 +245,19 @@ async function callReviewTool(
   return $.tool.call({ ...call.input, tool: call.tool } as ToolCallArgs);
 }
 
+// The reviewer's command left in the background would notify the main session after the review.
+// Stopping it is the Mod's own cleanup; dropping its notification in onPrompt is the guarantee.
+async function stopReviewerTask($: EngineInterface, logger: typeof debug, id: string) {
+  rememberTask(gate, id);
+  const operationId = logger.operation();
+  logger.record("task.stop.start", { operationId, taskId: id });
+  const result = await $.tool
+    .call({ tool: "TaskStop", task_id: id })
+    .catch((error: unknown) => ({ error }));
+  logger.record("task.stop.complete", { operationId, taskId: id, result });
+  await saveRecovery($, gate).catch(() => undefined);
+}
+
 const unverified = (): Verdict => ({ decision: "UNVERIFIED", findings: [] });
 
 async function review(
@@ -335,12 +352,14 @@ async function review(
       logger.record("tool.start", { ...correlation, operationId: toolOperationId, call });
       await flushDebug($, logger, false, signal);
       const result = await cancellable(
-        callReviewTool($, call, names).then((value) => {
+        callReviewTool($, call, names).then(async (value) => {
           logger.record(signal.aborted ? "tool.discarded" : "tool.complete", {
             ...correlation,
             operationId: toolOperationId,
             result: value,
           });
+          const task = backgroundTask(value);
+          if (task !== undefined) await stopReviewerTask($, logger, task.id);
           return value;
         }),
         signal,
@@ -679,14 +698,8 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     await saveRecovery($, gate);
     return next({ ...e, context: [...(e.context ?? []), delivery.context] });
   }
-  // Suppress late notifications from reviewers left by an older plugin on reload.
-  if (
-    (e.origin.kind === "task-notification" ||
-      e.origin.kind === "peer" ||
-      e.origin.kind === "peer-send-message") &&
-    [...gate.reviewers].some((id) => e.text.includes(id))
-  )
-    return { drop: "Cerberus: 検証結果を処理済みです。" };
+  // Before reset(): the reviewer's own notification must not cancel the review it belongs to.
+  if (staleNotification(gate, e)) return { drop: "Cerberus: 検証結果を処理済みです。" };
   if (gate.active !== undefined || gate.delivery !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
   reset(gate, ...requestOf(gate, e));
@@ -702,8 +715,7 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
     return { deny: "Cerberus: stale reviewer stopped." };
   }
   if (next.origin.plugin !== "cerberus-gate") return next(e);
-  if (e.tool === "TaskStop" && e.task_id !== undefined && gate.reviewers.has(e.task_id))
-    return next(e);
+  if (e.tool === "TaskStop" && ownTask(gate, e)) return next(e);
   if (gate.active === undefined || gate.active.controller.signal.aborted)
     return { deny: "Cerberus reviewer: no active review." };
   return next(e);
@@ -714,15 +726,7 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
       ? next(e)
       : { decision: "deny", reason: "Cerberus: stale reviewer stopped." };
   if (next.origin.plugin !== "cerberus-gate") return next(e);
-  if (
-    e.tool === "TaskStop" &&
-    typeof e.input === "object" &&
-    e.input !== null &&
-    "task_id" in e.input &&
-    typeof e.input.task_id === "string" &&
-    gate.reviewers.has(e.input.task_id)
-  )
-    return next(e);
+  if (e.tool === "TaskStop" && ownTask(gate, e.input)) return next(e);
   if (gate.active === undefined || gate.active.controller.signal.aborted)
     return {
       decision: "deny",
@@ -983,6 +987,7 @@ export const register: Register = (on, options) => {
     await flushDebug($, debug, true);
     log.clear();
     reset(gate, "");
+    gate.tasks.clear();
     gate.sessionEnabled = undefined;
     pendingEnabled = undefined;
     await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);

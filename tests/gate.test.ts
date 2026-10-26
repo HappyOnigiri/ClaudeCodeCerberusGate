@@ -289,6 +289,107 @@ void test("a denied reviewer tool still ends the review without a retry round", 
   assert.equal(reasonOf(h), "tool_denied");
 });
 
+const bashOf = (command: string) => JSON.stringify({ tool: "Bash", input: { command } });
+const backgrounded = (id: string, extra: Record<string, unknown> = { timedOutAfterMs: 60000 }) => ({
+  result: { stdout: "", stderr: "", interrupted: false, backgroundTaskId: id, ...extra },
+  text: `Command did not complete within its 60s timeout and was moved to the background (ID: ${id}).`,
+});
+const taskNotice = (id: string) => ({
+  ...notification(),
+  text: `<task-notification>\n<task-id>${id}</task-id>\n<status>killed</status>\n</task-notification>`,
+});
+// A slow reviewer command goes to the background; other calls succeed.
+const slowShell = (h: ReturnType<typeof harness>, id: string) =>
+  h.setCall((e: { tool: string; command?: string }) => {
+    if (e.tool === "TaskStop") return { result: { message: "stopped", task_id: id } };
+    return e.command === "slow" ? backgrounded(id) : { text: "fact.txt:1 stable" };
+  });
+
+void test("a reviewer command moved to the background is stopped and returned as its own error", async () => {
+  const h = harness();
+  await started(h);
+  slowShell(h, "bslow");
+  h.replies.push(bashOf("slow"), bashOf("narrow"), verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(h.events.calls, ["Bash", "TaskStop", "Bash"]);
+  assert.equal(h.events.inputs[1]!.task_id, "bslow");
+  const [entry] = JSON.parse(h.events.models[1]!.request.prompt).evidence;
+  assert.equal(entry.isError, true);
+  assert.match(entry.result, /stopped YOUR command: it did not finish within its 60s timeout/u);
+  assert.match(entry.result, /not the main agent's[\s\S]*do not mention it in findings/u);
+  assert.doesNotMatch(entry.result, /bslow/u);
+  assert.match(h.events.models[0]!.request.system, /never set run_in_background/u);
+  assert.deepEqual(h.host.states.get("recovery")!.tasks, ["bslow"]);
+  const epoch = h.host.states.get("recovery")!.epoch;
+  assert.ok((await h.fire("prompt.submit", taskNotice("bslow"))).drop);
+  assert.equal(h.host.states.get("recovery")!.epoch, epoch);
+  for (const other of [taskNotice("b1"), { ...taskNotice("b1"), text: "bslow mentioned" }])
+    assert.equal((await h.fire("prompt.submit", other)).drop, undefined);
+});
+
+void test("background commands count toward the error cap and run_in_background gets a generic error", async () => {
+  const h = harness();
+  await started(h);
+  h.setCall((e: { tool: string }) =>
+    e.tool === "TaskStop" ? { result: {} } : backgrounded("bbg", {}),
+  );
+  h.replies.push(bashOf("a"), bashOf("b"), bashOf("c"));
+  assert.deepEqual(shown(await h.step()), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
+  assert.equal(reasonOf(h), "tool_error_limit");
+  const [entry] = JSON.parse(h.events.models[1]!.request.prompt).evidence;
+  assert.match(entry.result, /it was moved to the background\./u);
+});
+
+void test("the reviewer's own notification during the review neither cancels nor reaches it", async () => {
+  const h = harness();
+  await started(h);
+  slowShell(h, "bmid");
+  let dropped: unknown;
+  h.replies.push(bashOf("slow"), async () => {
+    dropped = (await h.fire("prompt.submit", taskNotice("bmid"))).drop;
+    return { isAnswered: true, text: verdict() };
+  });
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+  assert.ok(dropped);
+});
+
+void test("a command backgrounded after its review was cancelled is still stopped and muted", async () => {
+  for (const stop of ["ok", "throw"] as const) {
+    const h = harness();
+    await started(h);
+    const held = deferred();
+    h.setCall((e: { tool: string }) => {
+      if (e.tool === "TaskStop" && stop === "throw") throw new Error("turn cancelled");
+      return e.tool === "TaskStop" ? { result: {} } : held.promise;
+    });
+    h.replies.push(bashOf("slow"));
+    const running = h.step();
+    await tick();
+    await h.prompt("new request");
+    assert.equal((await running).text, "");
+    held.resolve(backgrounded("blate"));
+    for (let i = 0; i < 5; i++) await tick();
+    assert.deepEqual(h.events.calls, ["Bash", "TaskStop"]);
+    assert.ok((await h.fire("prompt.submit", taskNotice("blate"))).drop);
+  }
+});
+
+void test("reviewer task IDs survive reload, accept legacy recovery and end with the session", async () => {
+  const h = harness();
+  await started(h);
+  slowShell(h, "breload");
+  h.replies.push(bashOf("slow"), verdict());
+  await h.step();
+  const next = await reload(h);
+  assert.ok((await next.fire("prompt.submit", taskNotice("breload"))).drop);
+  const { tasks: _tasks, ...legacy } = next.host.states.get("recovery")!;
+  next.host.states.set("recovery", legacy);
+  const old = await reload(next);
+  assert.equal((await old.fire("prompt.submit", taskNotice("breload"))).drop, undefined);
+  await old.fire("session.end", {});
+  assert.equal(old.host.states.get("recovery"), null);
+});
+
 void test("tool steps, unrelated subagents and unsupported environments bypass review", async () => {
   const h = harness();
   await started(h);
