@@ -77,6 +77,18 @@ void test("debug helper rejects traversal, symlink directories and symlink or ha
     await rm(location.events);
   }
 });
+void test("debug helper stores large multibyte records without replacement characters", async (t) => {
+  const work = await workspace(t);
+  const identity = { sessionId: "session", instanceId: "first" };
+  const location = JSON.parse(invoke(work, "initialize", identity).stdout);
+  // Larger than one pipe read, so a 3-byte character straddles a read boundary.
+  const text = "ギフトタイムラインイベント視聴\n".repeat(6000);
+  const records = [{ sequence: 1, event: "prompt.received", data: { prompt: { text } } }];
+  const appended = invoke(work, "append", { ...identity, records });
+  assert.equal(appended.status, 0, appended.stderr);
+  const saved = JSON.parse((await readFile(location.events, "utf8")).trim());
+  assert.equal(saved.data.prompt.text, text);
+});
 void test("serializer preserves exceptions and full arrays without failing on cycles or thrown values", () => {
   const error = Object.assign(new Error("outer", { cause: new Error("inner") }), {
     code: "",

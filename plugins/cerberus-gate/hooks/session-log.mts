@@ -181,9 +181,12 @@ if (
   (await realpath(process.argv[1]).catch(() => undefined)) === fileURLToPath(import.meta.url)
 ) {
   try {
-    let inputText = "";
-    for await (const chunk of process.stdin) inputText += chunk;
-    const input = JSON.parse(inputText);
+    // Decode once: per-chunk decoding turns a character split across pipe reads into U+FFFD.
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    const input = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
+    );
     if (process.argv[2] === "create") {
       await sweep();
       let material;

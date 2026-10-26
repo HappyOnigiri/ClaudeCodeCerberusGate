@@ -168,9 +168,12 @@ if (
   (await realpath(process.argv[1]).catch(() => undefined)) === fileURLToPath(import.meta.url)
 ) {
   try {
-    let text = "";
-    for await (const chunk of process.stdin) text += chunk;
-    const input = JSON.parse(text);
+    // Decode once: per-chunk decoding turns a character split across pipe reads into U+FFFD.
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    const input = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
+    );
     if (process.argv[2] === "initialize") console.log(JSON.stringify(await initialize(input)));
     else if (process.argv[2] === "append") await appendEvents(input);
     else throw new Error("Unknown debug operation");
