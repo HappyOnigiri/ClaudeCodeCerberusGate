@@ -9,6 +9,7 @@ import {
   reviewEvidence,
   reviewFailureReason,
   cancellable,
+  createHistoryGate,
 } from "./review.ts";
 import type { Evidence, ReviewRequest } from "./review.ts";
 import type { createDebug } from "./debug.ts";
@@ -74,9 +75,10 @@ export async function review(
   };
   let stage = "tool.list";
   let activeOperationId = "";
+  const history = createHistoryGate(candidate.context);
   const fail = (reason: string): Verdict => {
-    logger.record("review.unverified", { ...correlation, reason });
-    return unverified();
+    logger.record("review.unverified", { ...correlation, reason, fallback: !!history.recheck });
+    return history.fallback();
   };
   try {
     const started = await $.clock.now();
@@ -102,6 +104,7 @@ export async function review(
         tools,
         evidence,
         remaining,
+        recheck: history.recheck,
         formatRetry: retryRound === round - 1,
       });
       logger.record("model.start", {
@@ -133,7 +136,8 @@ export async function review(
       if (signal.aborted) return fail("cancelled");
       if (!response.isAnswered || !response.text) return fail("model_empty_or_failed");
       if (response.text.length > MAX_DRAFT) return fail("response_size_limit");
-      if ((await $.clock.now()) - started >= reviewConfig.reviewTimeoutMs) {
+      const elapsed = (await $.clock.now()) - started;
+      if (elapsed >= reviewConfig.reviewTimeoutMs) {
         candidate.timedOut = true;
         return fail("timeout");
       }
@@ -147,7 +151,11 @@ export async function review(
       if (call === undefined) {
         const parsed = diagnoseVerdict(response.text);
         logger.record("verdict.parsed", { ...correlation, ...parsed });
-        return parsed.verdict;
+        const ms = reviewConfig.reviewTimeoutMs - elapsed;
+        const gated = history.settle(parsed.verdict, evidence, MAX_ROUNDS - round - 1, ms);
+        if (gated.log) logger.record("history_gate", { ...correlation, round, ...gated.log });
+        if (gated.verdict) return gated.verdict;
+        continue;
       }
       stage = "tool";
       const toolOperationId = logger.operation();
@@ -187,7 +195,7 @@ export async function review(
       },
       "error",
     );
-    return unverified();
+    return history.fallback();
   }
   return fail("round_limit");
 }

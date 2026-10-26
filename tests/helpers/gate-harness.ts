@@ -45,6 +45,7 @@ interface DebugRecord {
   data: {
     operationId: string;
     reason: string;
+    status: string;
     request: ModelRequest;
     response: { text: string };
     error: { cause: string };

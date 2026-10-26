@@ -1,11 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  createHistoryGate,
+  RECHECK_MIN_MS,
   reviewEvidence,
   reviewFailureReason,
   reviewReply,
+  searchedHistory,
   toolRequest,
+  unreadFindings,
 } from "../plugins/cerberus-gate/hooks/review.ts";
+import type { Evidence } from "../plugins/cerberus-gate/hooks/review.ts";
 
 // Reply shapes observed from live reviewers; paths and commands are replaced with neutral ones.
 const read = '{"tool":"Read","input":{"file_path":"/repo/app/job.rb","offset":100,"limit":30}}';
@@ -110,6 +115,63 @@ void test("salvaged requests still pass the envelope and reserved argument check
     "invalid_tool_request",
   );
   assert.equal(reason('<invoke:\n{"tool":"Read","input":"a.txt"}'), "invalid_tool_request");
+});
+
+void test("unread-type findings are recognized in English and Japanese, contradictions are not", () => {
+  assert.deepEqual(
+    unreadFindings([
+      "app/models/gift.rb:13 defines 3.days, contradicting the draft's 7 days",
+      "Gemfile.lock was not read in the review evidence",
+      "No `find` result for that filename appears in the evidence",
+      "The evidence does not show the body of buildDetailLines",
+      "server.md:157 の内容は会話履歴にも読み取り結果にも現れていません",
+      "base.rb は読まれていないため、根拠がありません",
+      "草稿の 7 日はコードと矛盾します。gift.rb:13 は 3.days です",
+    ]),
+    [1, 2, 3, 4, 5],
+  );
+});
+
+void test("only calls naming the history or source snapshot count as a history search", () => {
+  const context = JSON.stringify({
+    directory: "/tmp/cerberus-review-x",
+    users: "/tmp/cerberus-review-x/users.txt",
+    history: "/tmp/cerberus-review-x/history.txt",
+  });
+  const call = (tool: string, input: Record<string, unknown>, isError?: true) => [
+    { tool, input, result: "", ...(isError && { isError }) },
+  ];
+  const searched = (evidence: Evidence[]) => searchedHistory(evidence, context);
+  assert.ok(searched(call("Bash", { command: "grep -n x /tmp/cerberus-review-x/history.txt" })));
+  // A grep without a match exits non-zero and still searched history.
+  assert.ok(searched(call("Bash", { command: "grep x /tmp/cerberus-review-x/history.txt" }, true)));
+  assert.ok(searched(call("Grep", { pattern: "x", path: "/tmp/cerberus-review-x" })));
+  assert.ok(searched(call("Read", { file_path: "/tmp/cerberus-review-x/source.jsonl" })));
+  assert.ok(!searched(call("Read", { file_path: "/tmp/cerberus-review-x/users.txt" })));
+  assert.ok(!searched(call("Read", { file_path: "/repo/history.txt" })));
+  assert.ok(!searchedHistory(call("Read", { file_path: "/tmp/x" }), "{}"));
+});
+
+void test("the history gate rechecks once, then accepts the reviewer's verdict or keeps the earlier one", () => {
+  const unread = { decision: "REVISE" as const, findings: ["a.rb was never read"] };
+  const pass = { decision: "PASS" as const, findings: [] };
+  const fresh = () => createHistoryGate(JSON.stringify({ directory: "/tmp/r" }));
+  const gate = fresh();
+  assert.deepEqual(gate.settle(pass, [], 10, 60_000), { verdict: pass });
+  assert.equal(gate.settle(unread, [], 10, 60_000).verdict, undefined);
+  assert.deepEqual(gate.recheck, { verdict: unread, flagged: [0] });
+  assert.deepEqual(gate.settle(pass, [], 9, 50_000), {
+    verdict: pass,
+    log: { status: "resolved", flagged: [], verdict: pass },
+  });
+  const failed = fresh();
+  failed.settle(unread, [], 10, 60_000);
+  const unverified = { decision: "UNVERIFIED" as const, findings: [] };
+  assert.equal(failed.settle(unverified, [], 9, 50_000).verdict, unread);
+  assert.equal(failed.fallback(), unread);
+  assert.deepEqual(fresh().fallback(), unverified);
+  assert.equal(fresh().settle(unread, [], 1, 60_000).log?.status, "no_budget");
+  assert.equal(fresh().settle(unread, [], 10, RECHECK_MIN_MS - 1).log?.status, "no_budget");
 });
 
 // Live XML parameter forms; the command is replaced with a neutral one.
