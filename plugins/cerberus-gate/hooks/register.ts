@@ -7,6 +7,7 @@ import {
   readConfig,
   REVIEWER,
   revising,
+  skipped,
   supportedVersion,
   UNRESOLVED,
   UNVERIFIED,
@@ -18,6 +19,7 @@ import {
   createState,
   current,
   disposition,
+  finishMainTask,
   hidden,
   joinsCycle,
   ownTask,
@@ -25,8 +27,11 @@ import {
   requestOf,
   reset,
   resultOf,
+  runningAgents,
   staleNotification,
+  trackMainTask,
 } from "./state.ts";
+import { backgroundTask } from "./review.ts";
 import { review, unverified } from "./review-loop.ts";
 import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
@@ -395,9 +400,47 @@ async function verify(
   }
 }
 
+// A short answer while the main loop's background work runs is an interim report: the answer
+// written after that work ends is reviewed.
+async function interimWork(
+  $: EngineInterface,
+  text: string,
+): Promise<{ agents: number; shells: number } | undefined> {
+  if (text.length > config.interimMaxChars) return undefined;
+  try {
+    const agents = runningAgents(gate, await $.agent.list());
+    const shells = gate.mainTasks.size;
+    return agents + shells > 0 ? { agents, shells } : undefined;
+  } catch (error) {
+    debug.record("interim.failed", { error }, "error");
+    return undefined;
+  }
+}
+async function skipInterim(
+  $: EngineInterface,
+  text: string,
+  work: { agents: number; shells: number },
+  action: Delivery | undefined,
+  signal: AbortSignal,
+): Promise<Shown> {
+  log.record(
+    $.clock.now(),
+    "バックグラウンド作業の実行中の途中報告のため、検証せずに表示しました。",
+  );
+  debug.record("review.skipped", { ...work, length: text.length, correction: action?.token });
+  // A correction's turn that waits for its work keeps the cycle, so notifications join it and
+  // the correction count is not reset.
+  if (action !== undefined) {
+    gate.action = action;
+    await saveRecovery($, gate, signal);
+  } else await flushDebug($, debug, false, signal);
+  return { text, note: skipped(work.agents, work.shells, text.length) };
+}
+
 const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   if (e.agentId !== undefined) return yield* next(e);
   const epoch = gate.epoch;
+  const action = gate.action;
   if (gate.action !== undefined) {
     gate.action = undefined;
     await saveRecovery($, gate);
@@ -481,12 +524,16 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     await flushDebug($, debug, false, next.signal);
     shown = { text, note: UNVERIFIED };
   } else {
-    debug.record("status.changed", { value: WAITING });
-    $.ui.status(WAITING);
-    shown = await verify($, e, text, next.signal);
-    debug.record("status.changed", { value: null });
-    await flushDebug($, debug, false, next.signal);
-    $.ui.status(undefined);
+    const work = await interimWork($, text);
+    if (work !== undefined) shown = await skipInterim($, text, work, action, next.signal);
+    else {
+      debug.record("status.changed", { value: WAITING });
+      $.ui.status(WAITING);
+      shown = await verify($, e, text, next.signal);
+      debug.record("status.changed", { value: null });
+      await flushDebug($, debug, false, next.signal);
+      $.ui.status(undefined);
+    }
   }
   if (buffered.key === stepKey(e)) buffered.text = "";
   if (next.signal.aborted || epoch !== gate.epoch || !shown.text) return resultOf(e, "");
@@ -543,6 +590,8 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
   }
   // Before reset(): the reviewer's own notification must not cancel the review it belongs to.
   if (staleNotification(gate, e)) return { drop: "Cerberus: 検証結果を処理済みです。" };
+  if (e.origin.kind === "task-notification") finishMainTask(gate, e);
+  else gate.mainTasks.clear();
   if (joinsCycle(gate, e)) return next(e);
   if (gate.active !== undefined || gate.delivery !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
@@ -558,7 +607,11 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
       return next({ ...e, message: "Cerberus Gate reviewer: completed." });
     return { deny: "Cerberus: stale reviewer stopped." };
   }
-  if (next.origin.plugin !== "cerberus-gate") return next(e);
+  if (next.origin.plugin !== "cerberus-gate") {
+    const result = await next(e);
+    if (e.agentId === undefined) trackMainTask(gate, e, backgroundTask(result));
+    return result;
+  }
   if (e.tool === "TaskStop" && ownTask(gate, e)) return next(e);
   if (gate.active === undefined || gate.active.controller.signal.aborted)
     return { deny: "Cerberus reviewer: no active review." };
@@ -825,6 +878,7 @@ export const register: Register = (on, options) => {
     log.clear();
     reset(gate, "");
     gate.tasks.clear();
+    gate.mainTasks.clear();
     gate.sessionEnabled = undefined;
     pendingEnabled = undefined;
     await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);

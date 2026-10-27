@@ -28,6 +28,13 @@
       "default": 120,
       "required": false
     },
+    "interimMaxChars": {
+      "type": "number",
+      "title": "Interim report length",
+      "description": "Answers of at most this many characters are shown without review while the main agent's background agents or shells run (0–100000; 0 always reviews).",
+      "default": 500,
+      "required": false
+    },
     "reviewerEffort": {
       "type": "string",
       "title": "Reviewer effort",

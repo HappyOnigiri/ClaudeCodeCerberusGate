@@ -5,6 +5,7 @@ export type Config = {
   reviewerEffort: "inherit" | "low" | "medium" | "high" | "xhigh" | "max";
   maxRevisions: number;
   reviewTimeoutMs: number;
+  interimMaxChars: number;
 };
 export type Verdict = { decision: "PASS" | "REVISE" | "UNVERIFIED"; findings: readonly string[] };
 export const WAITING = "回答を検証中です。";
@@ -14,6 +15,8 @@ export const revising = (count: number): string =>
   `Cerberus Gate: [REVISE] 検証で指摘があったため、修正を依頼しました（${count} 回目）。`;
 export const UNVERIFIED =
   "Cerberus Gate: [UNVERIFIED] 回答の検証を完了できなかったため、未検証の本文をそのまま表示します。";
+export const skipped = (agents: number, shells: number, length: number): string =>
+  `Cerberus Gate: [SKIP] バックグラウンド作業の実行中（エージェント ${agents} 件・シェル ${shells} 件）に届いた ${length} 文字の途中報告のため、検証せずに表示します。`;
 export const UNRESOLVED =
   "Cerberus Gate: [REVISE] 修正回数の上限に達したため、検証の指摘が残る本文をそのまま表示します。";
 export const FAILED =
@@ -54,6 +57,7 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
   if (typeof prompt !== "string" || prompt.length > 20_000) throw new Error("Invalid reviewPrompt");
   const revisions = options.maxRevisions ?? 2;
   const seconds = options.reviewTimeoutSeconds ?? 120;
+  const interim = options.interimMaxChars ?? 500;
   if (typeof model !== "string" || !/^[a-zA-Z0-9._:-]+$/u.test(model))
     throw new Error("Invalid reviewerModel");
   if (
@@ -65,6 +69,13 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
     throw new Error("Invalid maxRevisions");
   if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 1 || seconds > 600)
     throw new Error("Invalid reviewTimeoutSeconds");
+  if (
+    typeof interim !== "number" ||
+    !Number.isInteger(interim) ||
+    interim < 0 ||
+    interim > MAX_DRAFT
+  )
+    throw new Error("Invalid interimMaxChars");
   return {
     enabled,
     reviewerModel: model,
@@ -72,6 +83,7 @@ export function readConfig(options: Readonly<Record<string, unknown>>): Config {
     reviewerEffort: effort,
     maxRevisions: revisions,
     reviewTimeoutMs: seconds * 1000,
+    interimMaxChars: interim,
   };
 }
 
