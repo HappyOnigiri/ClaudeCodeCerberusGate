@@ -41,6 +41,9 @@ export function createState() {
     // Background commands of reviewer tool calls. Kept across requests and reloads because their
     // notifications arrive after the review; never cleared by reset().
     tasks: new Set<string>(),
+    // Background commands the main loop started in the current request. A short answer while
+    // they run is an interim report; cleared by a new request, not by reset().
+    mainTasks: new Set<string>(),
     prompt: "",
     // Text that proves the request reached the transcript; slash commands are stored in tag form.
     marker: "",
@@ -116,13 +119,44 @@ export const controlText = (delivery: Delivery): string =>
   `${CONTROL} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings)}` : ""}`;
 
 const MAX_TASKS = 32;
-export function rememberTask(state: GateState, id: string): void {
-  state.tasks.delete(id);
-  state.tasks.add(id);
-  for (const old of state.tasks) {
-    if (state.tasks.size <= MAX_TASKS) break;
-    state.tasks.delete(old);
+function remember(tasks: Set<string>, id: string): void {
+  tasks.delete(id);
+  tasks.add(id);
+  for (const old of tasks) {
+    if (tasks.size <= MAX_TASKS) break;
+    tasks.delete(old);
   }
+}
+export function rememberTask(state: GateState, id: string): void {
+  remember(state.tasks, id);
+}
+// The main loop's own background command starts with its result's id and ends with its
+// notification, or with its TaskStop, which sends none.
+export function trackMainTask(
+  state: GateState,
+  e: { tool: string; task_id?: unknown },
+  task: { id: string } | undefined,
+): void {
+  if (e.tool === "TaskStop" && typeof e.task_id === "string") state.mainTasks.delete(e.task_id);
+  if (task !== undefined) remember(state.mainTasks, task.id);
+}
+export function finishMainTask(state: GateState, e: { text: string; origin: { kind: string } }) {
+  const task = e.origin.kind === "task-notification" ? TASK_ID.exec(e.text)?.[1] : undefined;
+  if (task !== undefined) state.mainTasks.delete(task);
+}
+const LIVE = new Set(["pending", "running", "waiting"]);
+// Subagents the main loop started that have not ended; the Mod's reviewers are not the session's.
+export function runningAgents(
+  state: GateState,
+  agents: readonly { id: string; status: string; parentId?: string; spawnedBy?: string }[],
+): number {
+  return agents.filter(
+    (agent) =>
+      agent.parentId === undefined &&
+      agent.spawnedBy !== "cerberus-gate" &&
+      !state.reviewers.has(agent.id) &&
+      LIVE.has(agent.status),
+  ).length;
 }
 // TaskStop is the Mod's own cleanup only for its reviewers and their background commands.
 export function ownTask(state: GateState, input: unknown): boolean {

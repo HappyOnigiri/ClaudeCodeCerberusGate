@@ -71,7 +71,8 @@ interface Captured {
 }
 interface Host {
   states: Map<string, CerberusRecovery | null>;
-  reviewers: { id: string; type: string; spawnedBy: string; status: string }[];
+  // Every agent $.agent.list() returns: the Mod's reviewers and the main loop's subagents.
+  reviewers: { id: string; type: string; spawnedBy?: string; parentId?: string; status: string }[];
 }
 interface ProcessResult {
   exitCode: number;
