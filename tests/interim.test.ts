@@ -82,6 +82,29 @@ void test("a main background shell counts until its notification or its TaskStop
   assert.deepEqual(shown(await h.step()), noted(PASSED, DRAFT));
 });
 
+void test("an ended main subagent counts until its notification reaches the main loop", async () => {
+  const h = harness();
+  await started(h);
+  h.setCall({ result: { status: "async_launched", agentId: "agent-completed" } });
+  await h.fire("tool.call", { tool: "Agent", prompt: "review", run_in_background: true });
+  h.host.reviewers.push(agent("completed"));
+  assert.deepEqual(shown(await h.step()), noted(skipped(1, 0, DRAFT.length), DRAFT));
+  await h.fire("prompt.submit", notification("agent-completed"));
+  h.replies.push(verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, DRAFT));
+});
+
+void test("a new user request forgets the earlier request's unnotified subagents", async () => {
+  const h = harness();
+  await started(h);
+  h.setCall({ result: { status: "async_launched", agentId: "agent-completed" } });
+  await h.fire("tool.call", { tool: "Agent", prompt: "review", run_in_background: true });
+  h.host.reviewers.push(agent("completed"));
+  await h.prompt("next request");
+  h.replies.push(verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, DRAFT));
+});
+
 void test("a new user request forgets the earlier request's background shells", async () => {
   const h = harness();
   await started(h);
