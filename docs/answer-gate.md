@@ -99,6 +99,7 @@ Mod はそのタスクを `TaskStop` で止め、途中の出力を捨てる。
 末尾改行・全行の JSON・対象依頼の包含を確かめ、不正・書き込み途中のレコードを黙って省かない。
 スラッシュコマンドは標準 JSONL にタグ形式で記録されるため、入力文ではなく `<command-name>` と、引数があれば `<command-args>` の形で包含を確かめる。
 バックグラウンドタスクの完了通知（`origin.kind` が `task-notification`）は依頼ではないため、直前のユーザー依頼を審査の依頼と包含の確認に引き継ぐ。
+ユーザーが作業中に送った依頼は user レコードを残さず `queued_command` の attachment（`commandMode: "prompt"`・`origin.kind: "human"`）だけになるため、その `prompt` もユーザーの依頼として資料に含め、包含を確かめる。
 作業中に届いた通知は標準 JSONL に user レコードを残さず `queue-operation`・`attachment` だけになるため、通知本文では包含を確かめられない。
 先行する依頼がない場合だけ通知本文を使う。
 

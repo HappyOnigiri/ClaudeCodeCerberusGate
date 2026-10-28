@@ -119,6 +119,49 @@ void test("slash command requests are found in their transcript tag form", async
   await release(material.directory);
 });
 
+void test("prompts typed mid-turn are user requests; queued notifications are not", async (t) => {
+  const work = await mkdtemp(join(tmpdir(), "cerberus-queued-request-"));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const source = join(work, "session.jsonl");
+  const queued = (uuid: string, attachment: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "attachment",
+      sessionId: "session",
+      uuid,
+      parentUuid: "u1",
+      attachment,
+    });
+  await writeFile(
+    source,
+    raw +
+      [
+        '{"type":"queue-operation","operation":"enqueue","sessionId":"session","content":"途中の追加依頼"}',
+        queued("q1", {
+          type: "queued_command",
+          prompt: "途中の追加依頼",
+          commandMode: "prompt",
+          origin: { kind: "human" },
+        }),
+        queued("q2", {
+          type: "queued_command",
+          prompt: "<task-notification>NOTIFICATION_BODY</task-notification>",
+          commandMode: "task-notification",
+          origin: { kind: "task-notification" },
+        }),
+      ].join("\n") +
+      "\n",
+  );
+  const material = await snapshot(source, "session", "途中の追加依頼");
+  t.after(() => release(material.directory));
+  const users = await readFile(material.users, "utf8");
+  assert.match(users, /JSONL line 8; UUID q1; type attachment[^\n]*\n途中の追加依頼\n/u);
+  assert.doesNotMatch(users, /NOTIFICATION_BODY|UUID q2/u);
+  await assert.rejects(
+    snapshot(source, "session", "<task-notification>NOTIFICATION_BODY</task-notification>"),
+    /Current request/u,
+  );
+});
+
 void test("CLI resolves only the current session and deletes only its own material", async (t) => {
   const work = await mkdtemp(join(tmpdir(), "cerberus-cli-"));
   t.after(() => rm(work, { recursive: true, force: true }));
