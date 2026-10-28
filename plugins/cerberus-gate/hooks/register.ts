@@ -446,14 +446,8 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     await saveRecovery($, gate);
   }
   if (!enabled()) return yield* next(e);
-  if (!interactive) {
-    const text =
-      "Cerberus Gate は対話セッションで利用してください。未検証の回答は生成・公開していません。";
-    yield { kind: "text", index: 0, text };
-    yield { kind: "stop", stopReason: "end_turn", usage: null };
-    return resultOf(e, text);
-  }
-  if (!configured || gate.blocked || !gate.prompt) return yield* next(e);
+  // Non-interactive sessions (`-p`, the SDK, Desktop routines) are out of scope and pass through.
+  if (!interactive || !configured || gate.blocked || !gate.prompt) return yield* next(e);
   const stream = next(e);
   const chunks = [];
   let size = 0;

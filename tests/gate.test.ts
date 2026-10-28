@@ -408,7 +408,7 @@ void test("tool steps, unrelated subagents and unsupported environments bypass r
   const headless = harness();
   await headless.fire("session.start", { isInteractive: false });
   await headless.prompt("request");
-  assert.match((await headless.step()).text, /対話セッション/u);
+  assert.equal((await headless.step()).text, "UNPUBLISHED DRAFT");
   assert.equal(headless.events.models.length, 0);
 });
 
