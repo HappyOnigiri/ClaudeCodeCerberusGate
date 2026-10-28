@@ -29,6 +29,7 @@ import {
   resultOf,
   runningAgents,
   staleNotification,
+  trackMainAgent,
   trackMainTask,
 } from "./state.ts";
 import { backgroundTask } from "./review.ts";
@@ -591,7 +592,10 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
   // Before reset(): the reviewer's own notification must not cancel the review it belongs to.
   if (staleNotification(gate, e)) return { drop: "Cerberus: 検証結果を処理済みです。" };
   if (e.origin.kind === "task-notification") finishMainTask(gate, e);
-  else gate.mainTasks.clear();
+  else {
+    gate.mainTasks.clear();
+    gate.mainAgents.clear();
+  }
   if (joinsCycle(gate, e)) return next(e);
   if (gate.active !== undefined || gate.delivery !== undefined)
     log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
@@ -609,7 +613,10 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
   }
   if (next.origin.plugin !== "cerberus-gate") {
     const result = await next(e);
-    if (e.agentId === undefined) trackMainTask(gate, e, backgroundTask(result));
+    if (e.agentId === undefined) {
+      trackMainTask(gate, e, backgroundTask(result));
+      trackMainAgent(gate, result);
+    }
     return result;
   }
   if (e.tool === "TaskStop" && ownTask(gate, e)) return next(e);
@@ -879,6 +886,7 @@ export const register: Register = (on, options) => {
     reset(gate, "");
     gate.tasks.clear();
     gate.mainTasks.clear();
+    gate.mainAgents.clear();
     gate.sessionEnabled = undefined;
     pendingEnabled = undefined;
     await $.state.set({ plugin: "cerberus-gate", key: "recovery" }, null);

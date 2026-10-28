@@ -44,6 +44,9 @@ export function createState() {
     // Background commands the main loop started in the current request. A short answer while
     // they run is an interim report; cleared by a new request, not by reset().
     mainTasks: new Set<string>(),
+    // Background subagents the main loop started in the current request. One that has ended still
+    // counts until its notification reaches the main loop, which then answers in another turn.
+    mainAgents: new Set<string>(),
     prompt: "",
     // Text that proves the request reached the transcript; slash commands are stored in tag form.
     marker: "",
@@ -137,15 +140,29 @@ export function trackMainTask(
   e: { tool: string; task_id?: unknown },
   task: { id: string } | undefined,
 ): void {
-  if (e.tool === "TaskStop" && typeof e.task_id === "string") state.mainTasks.delete(e.task_id);
+  if (e.tool === "TaskStop" && typeof e.task_id === "string") {
+    state.mainTasks.delete(e.task_id);
+    state.mainAgents.delete(e.task_id);
+  }
   if (task !== undefined) remember(state.mainTasks, task.id);
+}
+// The Agent tool's background launch; its notification's task id is the agent's id.
+export function trackMainAgent(state: GateState, result: { result?: unknown }): void {
+  const output = result.result;
+  if (typeof output !== "object" || output === null) return;
+  if (!("status" in output) || output.status !== "async_launched") return;
+  if ("agentId" in output && typeof output.agentId === "string")
+    remember(state.mainAgents, output.agentId);
 }
 export function finishMainTask(state: GateState, e: { text: string; origin: { kind: string } }) {
   const task = e.origin.kind === "task-notification" ? TASK_ID.exec(e.text)?.[1] : undefined;
-  if (task !== undefined) state.mainTasks.delete(task);
+  if (task === undefined) return;
+  state.mainTasks.delete(task);
+  state.mainAgents.delete(task);
 }
 const LIVE = new Set(["pending", "running", "waiting"]);
-// Subagents the main loop started that have not ended; the Mod's reviewers are not the session's.
+// Subagents the main loop started that have not ended, or whose notification has not reached it;
+// the Mod's reviewers are not the session's.
 export function runningAgents(
   state: GateState,
   agents: readonly { id: string; status: string; parentId?: string; spawnedBy?: string }[],
@@ -155,7 +172,7 @@ export function runningAgents(
       agent.parentId === undefined &&
       agent.spawnedBy !== "cerberus-gate" &&
       !state.reviewers.has(agent.id) &&
-      LIVE.has(agent.status),
+      (LIVE.has(agent.status) || state.mainAgents.has(agent.id)),
   ).length;
 }
 // TaskStop is the Mod's own cleanup only for its reviewers and their background commands.
