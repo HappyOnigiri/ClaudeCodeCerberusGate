@@ -59,6 +59,19 @@ export function expand(source: string, sessionId: string) {
         : body(content);
       if (text) users.push(`=== ${heading}; history entry in history.txt ===\n${text}\n`);
     }
+    // A prompt the user sends mid-turn is stored only as a queued_command attachment.
+    const attachment = record.type === "attachment" ? record.attachment : undefined;
+    if (
+      object(attachment) &&
+      attachment.type === "queued_command" &&
+      attachment.commandMode === "prompt" &&
+      object(attachment.origin) &&
+      attachment.origin.kind === "human" &&
+      attachment.prompt !== undefined
+    ) {
+      const text = body(attachment.prompt);
+      if (text) users.push(`=== ${heading}; history entry in history.txt ===\n${text}\n`);
+    }
   }
   if (!conversations || !users.length) throw new Error("No conversation/user evidence");
   const notice =
