@@ -7,6 +7,14 @@
     "name": "HappyOnigiri"
   },
   "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language for Cerberus Gate UI, logs and built-in prompts. Custom review prompts are used as written.",
+      "options": ["en", "ja"],
+      "default": "en",
+      "required": false
+    },
     "reviewerModel": {
       "type": "string",
       "title": "Reviewer model",

@@ -58,7 +58,7 @@ void test("REVISE exposes findings in its prompt but keeps the draft in hidden c
   assert.equal(h.events.prompts.length, 1);
   const sent = h.events.prompts[0]!;
   assert.doesNotMatch(sent.text, /UNPUBLISHED/u);
-  assert.match(sent.text, /指摘と根拠:[\s\S]*fact.txt:1 contradicts the draft/u);
+  assert.match(sent.text, /Findings and evidence:[\s\S]*fact.txt:1 contradicts the draft/u);
   assert.ok(sent.context.join("").includes("UNPUBLISHED DRAFT"));
   assert.ok(sent.context.join("").includes("fact.txt:1"));
   h.setDraft("CORRECTED");
@@ -142,7 +142,7 @@ void test("timeout aborts the model and shows the original text without another 
   assert.deepEqual(shown(await running), noted(UNVERIFIED, "UNPUBLISHED DRAFT"));
   assert.ok(h.events.models[0]!.options.signal.aborted);
   assert.deepEqual(h.events.prompts, []);
-  assert.match(await history(h), /タイムアウト[\s\S]*UNVERIFIED/u);
+  assert.match(await history(h), /timed out[\s\S]*UNVERIFIED/u);
 });
 
 void test("timeout releases a pending read and ignores its later result", async () => {
@@ -167,14 +167,14 @@ void test("zero revision cap skips review; correction delivery failure is report
   assert.equal(cap.events.prompts.length, 0);
   assert.equal(cap.events.models.length, 0);
   assert.equal(cap.events.materialRequests.length, 0);
-  assert.match(await history(cap), /修正回数の上限/u);
+  assert.match(await history(cap), /correction limit/u);
   const failed = harness();
   await started(failed);
   failed.failPrompt();
   failed.replies.push(verdict("REVISE", ["SECRET FINDING"]));
   assert.equal((await failed.step()).text, "");
   await failed.flushCorrections();
-  assert.match(await history(failed), /送信に失敗/u);
+  assert.match(await history(failed), /could not be sent/u);
 });
 
 void test("new prompt, abort, cancel and session end invalidate an in-flight review", async () => {
@@ -436,23 +436,20 @@ void test("session log works during review, shows findings without the draft and
   const running = h.step();
   await tick();
   const pending = await history(h);
-  assert.match(pending, /審査 #\d+: 開始/u);
+  assert.match(pending, /Review #\d+: started/u);
   assert.doesNotMatch(pending, /UNPUBLISHED/u);
-  assert.match(
-    (await h.fire("command.run", { command: "cgate", args: "unknown" })).text,
-    /使い方/u,
-  );
+  assert.match((await h.fire("command.run", { command: "cgate", args: "unknown" })).text, /Usage/u);
   held.resolve({ isAnswered: true, text: verdict("REVISE", ["SECRET FINDING"]) });
   await running;
   await h.flushCorrections();
   await h.step();
   const log = await history(h, "cerberus", " history ");
-  assert.match(log, /REVISE[\s\S]*PASS[\s\S]*検証済みの本文を公開/u);
-  assert.match(log, /指摘と根拠:[\s\S]*SECRET FINDING/u);
+  assert.match(log, /REVISE[\s\S]*PASS[\s\S]*Published the verified answer/u);
+  assert.match(log, /Findings and evidence:[\s\S]*SECRET FINDING/u);
   assert.doesNotMatch(log, /UNPUBLISHED/u);
   assert.match(log, /1970-01-01T00:00:00.000Z/u);
   await h.fire("session.end", {});
-  assert.match(await history(h), /ログはありません/u);
+  assert.match(await history(h), /No logs/u);
 });
 
 void test("cancellation while preparing session material does not start a reviewer", async () => {
@@ -715,7 +712,7 @@ void test("reload during review restarts without restoring a private draft or ac
     (
       await next.fire("prompt.submit", {
         origin: { kind: "plugin", name: "cerberus-gate" },
-        text: `Cerberus Gate: 検証処理を継続します。 [${saved.epoch}-${saved.serial}]`,
+        text: `Cerberus Gate: Continuing answer verification. [${saved.epoch}-${saved.serial}]`,
       })
     ).drop,
   );
@@ -782,7 +779,7 @@ void test("new requests supersede a queued reload restart and failed restart del
   again.failPrompt();
   await again.flushCorrections();
   assert.equal(again.host.states.get("recovery")!.pending, false);
-  assert.match(await history(again), /再開に失敗/u);
+  assert.match(await history(again), /Could not resume/u);
 });
 
 void test("reviewer model and effort inherit the answer step or use independent overrides", async () => {
@@ -923,7 +920,7 @@ void test("temporary settings notifications leave a pending review status intact
   h.engine.config.set = async () => ({ deny: "locked" });
   await picker.onSelect("opus");
   assert.equal(h.events.statuses.at(-1), WAITING);
-  assert.match(h.events.toasts.at(-1)!.text, /保存できませんでした/);
+  assert.match(h.events.toasts.at(-1)!.text, /Could not save/);
   assert.equal(h.events.toasts.at(-1)!.options.timeoutMs, 3000);
   pending.resolve({ isAnswered: true, text: verdict() });
   await step;
@@ -978,7 +975,7 @@ void test("failed persistence preserves current enabled state and override", asy
       if (result instanceof Error) throw result;
       return result;
     };
-    assert.match((await chooseEnabled(h, "on", "saved")).text, /保存できません/u);
+    assert.match((await chooseEnabled(h, "on", "saved")).text, /Could not save/u);
     assert.match(
       (await h.fire("command.run", { command: "cgate", args: "" })).text,
       /off \(session\)/u,
@@ -993,7 +990,7 @@ void test("disabling during review cancels the held answer and stale verdict", a
   h.replies.push(() => held.promise);
   const running = h.step();
   await tick();
-  assert.match((await chooseEnabled(h, "off", "session")).text, /取り消しました/u);
+  assert.match((await chooseEnabled(h, "off", "session")).text, /cancelled/u);
   held.resolve({ isAnswered: true, text: verdict("REVISE", ["private finding"]) });
   assert.equal((await running).text, "");
   await h.flushCorrections();
@@ -1023,7 +1020,7 @@ void test("on and off only open the scope picker and removed flags do not change
   assert.match((await h.fire("command.run", { command: "cgate", args: "" })).text, /on \(saved\)/u);
   assert.match(
     (await h.fire("command.run", { command: "cgate", args: "off --session" })).text,
-    /使い方/u,
+    /Usage/u,
   );
   assert.equal(h.events.setting, undefined);
 });
@@ -1125,7 +1122,7 @@ void test("history and debug locations respond during an in-flight review withou
   for (const command of ["cgate", "cerberus"]) {
     const result = await h.fire("command.run", { command, args: "log" });
     assert.match(result.text, /session ID: session/u);
-    assert.match(result.text, /索引: \/debug\/session\/index.jsonl/u);
+    assert.match(result.text, /Index: \/debug\/session\/index.jsonl/u);
     assert.doesNotMatch(result.text, /UNPUBLISHED|request/u);
   }
   pending.resolve({ isAnswered: true, text: verdict() });
@@ -1270,9 +1267,9 @@ void test("debug append failures and helper timeouts leave PASS publication inta
     };
     assert.equal((await h.step()).text, "UNPUBLISHED DRAFT");
     const status = await h.fire("command.run", { command: "cgate", args: "log" });
-    assert.match(status.text, /保存失敗/u);
+    assert.match(status.text, /Save failed/u);
     assert.ok(
-      h.events.toasts.some((t) => t.text.includes("デバッグログ") && t.options.timeoutMs === 3000),
+      h.events.toasts.some((t) => t.text.includes("Debug log") && t.options.timeoutMs === 3000),
     );
   }
 });

@@ -1,3 +1,5 @@
+import { translate } from "./locale.ts";
+import type { Language } from "./locale.ts";
 // No host or Node dependencies: capture values before callers mutate them.
 export function safeValue(value: unknown): unknown {
   const seen = new WeakSet<object>();
@@ -26,7 +28,9 @@ export function safeValue(value: unknown): unknown {
     return "[Unserializable]";
   }
 }
-export function createDebug() {
+export function createDebug(language: () => Language = () => "en") {
+  const t = (key: Parameters<typeof translate>[1], ...values: (string | number)[]) =>
+    translate(language(), key, ...values);
   let sessionId = "";
   let instanceId = "";
   let sequence = 0;
@@ -76,15 +80,18 @@ export function createDebug() {
     ready: () => location !== undefined,
     text: () =>
       [
-        "Cerberus Gate: デバッグログ",
-        `session ID: ${sessionId || "未初期化"}`,
-        `instance ID: ${instanceId || "未初期化"}`,
-        `保存状態: ${failure !== undefined ? "保存失敗" : location ? "保存済み" : "未保存"}`,
+        t("debugHeader"),
+        `session ID: ${sessionId || t("uninitialized")}`,
+        `instance ID: ${instanceId || t("uninitialized")}`,
+        t(
+          "storageStatus",
+          failure !== undefined ? t("saveFailed") : location ? t("saved") : t("notSaved"),
+        ),
         ...(location
           ? [
-              `保存ディレクトリ: ${location.directory}`,
-              `索引: ${location.index}`,
-              `現在のログ: ${location.events}`,
+              t("directory", location.directory),
+              t("index", location.index),
+              t("currentLog", location.events),
             ]
           : []),
       ].join("\n"),

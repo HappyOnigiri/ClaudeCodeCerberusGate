@@ -1,3 +1,11 @@
+import {
+  CONTRACT_JA,
+  PROTOCOL_JA,
+  FORMAT_RETRY_JA,
+  REPLY_FORMAT_JA,
+  RECHECK_JA,
+} from "./prompts-ja.ts";
+import type { Language } from "./locale.ts";
 import type { Config, Verdict } from "./policy.ts";
 import { BUILTIN_INPUTS } from "./tool-inputs.ts";
 
@@ -186,7 +194,12 @@ List only defects that require a change. Do not add findings that merely confirm
 If neither a supported PASS nor an actionable REVISE can be established, use UNVERIFIED.\n`;
 
 function reviewSystem(config: Config): string {
-  return config.reviewPrompt + "\n" + CONTRACT + PROTOCOL;
+  return (
+    config.reviewPrompt +
+    "\n" +
+    (config.language === "ja" ? CONTRACT_JA + PROTOCOL_JA : CONTRACT + PROTOCOL) +
+    (config.language === "ja" ? "" : "Write findings in English.\n")
+  );
 }
 
 // A numeric step effort is not accepted by the review API, so it falls back to the model default.
@@ -221,10 +234,14 @@ export function reviewModelRequest<Effort extends string>(
       unpublishedDraft: input.candidate.text,
       tools: input.tools,
       evidence: input.evidence,
-      historyRecheck: recheckPrompt(input.recheck),
-      ...(input.formatRetry ? { formatError: FORMAT_RETRY } : {}),
+      historyRecheck: recheckPrompt(input.recheck, config.language),
+      ...(input.formatRetry
+        ? { formatError: config.language === "ja" ? FORMAT_RETRY_JA : FORMAT_RETRY }
+        : {}),
       replyFormat:
-        'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
+        config.language === "ja"
+          ? REPLY_FORMAT_JA
+          : 'Return exactly one raw JSON object starting with { and ending with }. For a tool: {"tool":"Read or another listed name","input":{...}}. For a verdict: {"decision":"PASS|REVISE|UNVERIFIED","findings":[]}. No XML, invoke tags or Markdown.',
     }),
     maxTokens: 4096,
     timeoutMs: input.remaining,
@@ -258,7 +275,9 @@ export function backgroundTask(result: { result?: unknown }) {
 }
 
 // The Mod stops the task, so the reviewer gets a failed call it cannot mistake for the session's.
-function backgroundError(task: { timeoutMs: number }): string {
+function backgroundError(task: { timeoutMs: number }, language: Language): string {
+  if (language === "ja")
+    return `Cerberus Gate はあなたのコマンドを停止しました: ${task.timeoutMs ? `${Math.round(task.timeoutMs / 1000)}秒以内に完了しませんでした` : "バックグラウンドへ移されました"}。途中の出力は破棄されます。これはあなた自身の調査であり、メインエージェントの行動ではありません。セッションや原稿について何も証明しないため、指摘に含めないでください。パス、リビジョン、ファイル種別、出力を絞った短時間のコマンドをフォアグラウンドで再実行するか、別の方法で確認してください。`;
   const cause = task.timeoutMs
     ? `did not finish within its ${Math.round(task.timeoutMs / 1000)}s timeout`
     : "was moved to the background";
@@ -270,12 +289,13 @@ export function reviewEvidence(
   call: ReviewRequest,
   result: { deny?: string; text?: string; result?: unknown; isError?: boolean },
   errors: number,
+  language: Language = "en",
 ): { reason: string } | { entry: Evidence; errors: number } {
   if (result.deny !== undefined) return { reason: "tool_denied" };
   const task = backgroundTask(result);
   const text =
     task !== undefined
-      ? backgroundError(task)
+      ? backgroundError(task, language)
       : (result.text ?? JSON.stringify(result.result) ?? "");
   const entry: Evidence = { tool: call.tool, input: call.input, result: text };
   if (!result.isError && task === undefined) return { entry, errors: 0 };
@@ -361,9 +381,9 @@ export function createHistoryGate(context: string) {
 }
 
 const RECHECK = `Your previousVerdict was NOT accepted. Its findings at flaggedFindings (0-based) say a file, line, command or result was not read, run, shown or supported in the session, but your evidence has no search of sessionLog.history. Apply HISTORY GATE now: search sessionLog.history for each flagged path, symbol or command, then return one complete verdict. Omit findings that history contradicts; do not explain the omission. Keep the other findings unless new evidence changes them. Findings go to the main agent as they are: cite history results as ordinary evidence, and never mention this notice, previousVerdict, flaggedFindings or HISTORY GATE. This notice is not evidence.`;
-const recheckPrompt = (recheck: Recheck | undefined) =>
+const recheckPrompt = (recheck: Recheck | undefined, language: Language) =>
   recheck && {
-    instruction: RECHECK,
+    instruction: language === "ja" ? RECHECK_JA : RECHECK,
     previousVerdict: recheck.verdict,
     flaggedFindings: recheck.flagged,
   };
