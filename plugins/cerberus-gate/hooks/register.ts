@@ -198,21 +198,21 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
     if (gate.delivery !== delivery || gate.epoch !== delivery.epoch) return;
     // A reload's session.start dispatch may not include prompt.submit hooks yet.
     // Carry restart context and its accepted state in the submission itself.
-    if (delivery.mode === "restart") {
-      gate.action = delivery;
-      gate.delivery = undefined;
-      await saveRecovery($, gate);
-      if (gate.action !== delivery || gate.epoch !== delivery.epoch) return;
-    }
-    const sent = await $.prompt
-      .submit({
+    let sent;
+    try {
+      if (delivery.mode === "restart") {
+        gate.action = delivery;
+        gate.delivery = undefined;
+        await saveRecovery($, gate);
+        if (gate.action !== delivery || gate.epoch !== delivery.epoch) return;
+      }
+      sent = await $.prompt.submit({
         text: controlText(delivery, config.language),
         ...(delivery.mode === "restart" ? { context: [delivery.context] } : {}),
-      })
-      .catch((error: unknown) => {
-        debug.record("delivery.failed", { operationId, error }, "error");
-        return undefined;
       });
+    } catch (error) {
+      debug.record("delivery.failed", { operationId, error }, "error");
+    }
     debug.record("delivery.complete", {
       operationId,
       result: sent,
@@ -225,7 +225,6 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
     gate.action = undefined;
     gate.blocked = true;
     gate.phase = "unverified";
-    await saveRecovery($, gate);
     if (delivery.mode === "restart") {
       log.record($.clock.now(), t("resumeFailure"));
     } else {
@@ -234,6 +233,9 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
         timeoutMs: 3000,
       });
     }
+    await saveRecovery($, gate).catch((error: unknown) => {
+      debug.record("delivery.recovery.failed", { operationId, error }, "error");
+    });
   });
 }
 // Regular reviews queue only REVISE; reload recovery can also request a fresh answer.

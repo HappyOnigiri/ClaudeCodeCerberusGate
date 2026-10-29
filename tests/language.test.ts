@@ -185,3 +185,32 @@ void test("reload restart carries its context when startup submissions bypass pr
   assert.equal(result.text, "fresh answer");
   assert.equal(result.notes.at(-1), translate("ja", "passed"));
 });
+
+for (const permanent of [false, true]) {
+  void test(`reload reports ${permanent ? "persistent" : "transient"} restart persistence failure`, async () => {
+    const h = harness();
+    await started(h);
+    h.replies.push(verdict("REVISE", ["source:1 contradicts the draft"]));
+    await h.step();
+    h.unload();
+    const next = harness({}, "2.1.310", h.host);
+    await next.fire("session.start", { isInteractive: true });
+    const persist = next.engine.state.set;
+    let attempts = 0;
+    next.engine.state.set = async (ref, value) => {
+      if (++attempts === 1 || permanent) throw new Error("restart storage unavailable");
+      return persist(ref, value);
+    };
+    await next.flushCorrections();
+    assert.equal(next.events.prompts.length, 0);
+    assert.equal(attempts, 2);
+    assert.match(await history(next), /new request/u);
+    assert.doesNotMatch(await history(next), /restart storage unavailable/u);
+    if (!permanent) assert.equal(next.host.states.get("recovery")?.pending, false);
+    next.engine.state.set = persist;
+    await next.prompt("a new request");
+    next.replies.push(verdict());
+    assert.equal((await next.step({ text: "fresh answer" })).text, "fresh answer");
+    assert.equal(next.host.states.get("recovery")?.pending, false);
+  });
+}
