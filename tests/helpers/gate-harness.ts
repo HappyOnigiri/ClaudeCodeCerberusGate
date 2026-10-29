@@ -25,6 +25,8 @@ interface Result {
   options: { value: string }[];
   onSelect: (value: string) => Promise<void>;
   children: string;
+  label: string;
+  back: () => Promise<void>;
 }
 type Event = Record<string, unknown>;
 type Handler = (engine: unknown, event: Event, next: unknown) => unknown;
@@ -217,7 +219,18 @@ export function harness(
       close: async () => {
         events.closed = true;
       },
-      resolve: () => ({ Select: (props: unknown) => props, Text: (props: unknown) => props }),
+      resolve: () => ({
+        Select: (props: unknown) => props,
+        Text: (props: unknown) => props,
+        Button: (props: unknown) => props,
+        Box: (props: {
+          children: { label?: string; children?: string; onPress: () => Promise<void> }[];
+        }) => ({
+          ...props.children[1],
+          children: props.children[1]!.children ?? props.children[1]!.label,
+          back: props.children[0]!.onPress,
+        }),
+      }),
     },
     config: {
       set: async (setting: {

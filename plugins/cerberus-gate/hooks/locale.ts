@@ -1,6 +1,12 @@
 export type Language = "en" | "ja";
 
 const messages = {
+  languageLabel: ["Language", "言語"],
+  languageSaved: ["Language saved: {0}", "言語を保存しました: {0}"],
+  languageDenied: ["Could not save language: {0}", "言語を保存できませんでした: {0}"],
+  languageFailure: ["Could not save language.", "言語を保存できませんでした。"],
+  mobileLanguage: ["Change Language in /config.", "言語は /config で変更してください。"],
+  backHint: ["Back", "戻る"],
   menuPane: ["Cerberus Gate menu", "Cerberus Gate メニュー"],
   menuStatus: ["Review status", "検証の状態"],
   menuLog: ["Debug log location and storage status", "デバッグログの保存場所・保存状態"],
@@ -105,8 +111,8 @@ const messages = {
   modelPane: ["Reviewer model and effort", "検査用モデル・effort"],
   historyPane: ["Cerberus Gate history", "Cerberus Gate の履歴"],
   usage: [
-    "Usage: /cgate [on|off|reset|model|history|log|cancel]",
-    "使い方: /cgate [on|off|reset|model|history|log|cancel]",
+    "Usage: /cgate [on|off|reset|model|language|history|log|cancel]",
+    "使い方: /cgate [on|off|reset|model|language|history|log|cancel]",
   ],
   cancelled: ["Cancelled the review by command.", "コマンドで検証処理を取り消しました。"],
   mobileScope: [

@@ -1,3 +1,4 @@
+import { verifyMenu } from "./live-menu.ts";
 import { translate } from "../plugins/cerberus-gate/hooks/locale.ts";
 import { language, t, verifyLanguage, historyMessage } from "./live-language.ts";
 interface Settings {
@@ -428,13 +429,7 @@ for (const mode of cases) {
     }
     if (!ready) throw new Error("TUI did not become ready");
     if (mode === "model") {
-      await submit(session, "/cgate");
-      await pause(1000);
-      const menuScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-200");
-      await writeFile(join(artifacts, "menu.txt"), menuScreen);
-      if (!menuScreen.includes(t("menuCancel")) || !menuScreen.includes(t("modelPane")))
-        throw new Error("Cerberus Gate menu did not appear");
-      tmux("send-keys", "-t", session, "Down", "Down", "Down", "Down", "Down", "Down", "Enter");
+      await verifyMenu(session, artifacts, settings, (text) => submit(session, text));
       await pause(1000);
       const modelScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-200");
       await writeFile(join(artifacts, "model-picker.txt"), modelScreen);
