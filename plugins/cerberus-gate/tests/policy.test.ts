@@ -17,10 +17,8 @@ describe("review contract", () => {
     expect(
       disposition(
         parseVerdict('{"decision":"REVISE","findings":["file.ts:1 contradicts the draft"]}'),
-        2,
-        2,
       ),
-    ).toBe("notice");
+    ).toBe("revise");
   });
   test("bounded options and ignored legacy MCP setting", () => {
     expect(readConfig({ readOnlyMcpTools: "mcp__notes__*" }).enabled).toBe(true);

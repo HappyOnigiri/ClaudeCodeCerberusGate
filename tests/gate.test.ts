@@ -6,7 +6,7 @@ import {
   revising,
   NO_DRAFT,
   PASSED,
-  UNRESOLVED,
+  REVISION_LIMIT,
   UNVERIFIED,
   WAITING,
   readConfig,
@@ -160,13 +160,14 @@ void test("timeout releases a pending read and ignores its later result", async 
   assert.equal(h.events.models.length, 1);
 });
 
-void test("revision cap shows a note; correction delivery failure is reported without exposing findings", async () => {
+void test("zero revision cap skips review; correction delivery failure is reported without exposing findings", async () => {
   const cap = harness({ maxRevisions: 0 });
   await started(cap);
-  cap.replies.push(verdict("REVISE", ["SECRET FINDING"]));
-  assert.deepEqual(shown(await cap.step()), noted(UNRESOLVED, "UNPUBLISHED DRAFT"));
+  assert.deepEqual(shown(await cap.step()), noted(REVISION_LIMIT, "UNPUBLISHED DRAFT"));
   assert.equal(cap.events.prompts.length, 0);
-  assert.match(await history(cap), /REVISE[\s\S]*SECRET FINDING[\s\S]*修正回数の上限/u);
+  assert.equal(cap.events.models.length, 0);
+  assert.equal(cap.events.materialRequests.length, 0);
+  assert.match(await history(cap), /修正回数の上限/u);
   const failed = harness();
   await started(failed);
   failed.failPrompt();
@@ -655,8 +656,16 @@ void test("a task notification while a correction is queued keeps it and the cor
   const epochOf = (i: number) => /\[(\d+)-\d+\]/u.exec(h.events.prompts[i]!.text)?.[1];
   assert.equal(epochOf(1), epochOf(0));
   assert.equal(h.events.prompts[1]!.drop, undefined);
-  h.replies.push(verdict("REVISE", ["third finding"]));
-  assert.deepEqual(shown(await h.step()), noted(UNRESOLVED, "CORRECTED"));
+  const reviewsAtCap = h.events.models.length;
+  const materialsAtCap = h.events.materialRequests.length;
+  assert.deepEqual(shown(await h.step()), noted(REVISION_LIMIT, "CORRECTED"));
+  assert.equal(h.events.models.length, reviewsAtCap);
+  assert.equal(h.events.materialRequests.length, materialsAtCap);
+  assert.equal(h.events.prompts.length, 2);
+  await h.prompt("new request");
+  h.replies.push(verdict());
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "CORRECTED"));
+  assert.ok(h.events.models.length > reviewsAtCap);
 });
 
 void test("a task notification during a review or a correction turn leaves it running", async () => {
@@ -734,8 +743,9 @@ void test("reload preserves correction counts across queued and accepted correct
     next.replies.push(verdict("REVISE", ["still wrong"]));
     assert.equal((await next.step()).text, "");
     await next.flushCorrections();
-    next.replies.push(verdict("REVISE", ["still wrong"]));
-    assert.deepEqual(shown(await next.step()), noted(UNRESOLVED, "UNPUBLISHED DRAFT"));
+    const reviewsAtCap = next.events.models.length;
+    assert.deepEqual(shown(await next.step()), noted(REVISION_LIMIT, "UNPUBLISHED DRAFT"));
+    assert.equal(next.events.models.length, reviewsAtCap);
     assert.equal(next.events.prompts.length, 2);
   }
 });

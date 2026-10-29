@@ -9,7 +9,7 @@ import {
   revising,
   skipped,
   supportedVersion,
-  UNRESOLVED,
+  REVISION_LIMIT,
   UNVERIFIED,
   WAITING,
 } from "./policy.ts";
@@ -232,7 +232,7 @@ async function finishReview(
   candidate: Candidate,
   verdict: Verdict,
 ): Promise<Shown> {
-  const mode = disposition(verdict, gate.revisions, config.maxRevisions);
+  const mode = disposition(verdict);
   debug.record("review.complete", {
     epoch: candidate.epoch,
     reviewToken: candidate.token,
@@ -267,13 +267,11 @@ async function finishReview(
       return { text: candidate.text, note: PASSED };
     case "notice":
       gate.phase = "unverified";
-      if (verdict.decision === "REVISE")
-        log.record($.clock.now(), "修正回数の上限に到達しました。");
       log.record($.clock.now(), "未検証の本文を注記付きで表示しました。");
       await saveRecovery($, gate);
       return {
         text: candidate.text,
-        note: verdict.decision === "REVISE" ? UNRESOLVED : UNVERIFIED,
+        note: UNVERIFIED,
       };
     default: {
       const exhaustive: never = mode;
@@ -521,7 +519,13 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   } else {
     const work = await interimWork($, text);
     if (work !== undefined) shown = await skipInterim($, text, work, action, next.signal);
-    else {
+    else if (gate.revisions >= config.maxRevisions) {
+      gate.phase = "unverified";
+      log.record($.clock.now(), "修正回数の上限に達したため、審査せずに本文を表示しました。");
+      debug.record("review.skipped", { reason: "revision_limit", revisions: gate.revisions });
+      await saveRecovery($, gate, next.signal);
+      shown = { text, note: REVISION_LIMIT };
+    } else {
       debug.record("status.changed", { value: WAITING });
       $.ui.status(WAITING);
       shown = await verify($, e, text, next.signal);

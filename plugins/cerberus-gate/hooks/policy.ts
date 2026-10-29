@@ -17,8 +17,8 @@ export const UNVERIFIED =
   "Cerberus Gate: [UNVERIFIED] 回答の検証を完了できなかったため、未検証の本文をそのまま表示します。";
 export const skipped = (agents: number, shells: number, length: number): string =>
   `Cerberus Gate: [SKIP] バックグラウンド作業の実行中（エージェント ${agents} 件・シェル ${shells} 件）に届いた ${length} 文字の途中報告のため、検証せずに表示します。`;
-export const UNRESOLVED =
-  "Cerberus Gate: [REVISE] 修正回数の上限に達したため、検証の指摘が残る本文をそのまま表示します。";
+export const REVISION_LIMIT =
+  "Cerberus Gate: [SKIP] 修正回数の上限に達したため、審査せずに本文をそのまま表示します。";
 export const FAILED =
   "Cerberus Gate: [ERROR] 回答処理でエラーが発生したため、未検証の本文をそのまま表示します。";
 export const NO_DRAFT =

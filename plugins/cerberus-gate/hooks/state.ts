@@ -96,10 +96,10 @@ export function current(state: GateState, candidate: Candidate): boolean {
 }
 export type Mode = "publish" | "revise" | "notice";
 
-export function disposition(verdict: Verdict, revisions: number, max: number): Mode {
+export function disposition(verdict: Verdict): Mode {
   const modes = {
     PASS: "publish",
-    REVISE: revisions < max ? "revise" : "notice",
+    REVISE: "revise",
     UNVERIFIED: "notice",
   } satisfies Record<Verdict["decision"], Mode>;
   return modes[verdict.decision];
