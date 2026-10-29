@@ -1,6 +1,13 @@
 export type Language = "en" | "ja";
 
 const messages = {
+  menuPane: ["Cerberus Gate menu", "Cerberus Gate メニュー"],
+  menuStatus: ["Review status", "検証の状態"],
+  menuLog: ["Debug log location and storage status", "デバッグログの保存場所・保存状態"],
+  menuOn: ["Enable answer review…", "回答検証を有効にする…"],
+  menuOff: ["Disable answer review…", "回答検証を無効にする…"],
+  menuReset: ["Use saved enabled setting", "有効・無効を保存済み設定に戻す"],
+  menuCancel: ["Cancel pending review", "保留中の検証を取り消す"],
   debugSaveFailure: [
     "Debug log could not be saved. Check storage status with /cgate log.",
     "デバッグログの保存に失敗しました。/cgate log で保存状態を確認してください。",
@@ -87,8 +94,8 @@ const messages = {
     "回答検証の状態・履歴・デバッグログを表示",
   ],
   shortCommandDescription: [
-    "Show Cerberus Gate status and session logs",
-    "Cerberus Gate の状態・セッションログを表示",
+    "Open Cerberus Gate menu and settings",
+    "Cerberus Gate のメニュー・設定を開く",
   ],
   restarting: [
     "Requesting a fresh answer and review after reload interrupted the previous one.",

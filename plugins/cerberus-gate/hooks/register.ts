@@ -122,6 +122,7 @@ let configError: unknown;
 let interactive = true;
 let pendingEnabled: boolean | undefined;
 let historyText = "";
+let detailsText = "";
 const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
 const phases = {
   idle: "phaseIdle",
@@ -649,6 +650,45 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
   return next(e);
 };
 
+async function runCommand($: EngineInterface, argument: string) {
+  debug.record("command.received", { argument });
+  void flushDebug($, debug, true);
+  if (argument === "") {
+    await openPane($, "menu", t("menuPane"));
+    return { text: status() };
+  }
+  if (argument === "on" || argument === "off") {
+    pendingEnabled = argument === "on";
+    await openPane($, "enabled-scope", t("enabledScope"));
+    return {};
+  }
+  if (argument === "reset") {
+    pendingEnabled = undefined;
+    return { text: (await applyEnabled($, undefined, false)).text };
+  }
+  if (argument === "model") {
+    await openPane($, "reviewer-model", t("modelPane"));
+    return {};
+  }
+  if (argument === "history") {
+    historyText = await log.text();
+    await openPane($, "history", t("historyPane"));
+    return {};
+  }
+  if (argument === "log") return { text: debug.text() };
+  if (argument !== "" && argument !== "cancel") return { text: t("usage") };
+  if (argument === "cancel") {
+    const turnId = gate.active?.turnId;
+    reset(gate, gate.prompt, gate.marker);
+    gate.phase = "cancelled";
+    await saveRecovery($, gate);
+    $.ui.status(undefined);
+    log.record($.clock.now(), t("cancelled"));
+    if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
+  }
+  return { text: status() };
+}
+
 export const register: Register = (on, options) => {
   gate.sessionEnabled = undefined;
   pendingEnabled = undefined;
@@ -721,40 +761,45 @@ export const register: Register = (on, options) => {
     if (gate.delivery?.mode === "restart") queueContinuation($, gate.delivery);
     return result;
   });
-  on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
-    const argument = e.args.trim();
-    debug.record("command.received", { command: e.command, argument });
-    void flushDebug($, debug, true);
-    if (argument === "on" || argument === "off") {
-      pendingEnabled = argument === "on";
-      await openPane($, "enabled-scope", t("enabledScope"));
-      return {};
+  on("command.run", { command: /^(?:cgate|cerberus)$/u }, ($, e) => runCommand($, e.args.trim()));
+  on("ui.render", { component: "Pane", requestId: "menu" }, ($, e) => {
+    if (e.surface === "mobile") {
+      const { Text } = $.ui.resolve(e);
+      return Text({ children: status() + "\n" + t("usage") });
     }
-    if (argument === "reset") {
-      pendingEnabled = undefined;
-      return { text: (await applyEnabled($, undefined, false)).text };
-    }
-    if (argument === "model") {
-      await openPane($, "reviewer-model", t("modelPane"));
-      return {};
-    }
-    if (argument === "history") {
-      historyText = await log.text();
-      await openPane($, "history", t("historyPane"));
-      return {};
-    }
-    if (argument === "log") return { text: debug.text() };
-    if (argument !== "" && argument !== "cancel") return { text: t("usage") };
-    if (argument === "cancel") {
-      const turnId = gate.active?.turnId;
-      reset(gate, gate.prompt, gate.marker);
-      gate.phase = "cancelled";
-      await saveRecovery($, gate);
-      $.ui.status(undefined);
-      log.record($.clock.now(), t("cancelled"));
-      if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
-    }
-    return { text: status() };
+    const { Select } = $.ui.resolve(e);
+    return Select({
+      key: "cgate-menu",
+      label: status(),
+      options: [
+        { value: "status", label: t("menuStatus") },
+        { value: "history", label: t("historyPane") },
+        { value: "log", label: t("menuLog") },
+        { value: "on", label: t("menuOn") },
+        { value: "off", label: t("menuOff") },
+        { value: "reset", label: t("menuReset") },
+        { value: "model", label: t("modelPane") },
+        { value: "cancel", label: t("menuCancel") },
+      ],
+      value: "status",
+      autoFocus: true,
+      onSelect: async (value) => {
+        if (!["status", "history", "log", "on", "off", "reset", "model", "cancel"].includes(value))
+          return;
+        await $.ui.close({ id: "menu" });
+        if (value === "status" || value === "log") {
+          detailsText = value === "status" ? status() : debug.text();
+          await openPane($, "details", t(value === "status" ? "menuStatus" : "menuLog"));
+        } else if (["history", "on", "off", "reset", "model", "cancel"].includes(value)) {
+          const result = await runCommand($, value);
+          if (result.text) $.ui.toast(result.text, { timeoutMs: 3000 });
+        }
+      },
+    });
+  });
+  on("ui.render", { component: "Pane", requestId: "details" }, ($, e) => {
+    const { Text } = $.ui.resolve(e);
+    return Text({ children: detailsText });
   });
   on("ui.render", { component: "Pane", requestId: "history" }, ($, e) => {
     const { Text } = $.ui.resolve(e);
