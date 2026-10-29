@@ -17,6 +17,11 @@ for (const language of ["en", "ja"] as const) {
     }
     const menu = await render(h, "menu");
     assert.equal(Reflect.get(menu.options[0]!, "label"), translate(language, "menuStatus"));
+    assert.equal(menu.buttons.length, 10);
+    assert.deepEqual(
+      menu.buttons.slice(1).map((button) => button.hotkey),
+      ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+    );
     h.events.closed = false;
     await menu.onSelect("status");
     assert.equal(h.events.closed, true);

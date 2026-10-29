@@ -27,6 +27,7 @@ interface Result {
   children: string;
   label: string;
   back: () => Promise<void>;
+  buttons: { key: string; label: string; hotkey?: string; onPress: () => Promise<void> }[];
 }
 type Event = Record<string, unknown>;
 type Handler = (engine: unknown, event: Event, next: unknown) => unknown;
@@ -224,12 +225,33 @@ export function harness(
         Text: (props: unknown) => props,
         Button: (props: unknown) => props,
         Box: (props: {
-          children: { label?: string; children?: string; onPress: () => Promise<void> }[];
-        }) => ({
-          ...props.children[1],
-          children: props.children[1]!.children ?? props.children[1]!.label,
-          back: props.children[0]!.onPress,
-        }),
+          children: {
+            key?: string;
+            label?: string;
+            children?: string;
+            hotkey?: string;
+            onPress?: () => Promise<void>;
+          }[];
+        }) => {
+          const buttons = props.children.filter((child) => child.onPress !== undefined);
+          const menu = buttons.filter((button) => button.key?.startsWith("menu-"));
+          return {
+            ...props.children[1],
+            children: props.children[1]!.children ?? props.children[1]!.label,
+            back: props.children[0]!.onPress,
+            buttons,
+            ...(menu.length
+              ? {
+                  options: menu.map((button) => ({
+                    value: button.key!.slice(5),
+                    label: button.label,
+                  })),
+                  onSelect: async (value: string) =>
+                    menu.find((button) => button.key === `menu-${value}`)?.onPress?.(),
+                }
+              : {}),
+          };
+        },
       }),
     },
     config: {

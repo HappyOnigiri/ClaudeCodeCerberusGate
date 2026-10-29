@@ -25,7 +25,7 @@ export async function verifyMenu(
   await capture("language-picker.txt", "English");
   keys("BTab", "Enter");
   await capture("language-back.txt", t("modelPane"));
-  keys("Home", "Down", "Down", "Down", "Down", "Down", "Down", "Down", "Enter");
+  keys("8");
   await capture("language-reopened.txt", "English");
   keys(language === "en" ? "Down" : "Up", "Enter");
   const other = language === "en" ? "ja" : "en";
@@ -48,12 +48,13 @@ export async function verifyMenu(
   await submit("/cgate language");
   await capture("language-restore.txt", "English");
   keys(language === "en" ? "Up" : "Down", "Enter");
-  await capture("menu.txt", t("modelPane"));
+  await capture("menu.txt", t("menuCancel"));
+  if (/….*more/u.test(screen())) throw new Error("Menu still hides entries behind more");
   keys("Escape");
   await submit("/cgate model");
   await capture("model-before-back.txt", "fable");
   keys("BTab", "Enter");
   await capture("model-back.txt", t("modelPane"));
-  keys("Home", "Down", "Down", "Down", "Down", "Down", "Down", "Enter");
+  keys("Tab", "Tab", "Tab", "Tab", "Tab", "Tab", "Enter");
   await capture("model-reopened.txt", "fable");
 }
