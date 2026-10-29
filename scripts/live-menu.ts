@@ -20,7 +20,20 @@ export async function verifyMenu(
     const text = screen();
     await writeFile(join(artifacts, file), text);
     if (!text.includes(expected)) throw new Error(`Menu screen missing: ${expected}`);
+    await pause(300);
   };
+  await submit("/cgate");
+  await capture("initial-menu.txt", t("menuCancel"));
+  keys("Enter");
+  await pause(500);
+  await writeFile(join(artifacts, "initial-enter.txt"), screen());
+  if (screen().includes(t("menuCancel")))
+    throw new Error("Enter did not activate the initial menu item");
+  keys("Enter");
+  await capture("initial-back.txt", t("menuCancel"));
+  keys("Down", "Enter");
+  await capture("arrow-enter.txt", translate(language, "logHeader", ""));
+  keys("Escape");
   await submit("/cgate language");
   await capture("language-picker.txt", "English");
   keys("BTab", "Enter");
@@ -50,6 +63,12 @@ export async function verifyMenu(
   keys(language === "en" ? "Up" : "Down", "Enter");
   await capture("menu.txt", t("menuCancel"));
   if (/….*more/u.test(screen())) throw new Error("Menu still hides entries behind more");
+  await pause(1200);
+  keys("Enter");
+  await pause(500);
+  await writeFile(join(artifacts, "reload-enter.txt"), screen());
+  if (screen().includes(t("menuCancel")))
+    throw new Error("Enter did not activate menu after settings reload");
   keys("Escape");
   await submit("/cgate model");
   await capture("model-before-back.txt", "fable");
@@ -57,4 +76,16 @@ export async function verifyMenu(
   await capture("model-back.txt", t("modelPane"));
   keys("Tab", "Tab", "Tab", "Tab", "Tab", "Tab", "Enter");
   await capture("model-reopened.txt", "fable");
+}
+
+export async function installMenuKeybindings(configDir: string) {
+  await writeFile(
+    join(configDir, "keybindings.json"),
+    JSON.stringify({
+      bindings: [
+        { context: "Chat", bindings: { enter: "chat:newline", "ctrl+enter": "chat:submit" } },
+        { context: "Pane", bindings: { enter: "abovePrompt:press" } },
+      ],
+    }),
+  );
 }

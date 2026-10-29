@@ -68,6 +68,16 @@ effort の画面からはモデル選択へ、それ以外の画面からはメ�
 画面幅に応じてサイドパネルまたはインラインで表示されます。
 モバイルでは状態と個別コマンドの案内を表示します。
 
+Enter を改行に割り当てている場合は、`~/.claude/keybindings.json` の既存の `bindings` 配列に次の設定を追加してください。
+パネル内の Enter だけを選択操作にし、チャット欄のキー設定は維持します。
+
+```json
+{
+  "context": "Pane",
+  "bindings": { "enter": "abovePrompt:press" }
+}
+```
+
 言語の既定値は英語（`en`）です。
 メニューの `Language`、または `/cgate language` から `日本語` を選ぶと、保存してその場で切り替わります。
 `/config` の Cerberus Gate の `Language` からも変更できます。

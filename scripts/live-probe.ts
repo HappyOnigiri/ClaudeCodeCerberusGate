@@ -1,4 +1,4 @@
-import { verifyMenu } from "./live-menu.ts";
+import { verifyMenu, installMenuKeybindings } from "./live-menu.ts";
 import { translate } from "../plugins/cerberus-gate/hooks/locale.ts";
 import { language, t, verifyLanguage, historyMessage } from "./live-language.ts";
 interface Settings {
@@ -72,6 +72,10 @@ const withoutFindings = (screen: string, findings: unknown[]) =>
 const submit = async (session: string, text: string) => {
   tmux("send-keys", "-t", session, "-l", text);
   await pause(500);
+  if (text === "/cgate") {
+    tmux("send-keys", "-t", session, "Tab");
+    await pause(100);
+  }
   // ユーザーの Enter=改行設定にも対応する。通常設定では Enter を使う。
   tmux(
     "send-keys",
@@ -188,6 +192,7 @@ for (const mode of cases) {
         : reloadSettings(2),
     );
   }
+  if (!installedConfig && mode === "model") await installMenuKeybindings(configDir);
   const fixture = join(work, "fixture");
   await mkdir(join(fixture, ".claude-plugin"), { recursive: true });
   await mkdir(join(fixture, "hooks"));
