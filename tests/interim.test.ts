@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PASSED, readConfig, revising, skipped } from "../plugins/cerberus-gate/hooks/policy.ts";
+import {
+  PASSED,
+  REVISION_LIMIT,
+  readConfig,
+  revising,
+  skipped,
+} from "../plugins/cerberus-gate/hooks/policy.ts";
 
 import { harness, verdict, started } from "./helpers/gate-harness.ts";
 
@@ -160,4 +166,28 @@ void test("interimMaxChars defaults to 500 and rejects values outside 0 to 10000
     assert.equal(readConfig({ interimMaxChars: value }).interimMaxChars, value);
   for (const value of [-1, 100_001, 1.5, "500"])
     assert.throws(() => readConfig({ interimMaxChars: value }), /Invalid interimMaxChars/u);
+});
+
+void test("an interim report at the revision cap keeps the cycle until the final answer skips review", async () => {
+  const h = harness({ maxRevisions: 1 });
+  await started(h);
+  h.replies.push(verdict("REVISE", ["finding"]));
+  await h.step();
+  await h.flushCorrections();
+  h.host.reviewers.push(agent("running"));
+  h.setDraft("WAITING FOR AGENT");
+  assert.deepEqual(
+    shown(await h.step()),
+    noted(skipped(1, 0, "WAITING FOR AGENT".length), "WAITING FOR AGENT"),
+  );
+  assert.equal(h.host.states.get("recovery")!.pending, true);
+  h.host.reviewers[0]!.status = "completed";
+  await h.fire("prompt.submit", notification("agent-running"));
+  h.setDraft("CORRECTED");
+  const reviewsAtCap = h.events.models.length;
+  const materialsAtCap = h.events.materialRequests.length;
+  assert.deepEqual(shown(await h.step()), noted(REVISION_LIMIT, "CORRECTED"));
+  assert.equal(h.events.models.length, reviewsAtCap);
+  assert.equal(h.events.materialRequests.length, materialsAtCap);
+  assert.equal(h.host.states.get("recovery")!.pending, false);
 });

@@ -19,6 +19,15 @@ const decisionOf = (text: string) => {
 export async function verifyMaterials(records: string[], artifacts: string, mode: string) {
   if (mode === "missing-log" && records.some((entry) => /^review-\d+\.json$/u.test(entry)))
     throw new Error("Unavailable log started a reviewer");
+  if (mode === "cap") {
+    if (
+      records.filter((n) => /^review-\d+\.json$/u.test(n)).length !== 1 ||
+      records.filter((n) => /^material-\d+\.json$/u.test(n)).length !== 1
+    )
+      throw new Error("Revision cap started another review or generated more materials");
+    if (!(await readFile(join(artifacts, "screen.txt"), "utf8")).includes("[SKIP]"))
+      throw new Error("Revision cap did not show its skip notice");
+  }
   const snapshots = new Map();
   let cliHistorySearched = false;
   for (const name of records.filter((entry) => /^review-\d+\.json$/u.test(entry))) {

@@ -153,6 +153,7 @@ npm run test:live
 テスト用 Mod で異常応答や待機状態を作り、製品コードには試験用の合格判定を入れない。
 
 特定ケースは `npm run test:live -- pass` のように指定する。
+`npm run test:live -- cap` は修正上限を1回にして差し戻しを作り、修正後は審査資料とレビュアーを追加せず、本文と `[SKIP]` の注記を表示することを確認する。
 ケースの検査内容を変えるときは、スクリプトと [live-materials.ts](/scripts/live-materials.ts) を確認する。
 `npm run test:live -- cli` は審査ツール一覧から `Grep` を外し、CLI による履歴検索と審査完了を確認する。
 `npm run test:live -- recover` は存在しないファイルをレビュアーに読ませ、実行エラーが調査結果として返り、再試行後に公開されることを確認する。

@@ -39,6 +39,7 @@ const allCases = [
   "recover",
   "cli",
   "revise",
+  "cap",
   "unverified",
   "missing-log",
   "cancel",
@@ -113,7 +114,9 @@ const expectedFindings: Record<string, RegExp> = {
 const summary = [];
 for (const mode of cases) {
   if (!allCases.includes(mode)) throw new Error(`Unknown case ${mode}`);
-  const needsRevision = ["history", "revise", "bounds", "environment", "causal"].includes(mode);
+  const needsRevision = ["history", "revise", "cap", "bounds", "environment", "causal"].includes(
+    mode,
+  );
   const work = await mkdtemp(join(tmpdir(), "cerberus-live-"));
   const artifacts = join(report, mode);
   const visibleFindings = [];
@@ -127,6 +130,12 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
+  if (mode === "cap") {
+    const path = join(plugin, ".claude-plugin/plugin.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.userConfig.maxRevisions.default = 1;
+    await writeFile(path, JSON.stringify(manifest));
+  }
   if (mode === "missing-log")
     await writeFile(join(plugin, "hooks/session-log.mts"), "process.exitCode=1;\n");
   const display = join(work, "display");
@@ -189,7 +198,7 @@ for (const mode of cases) {
  export const register=on=>{
   if(${JSON.stringify(mode)}==='cli')on('tool.list',async($,e,next)=>{const r=await next(e);return {...r,value:r.value.filter(t=>t.name!=='Grep')};});
   on('turn.step',async function*($,e,next){
-   if(!e.agentId && first && (['revise','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)}) || (${JSON.stringify(mode)}==='history' && userPrompts>=2))){
+   if(!e.agentId && first && (['revise','cap','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)}) || (${JSON.stringify(mode)}==='history' && userPrompts>=2))){
     first=false;
     const text=${JSON.stringify(mode)}==='history'?'The limit is 8. CERBERUS_REJECTED_DRAFT':${JSON.stringify(drafts[mode] ?? "The release channel is beta. CERBERUS_REJECTED_DRAFT")};
     yield {kind:'text',index:0,text};yield {kind:'stop',stopReason:'end_turn',usage:null};
@@ -229,7 +238,9 @@ for (const mode of cases) {
    if(${JSON.stringify(mode)}==='history' && JSON.parse(e.prompt).unpublishedDraft.includes('CERBERUS_REJECTED_DRAFT'))e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain both a successful Grep on sessionLog.history with output_mode content and a successful Read of narrow matching history.txt ranges around the prior LIMIT tool result. Do not substitute a read of limits.ts for reading history.txt. Do not decide based solely on the current draft or request.'};
    if(${JSON.stringify(mode)}==='recover')e={...e,prompt:e.prompt+'\\nBefore deciding, after the required sessionLog.users Read, the evidence array must also contain a Read of '+${JSON.stringify(join(work, "missing-fact.txt"))}+' (it may not exist) followed by a successful Read of fact.txt. If the missing-file Read is already in evidence, request Read of fact.txt next; if both exist, return the verdict. Do not repeat completed reads.'};
    if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
-   const result=${JSON.stringify(mode)}==='unverified'
+   const result=${JSON.stringify(mode)}==='cap'
+    ? {value:{isAnswered:true,text:JSON.stringify({decision:'REVISE',findings:['fact.txt:1 says stable; correct the beta release channel.']}),usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
+    : ${JSON.stringify(mode)}==='unverified'
     ? {value:{isAnswered:true,text:'INVALID_REVIEW',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
     : await next(e);
    await $.fs.write(${JSON.stringify(artifacts)}+'/review-'+index+'.json',JSON.stringify({request:e,result:result.value,at:Date.now()}));
@@ -711,6 +722,7 @@ for (const mode of cases) {
         "reload-work": "検証済みの本文を公開しました。",
         "reload-review": "検証済みの本文を公開しました。",
         revise: "修正を依頼しました",
+        cap: "修正回数の上限に達したため、審査せずに本文を表示しました。",
         unverified: "UNVERIFIED",
         "missing-log": "UNVERIFIED",
         cancel: "コマンドで検証処理を取り消しました。",
