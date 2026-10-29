@@ -1,4 +1,6 @@
-import { CONTROL, formatFindings } from "./policy.ts";
+import { translate } from "./locale.ts";
+import type { Language } from "./locale.ts";
+import { formatFindings } from "./policy.ts";
 import type { Verdict } from "./policy.ts";
 export type Candidate = {
   token: number;
@@ -118,8 +120,8 @@ export function resultOf(e: { turnId: string; index: number }, answer: string) {
 // The answer the model will read later carries no gate notice, so the notice is logged beside it.
 export type Shown = { text: string; note?: string };
 export const hidden: Shown = { text: "" };
-export const controlText = (delivery: Delivery): string =>
-  `${CONTROL} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings)}` : ""}`;
+export const controlText = (delivery: Delivery, language: Language = "en"): string =>
+  `${translate(language, "control")} [${delivery.epoch}-${delivery.token}]${delivery.findings.length ? `\n\n${formatFindings(delivery.findings, language)}` : ""}`;
 
 const MAX_TASKS = 32;
 function remember(tasks: Set<string>, id: string): void {

@@ -152,6 +152,9 @@ npm run test:live
 常用設定・プラグインは変更しない。
 テスト用 Mod で異常応答や待機状態を作り、製品コードには試験用の合格判定を入れない。
 
+実地検証は既定で英語を確認します。
+`CERBERUS_LANGUAGE=ja npm run test:live -- pass revise` で日本語設定の合格・差し戻しと、実際の審査プロンプトの言語を確認できます。
+
 特定ケースは `npm run test:live -- pass` のように指定する。
 `npm run test:live -- cap` は修正上限を1回にして差し戻しを作り、修正後は審査資料とレビュアーを追加せず、本文と `[SKIP]` の注記を表示することを確認する。
 ケースの検査内容を変えるときは、スクリプトと [live-materials.ts](/scripts/live-materials.ts) を確認する。

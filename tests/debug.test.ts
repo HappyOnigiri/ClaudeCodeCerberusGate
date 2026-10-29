@@ -134,6 +134,6 @@ void test("serializer preserves exceptions and full arrays without failing on cy
   );
   assert.deepEqual(logger.take(), []);
   logger.failed(error);
-  assert.match(logger.text(), /保存失敗/u);
+  assert.match(logger.text(), /Save failed/u);
   assert.doesNotMatch(logger.text(), /outer|inner/u);
 });

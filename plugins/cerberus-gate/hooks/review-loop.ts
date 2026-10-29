@@ -177,7 +177,7 @@ export async function review(
       );
       await flush(signal);
       if (signal.aborted) return fail("cancelled");
-      const outcome = reviewEvidence(call, result, errors);
+      const outcome = reviewEvidence(call, result, errors, reviewConfig.language);
       if ("reason" in outcome) return fail(outcome.reason);
       errors = outcome.errors;
       evidence.push(outcome.entry);

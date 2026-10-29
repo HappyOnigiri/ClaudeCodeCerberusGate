@@ -1,3 +1,5 @@
+import { translate } from "../plugins/cerberus-gate/hooks/locale.ts";
+import { language, t, verifyLanguage, historyMessage } from "./live-language.ts";
 interface Settings {
   pluginConfigs?: Record<
     string,
@@ -60,7 +62,7 @@ const decisionOf = (text: string) => {
     return undefined;
   }
 };
-const compact = (text: string) => text.replace(/[\s\\`*]/gu, "");
+const compact = (text: string) => text.replace(/[\s\\`*│]/gu, "");
 const withoutFindings = (screen: string, findings: unknown[]) =>
   findings.reduce<string>(
     (text, finding) => text.replaceAll(compact(JSON.stringify(finding)), ""),
@@ -146,8 +148,17 @@ for (const mode of cases) {
   const configDir = installedConfig || join(work, "config");
   const settings = join(configDir, "settings.json");
   const reloadSettings = (maxRevisions: number) =>
-    JSON.stringify({ pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions } } } });
-  if (mode === "reload-work" || mode === "model" || mode === "toggle" || mode === "prompt") {
+    JSON.stringify({
+      pluginConfigs: { "cerberus-gate@inline": { options: { maxRevisions, language } } },
+    });
+  if (
+    !installedConfig &&
+    (language === "ja" ||
+      mode === "reload-work" ||
+      mode === "model" ||
+      mode === "toggle" ||
+      mode === "prompt")
+  ) {
     await mkdir(configDir);
     const accountPath = process.env.CLAUDE_CONFIG_DIR
       ? join(process.env.CLAUDE_CONFIG_DIR, ".claude.json")
@@ -166,6 +177,7 @@ for (const mode of cases) {
             pluginConfigs: {
               "cerberus-gate@inline": {
                 options: {
+                  language,
                   reviewerEffort: "inherit",
                   ...(mode === "prompt" ? { reviewPrompt: customPrompt } : {}),
                 },
@@ -354,6 +366,7 @@ for (const mode of cases) {
     ...(mode === "slow" ? ["--plugin-dir", delay] : []),
     "--setting-sources",
     installedConfig ||
+    language === "ja" ||
     mode === "reload-work" ||
     mode === "model" ||
     mode === "toggle" ||
@@ -370,6 +383,7 @@ for (const mode of cases) {
   ];
   if (
     installedConfig ||
+    language === "ja" ||
     mode === "reload-work" ||
     mode === "model" ||
     mode === "toggle" ||
@@ -437,7 +451,7 @@ for (const mode of cases) {
       await pause(1000);
       const effortScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-200");
       await writeFile(join(artifacts, "effort-picker.txt"), effortScreen);
-      if (!effortScreen.includes("検査用 effort")) throw new Error("Effort picker did not open");
+      if (!effortScreen.includes(t("effortPane"))) throw new Error("Effort picker did not open");
       tmux("send-keys", "-t", session, "Down", "Enter");
       const effortDeadline = Date.now() + 15_000;
       while (Date.now() < effortDeadline) {
@@ -457,7 +471,7 @@ for (const mode of cases) {
       )
         throw new Error("Model and effort selections were not persisted to user settings");
       await writeFile(join(artifacts, "saved-settings.json"), JSON.stringify(saved, null, 2));
-      const notice = "Cerberus Gate: 検査用 effort を low に設定しました。";
+      const notice = translate(language, "effortSaved", "low");
       const before = tmux("capture-pane", "-p", "-t", session);
       await writeFile(join(artifacts, "notice-before.txt"), before);
       if (!before.includes(notice)) throw new Error("Temporary notice was not displayed");
@@ -474,7 +488,7 @@ for (const mode of cases) {
         await submit(session, command);
         if (scope) {
           const pickerDeadline = Date.now() + 10_000;
-          while (!tmux("capture-pane", "-p", "-t", session).includes("このセッションだけ")) {
+          while (!tmux("capture-pane", "-p", "-t", session).includes(t("sessionScope"))) {
             if (Date.now() > pickerDeadline) throw new Error("Scope picker did not open");
             await pause(250);
           }
@@ -555,7 +569,7 @@ for (const mode of cases) {
     while (Date.now() < deadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "screen.txt"), latest);
-      if (mode === "slow" && latest.includes("回答を検証中です。")) {
+      if (mode === "slow" && latest.includes(t("waiting"))) {
         reviewingSince ??= Date.now();
         if (Date.now() - reviewingSince > 3500) {
           persistentReview = true;
@@ -582,7 +596,7 @@ for (const mode of cases) {
         throw new Error("Private draft or verdict leaked to the TUI");
       if (/\berror\b|hook skipped|hook failed|hooks module did not load/iu.test(latest))
         throw new Error("Hook error in TUI");
-      if (mode === "cancel" && !cancelled && latest.includes("回答を検証中です。")) {
+      if (mode === "cancel" && !cancelled && latest.includes(t("waiting"))) {
         await submit(session, "/cgate history");
         // The command runs immediately but its transcript row may wait for the held turn's flush.
         // Cancel before waiting for that row, so the review is still in flight.
@@ -598,7 +612,7 @@ for (const mode of cases) {
       if (
         (mode === "unverified" || mode === "missing-log" || mode === "timeout") &&
         // The notice is a log row of its own; the answer row starts with the held body.
-        /⏺ cerberus-gate: Cerberus Gate: [^\n]*未検証の本文をそのまま表示します/u.test(latest) &&
+        latest.includes(t("unverified")) &&
         /⏺\s+stable\b/u.test(latest)
       ) {
         passed = true;
@@ -639,7 +653,7 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
-    if (needsRevision && latest.includes("回答を検証中です。"))
+    if (needsRevision && latest.includes(t("waiting")))
       throw new Error("Waiting notice remained in the completed answer");
     if (mode === "history") {
       for (const name of (await readdir(artifacts)).filter((entry) =>
@@ -665,8 +679,8 @@ for (const mode of cases) {
       if (expectedFindings[mode] && !visibleFindings.some((f) => expectedFindings[mode]!.test(f)))
         throw new Error("Reviewer did not identify the intended material evidence problem");
       const heading = "Prompt from the cerberus-gate plugin";
-      const body = "Cerberus Gate: 検証処理を継続します。";
-      const findingsHeading = "指摘と根拠:";
+      const body = t("control");
+      const findingsHeading = t("findings").trim();
       if (!latest.includes(heading) || latest.includes(body) || latest.includes(findingsHeading))
         throw new Error("Control prompt was not collapsed to its sender heading");
       await writeFile(join(artifacts, "collapsed-screen.txt"), latest);
@@ -689,7 +703,9 @@ for (const mode of cases) {
       tmux("send-keys", "-t", session, "C-o");
       const collapsedDeadline = Date.now() + 10_000;
       while (Date.now() < collapsedDeadline) {
-        latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+        // Redraws can leave the former expanded frame in tmux scrollback.
+        // Check the current viewport when verifying that the control collapsed.
+        latest = tmux("capture-pane", "-p", "-t", session);
         if (latest.includes(heading) && !latest.includes(body)) break;
         await pause(250);
       }
@@ -704,33 +720,8 @@ for (const mode of cases) {
     let logSeen = false;
     while (Date.now() < logDeadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
-      const expected = {
-        history: "修正を依頼しました",
-        pass: "検証済みの本文を公開しました。",
-        prompt: "検証済みの本文を公開しました。",
-        choice: "検証済みの本文を公開しました。",
-        bounds: "修正を依頼しました",
-        environment: "修正を依頼しました",
-        causal: "修正を依頼しました",
-        model: "検証済みの本文を公開しました。",
-        toggle: "検証済みの本文を公開しました。",
-        search: "検証済みの本文を公開しました。",
-        recover: "検証済みの本文を公開しました。",
-        cli: "検証済みの本文を公開しました。",
-        slow: "検証済みの本文を公開しました。",
-        timeout: "タイムアウト",
-        "reload-work": "検証済みの本文を公開しました。",
-        "reload-review": "検証済みの本文を公開しました。",
-        revise: "修正を依頼しました",
-        cap: "修正回数の上限に達したため、審査せずに本文を表示しました。",
-        unverified: "UNVERIFIED",
-        "missing-log": "UNVERIFIED",
-        cancel: "コマンドで検証処理を取り消しました。",
-      }[mode];
-      if (
-        latest.includes("このセッションのログ（時刻は UTC）") &&
-        latest.includes(expected ?? "")
-      ) {
+      const expected = historyMessage(mode);
+      if (latest.includes(t("logHeader")) && latest.includes(expected ?? "")) {
         logSeen = true;
         break;
       }
@@ -738,16 +729,16 @@ for (const mode of cases) {
     }
     await writeFile(join(artifacts, "log-screen.txt"), latest);
     if (!logSeen) throw new Error("Expected session log not observed");
-    if (needsRevision && !latest.includes("指摘と根拠:"))
+    if (needsRevision && !latest.includes(t("findings").trim()))
       throw new Error("Session log did not show reviewer findings");
     if (needsRevision)
       for (const finding of visibleFindings)
         if (!compact(latest).includes(compact(JSON.stringify(finding))))
           throw new Error("Session log omitted a reviewer finding");
     if (mode.startsWith("reload-")) {
-      if (!reloaded || !latest.includes("再ロード前の依頼と修正回数を復元しました。"))
+      if (!reloaded || !latest.includes(t("restored")))
         throw new Error("Reload recovery not observed");
-      const restarted = latest.includes("再ロードで中断した回答の再生成・再審査を依頼します。");
+      const restarted = latest.includes(t("restarting"));
       if (mode === "reload-work" && restarted)
         throw new Error("Work reload unnecessarily restarted a review");
     }
@@ -769,10 +760,9 @@ for (const mode of cases) {
       await submit(session, "/cgate history");
       const screen = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "clear-screen.txt"), screen);
-      if (!screen.includes("このセッションのログはありません。"))
-        throw new Error("Session log survived /clear");
+      if (!screen.includes(t("noLogs"))) throw new Error("Session log survived /clear");
     }
-    if (mode === "cancel" && !latest.includes("審査 #1: 開始"))
+    if (mode === "cancel" && !latest.includes(translate(language, "reviewStarted", 1)))
       throw new Error("Pending review log not observed");
     if (mode === "cancel" && /⏺\s+stable\b/u.test(latest))
       throw new Error("Cancelled answer published");
@@ -786,6 +776,7 @@ for (const mode of cases) {
       if (/^review-\d+\.json$/u.test(name)) {
         const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
         verdicts.push(review.result.text ?? "");
+        verifyLanguage(review.request);
       }
       if (name.startsWith("prompt-")) {
         const prompt = JSON.parse(await readFile(join(artifacts, name), "utf8"));
@@ -795,7 +786,8 @@ for (const mode of cases) {
         if (
           prompt.origin.kind === "plugin" &&
           prompt.origin.name === "cerberus-gate" &&
-          /^Cerberus Gate: 検証処理を継続します。 \[\d+-\d+\]$/u.test(prompt.text)
+          prompt.text.startsWith(t("control") + " [") &&
+          !prompt.text.includes("\n")
         )
           restartPrompts++;
       }
@@ -952,13 +944,20 @@ for (const mode of cases) {
     }
     await writeFile(join(artifacts, "debug-location-screen.txt"), debugScreen);
     if (
-      !debugScreen.includes("保存済み") ||
+      !debugScreen.includes(t("saved")) ||
       !debugReport.some((entry) =>
         compact(debugScreen).includes(compact(entry.directory + "/index.jsonl")),
       )
     )
       throw new Error("Debug command did not display persisted absolute paths");
-    summary.push({ case: mode, status: "PASS", workspace: work, pluginPrompts, restartPrompts });
+    summary.push({
+      case: mode,
+      language,
+      status: "PASS",
+      workspace: work,
+      pluginPrompts,
+      restartPrompts,
+    });
     console.log(`PASS ${mode}`);
   } catch (error) {
     if (started)

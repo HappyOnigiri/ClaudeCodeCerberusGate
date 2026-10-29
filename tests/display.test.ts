@@ -67,3 +67,25 @@ void test("user messages, other plugins, other Cerberus messages and remote surf
     );
   }
 });
+
+void test("English control messages collapse and expand with the same origin boundary", () => {
+  const input = event({
+    text: 'Cerberus Gate: Continuing answer verification. [1-2]\n\nFindings and evidence:\n- "source:1"',
+  });
+  const original = { type: "Text", props: {}, children: [input.props.text] };
+  assert.deepEqual(
+    render({}, input, () => original),
+    { type: "Box", props: {}, children: [] },
+  );
+  input.props.isExpanded = true;
+  assert.strictEqual(
+    render({}, input, () => original),
+    original,
+  );
+  input.props.isExpanded = false;
+  input.props.origin.name = "other";
+  assert.strictEqual(
+    render({}, input, () => original),
+    original,
+  );
+});

@@ -1,18 +1,6 @@
-import {
-  correction,
-  FAILED,
-  MAX_DRAFT,
-  NO_DRAFT,
-  PASSED,
-  readConfig,
-  REVIEWER,
-  revising,
-  skipped,
-  supportedVersion,
-  REVISION_LIMIT,
-  UNVERIFIED,
-  WAITING,
-} from "./policy.ts";
+import { translate } from "./locale.ts";
+import { RESTART_JA } from "./prompts-ja.ts";
+import { correction, MAX_DRAFT, readConfig, REVIEWER, supportedVersion } from "./policy.ts";
 import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
 import {
   controlText,
@@ -41,17 +29,16 @@ import type { Config, Verdict } from "./policy.ts";
 import type { EngineInterface, Hook, Register, TurnStepInput } from "claude-code";
 
 const gate = createState();
-const log = createLog();
-let debug = createDebug();
+const t = (key: Parameters<typeof translate>[1], ...values: (string | number)[]) =>
+  translate(config.language, key, ...values);
+const log = createLog(() => config.language);
+let debug = createDebug(() => config.language);
 let debugQueue: Promise<void> = Promise.resolve();
 function debugFailure($: EngineInterface, error: unknown): void {
   debug.failed(error);
   try {
-    log.record(
-      $.clock.now(),
-      "デバッグログの保存に失敗しました。/cgate log で保存状態を確認してください。",
-    );
-    $.ui.toast("Cerberus Gate: デバッグログの保存に失敗しました。", { timeoutMs: 3000 });
+    log.record($.clock.now(), t("debugSaveFailure"));
+    $.ui.toast(t("debugSaveToast"), { timeoutMs: 3000 });
   } catch {
     /* Diagnostic notifications must not interrupt publication. */
   }
@@ -94,7 +81,7 @@ async function flushDebug(
   await debugQueue;
 }
 async function initializeDebug($: EngineInterface, details: unknown): Promise<void> {
-  debug = createDebug();
+  debug = createDebug(() => config.language);
   const identity = debug.start(await $.session.id());
   let pluginVersion: unknown;
   try {
@@ -136,8 +123,24 @@ let interactive = true;
 let pendingEnabled: boolean | undefined;
 let historyText = "";
 const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
+const phases = {
+  idle: "phaseIdle",
+  reviewing: "phaseReviewing",
+  "correction queued": "phaseCorrection",
+  publish: "phasePublished",
+  notice: "phaseUnverified",
+  published: "phasePublished",
+  unverified: "phaseUnverified",
+  cancelled: "phaseCancelled",
+} as const;
 const status = (): string =>
-  `Cerberus Gate: ${enabled() ? "on" : "off"} (${gate.sessionEnabled === undefined ? "saved" : "session"}); ${gate.phase}; corrections=${gate.revisions}`;
+  t(
+    "status",
+    enabled() ? t("enabledWord") : t("disabledWord"),
+    t(gate.sessionEnabled === undefined ? "savedSource" : "sessionSource"),
+    t(phases[gate.phase]),
+    gate.revisions,
+  );
 let buffered = { key: "", text: "" };
 const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
 
@@ -159,13 +162,13 @@ async function applyEnabled($: EngineInterface, desired: boolean | undefined, pe
         value: desired ?? config.enabled,
       });
       if (result.deny !== undefined || typeof result.value !== "boolean")
-        return { ok: false, text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
+        return { ok: false, text: t("enabledSaveFailure") };
       config = { ...config, enabled: result.value };
       gate.sessionEnabled = undefined;
     } catch (error) {
       debug.record("settings.failed", { setting: "enabled", error }, "error");
       await flushDebug($);
-      return { ok: false, text: "Cerberus Gate: 有効・無効の設定を保存できませんでした。" };
+      return { ok: false, text: t("enabledSaveFailure") };
     }
   } else gate.sessionEnabled = desired;
   const turnId = gate.active?.turnId;
@@ -181,11 +184,7 @@ async function applyEnabled($: EngineInterface, desired: boolean | undefined, pe
   if (!enabled() && turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
   return {
     ok: true,
-    text:
-      status() +
-      (!enabled() && pending
-        ? " 保留中の回答を取り消しました。新しい依頼を送信してください。"
-        : ""),
+    text: status() + (!enabled() && pending ? t("pendingCancelled") : ""),
   };
 }
 
@@ -196,10 +195,24 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
     const operationId = debug.operation();
     debug.record("delivery.start", { operationId, ...delivery });
     await flushDebug($);
-    const sent = await $.prompt.submit({ text: controlText(delivery) }).catch((error: unknown) => {
+    if (gate.delivery !== delivery || gate.epoch !== delivery.epoch) return;
+    // A reload's session.start dispatch may not include prompt.submit hooks yet.
+    // Carry restart context and its accepted state in the submission itself.
+    let sent;
+    try {
+      if (delivery.mode === "restart") {
+        gate.action = delivery;
+        gate.delivery = undefined;
+        await saveRecovery($, gate);
+        if (gate.action !== delivery || gate.epoch !== delivery.epoch) return;
+      }
+      sent = await $.prompt.submit({
+        text: controlText(delivery, config.language),
+        ...(delivery.mode === "restart" ? { context: [delivery.context] } : {}),
+      });
+    } catch (error) {
       debug.record("delivery.failed", { operationId, error }, "error");
-      return undefined;
-    });
+    }
     debug.record("delivery.complete", {
       operationId,
       result: sent,
@@ -212,18 +225,17 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
     gate.action = undefined;
     gate.blocked = true;
     gate.phase = "unverified";
-    await saveRecovery($, gate);
     if (delivery.mode === "restart") {
-      log.record(
-        $.clock.now(),
-        "再ロード後の再開に失敗しました。続行するには新しい依頼を送信してください。",
-      );
+      log.record($.clock.now(), t("resumeFailure"));
     } else {
-      log.record($.clock.now(), "修正依頼の送信に失敗したため、本文を表示できませんでした。");
-      $.ui.toast("Cerberus Gate: 修正依頼の送信に失敗したため、本文を表示できませんでした。", {
+      log.record($.clock.now(), t("deliveryFailure"));
+      $.ui.toast(t("deliveryToast"), {
         timeoutMs: 3000,
       });
     }
+    await saveRecovery($, gate).catch((error: unknown) => {
+      debug.record("delivery.recovery.failed", { operationId, error }, "error");
+    });
   });
 }
 // Regular reviews queue only REVISE; reload recovery can also request a fresh answer.
@@ -240,21 +252,21 @@ async function finishReview(
     mode,
     revisions: gate.revisions,
   });
-  log.record($.clock.now(), `審査 #${candidate.token}: ${verdict.decision}`, verdict.findings);
+  log.record($.clock.now(), t("reviewResult", candidate.token, verdict.decision), verdict.findings);
   gate.active = undefined;
   if (mode === "revise") {
     gate.revisions++;
     const delivery: Delivery = {
       token: candidate.token,
       epoch: candidate.epoch,
-      context: correction(candidate.text, verdict.findings),
+      context: correction(candidate.text, verdict.findings, config.language),
       mode: "revise",
       findings: verdict.findings,
     };
     gate.delivery = delivery;
     gate.phase = "correction queued";
-    log.record($.clock.now(), `修正を依頼しました（${gate.revisions} 回目）。`);
-    showNote($, revising(gate.revisions));
+    log.record($.clock.now(), t("correctionRequested", gate.revisions));
+    showNote($, t("revising", gate.revisions));
     await saveRecovery($, gate);
     queueContinuation($, delivery);
     return hidden;
@@ -262,16 +274,16 @@ async function finishReview(
   switch (mode) {
     case "publish":
       gate.phase = "published";
-      log.record($.clock.now(), "検証済みの本文を公開しました。");
+      log.record($.clock.now(), t("published"));
       await saveRecovery($, gate);
-      return { text: candidate.text, note: PASSED };
+      return { text: candidate.text, note: t("passed") };
     case "notice":
       gate.phase = "unverified";
-      log.record($.clock.now(), "未検証の本文を注記付きで表示しました。");
+      log.record($.clock.now(), t("unverifiedPublished"));
       await saveRecovery($, gate);
       return {
         text: candidate.text,
-        note: UNVERIFIED,
+        note: t("unverified"),
       };
     default: {
       const exhaustive: never = mode;
@@ -303,7 +315,7 @@ async function verify(
   signal.addEventListener("abort", abort, { once: true });
   gate.active = candidate;
   gate.phase = "reviewing";
-  log.record($.clock.now(), `審査 #${candidate.token}: 開始`);
+  log.record($.clock.now(), t("reviewStarted", candidate.token));
   const timer = $.clock.after(config.reviewTimeoutMs, () => {
     if (!current(gate, candidate)) return;
     candidate.timedOut = true;
@@ -357,7 +369,7 @@ async function verify(
     });
     if (!current(gate, candidate) || signal.aborted) return hidden;
     if (candidate.timedOut) {
-      log.record($.clock.now(), `審査 #${candidate.token}: タイムアウト`);
+      log.record($.clock.now(), t("reviewTimeout", candidate.token));
       verdict = { decision: "UNVERIFIED", findings: [] };
     }
     return await finishReview($, candidate, verdict);
@@ -379,7 +391,7 @@ async function verify(
         operationId: materialOperationId,
         result: removed,
       });
-      if (removed?.exitCode !== 0) log.record($.clock.now(), "検証資料の削除に失敗しました。");
+      if (removed?.exitCode !== 0) log.record($.clock.now(), t("releaseFailure"));
     }
     if (gate.material === directory) {
       gate.material = undefined;
@@ -422,10 +434,7 @@ async function skipInterim(
   action: Delivery | undefined,
   signal: AbortSignal,
 ): Promise<Shown> {
-  log.record(
-    $.clock.now(),
-    "バックグラウンド作業の実行中の途中報告のため、検証せずに表示しました。",
-  );
+  log.record($.clock.now(), t("interimPublished"));
   debug.record("review.skipped", { ...work, length: text.length, correction: action?.token });
   // A correction's turn that waits for its work keeps the cycle, so notifications join it and
   // the correction count is not reset.
@@ -433,7 +442,7 @@ async function skipInterim(
     gate.action = action;
     await saveRecovery($, gate, signal);
   } else await flushDebug($, debug, false, signal);
-  return { text, note: skipped(work.agents, work.shells, text.length) };
+  return { text, note: t("skipped", work.agents, work.shells, text.length) };
 }
 
 const onStep: Hook<"turn.step"> = async function* ($, e, next) {
@@ -500,34 +509,31 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   if (gate.delivery !== undefined) {
     // A queued correction supersedes this answer (a notification's turn); its own turn is reviewed.
     debug.record("answer.superseded", { turnId: e.turnId, epoch, token: gate.delivery.token });
-    log.record($.clock.now(), "修正依頼の配信待ちのため、この回答は表示しません。");
+    log.record($.clock.now(), t("answerPending"));
     shown = hidden;
   } else if (
     (response.stopReason !== "end_turn" && response.stopReason !== "stop_sequence") ||
     text.length > MAX_DRAFT
   ) {
-    log.record(
-      $.clock.now(),
-      "回答の終了条件またはサイズが審査の対象外のため、未検証の本文を表示しました。",
-    );
+    log.record($.clock.now(), t("outsideLimits"));
     debug.record("review.unverified", {
       reason: text.length > MAX_DRAFT ? "draft_size_limit" : "stop_reason",
       stopReason: response.stopReason,
     });
     await flushDebug($, debug, false, next.signal);
-    shown = { text, note: UNVERIFIED };
+    shown = { text, note: t("unverified") };
   } else {
     const work = await interimWork($, text);
     if (work !== undefined) shown = await skipInterim($, text, work, action, next.signal);
     else if (gate.revisions >= config.maxRevisions) {
       gate.phase = "unverified";
-      log.record($.clock.now(), "修正回数の上限に達したため、審査せずに本文を表示しました。");
+      log.record($.clock.now(), t("limitPublished"));
       debug.record("review.skipped", { reason: "revision_limit", revisions: gate.revisions });
       await saveRecovery($, gate, next.signal);
-      shown = { text, note: REVISION_LIMIT };
+      shown = { text, note: t("revisionLimit") };
     } else {
-      debug.record("status.changed", { value: WAITING });
-      $.ui.status(WAITING);
+      debug.record("status.changed", { value: t("waiting") });
+      $.ui.status(t("waiting"));
       shown = await verify($, e, text, next.signal);
       debug.record("status.changed", { value: null });
       await flushDebug($, debug, false, next.signal);
@@ -551,12 +557,7 @@ const stepFailure: Hook<"turn.step"> = async function* ($, e, next) {
   const text = buffered.key === stepKey(e) ? buffered.text : "";
   buffered = { key: "", text: "" };
   if (next.signal.aborted) return resultOf(e, "");
-  log.record(
-    $.clock.now(),
-    text.trim()
-      ? "回答処理でエラーが発生したため、未検証の本文を表示しました。"
-      : "回答処理でエラーが発生しました。表示できる本文はありません。",
-  );
+  log.record($.clock.now(), text.trim() ? t("answerError") : t("emptyError"));
   gate.active?.controller.abort();
   gate.blocked = true;
   gate.active = undefined;
@@ -564,7 +565,7 @@ const stepFailure: Hook<"turn.step"> = async function* ($, e, next) {
   gate.action = undefined;
   await saveRecovery($, gate);
   $.ui.status(undefined);
-  showNote($, text.trim() ? FAILED : NO_DRAFT);
+  showNote($, text.trim() ? t("failed") : t("noDraft"));
   if (!text.trim()) return resultOf(e, "");
   yield { kind: "text", index: 0, text };
   yield { kind: "stop", stopReason: "end_turn", usage: null };
@@ -579,16 +580,28 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     joins: joinsCycle(gate, e),
   });
   if (e.origin.kind === "plugin" && e.origin.name === "cerberus-gate") {
-    const delivery = gate.delivery;
-    if (delivery === undefined || e.text !== controlText(delivery) || delivery.epoch !== gate.epoch)
-      return { drop: "Cerberus: 古い検証処理を破棄しました。" };
+    const delivery =
+      gate.delivery ??
+      (gate.action?.mode === "restart" && e.context?.includes(gate.action.context)
+        ? gate.action
+        : undefined);
+    if (
+      delivery === undefined ||
+      e.text !== controlText(delivery, config.language) ||
+      delivery.epoch !== gate.epoch
+    )
+      return { drop: t("staleContinuation") };
     gate.action = delivery;
     gate.delivery = undefined;
     await saveRecovery($, gate);
-    return next({ ...e, context: [...(e.context ?? []), delivery.context] });
+    const context = e.context ?? [];
+    return next({
+      ...e,
+      context: context.includes(delivery.context) ? context : [...context, delivery.context],
+    });
   }
   // Before reset(): the reviewer's own notification must not cancel the review it belongs to.
-  if (staleNotification(gate, e)) return { drop: "Cerberus: 検証結果を処理済みです。" };
+  if (staleNotification(gate, e)) return { drop: t("handledResult") };
   if (e.origin.kind === "task-notification") finishMainTask(gate, e);
   else {
     gate.mainTasks.clear();
@@ -596,7 +609,7 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
   }
   if (joinsCycle(gate, e)) return next(e);
   if (gate.active !== undefined || gate.delivery !== undefined)
-    log.record($.clock.now(), "新しい依頼により、保留中の検証処理を取り消しました。");
+    log.record($.clock.now(), t("newRequest"));
   reset(gate, ...requestOf(gate, e));
   await saveRecovery($, gate);
   $.ui.status(undefined);
@@ -605,9 +618,8 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
 
 const onTool: Hook<"tool.call"> = async (_$, e, next) => {
   if (e.agentId !== undefined && gate.reviewers.has(e.agentId)) {
-    if (e.tool === "SubagentHandback")
-      return next({ ...e, message: "Cerberus Gate reviewer: completed." });
-    return { deny: "Cerberus: stale reviewer stopped." };
+    if (e.tool === "SubagentHandback") return next({ ...e, message: t("reviewerCompleted") });
+    return { deny: t("staleReviewer") };
   }
   if (next.origin.plugin !== "cerberus-gate") {
     const result = await next(e);
@@ -619,20 +631,20 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
   }
   if (e.tool === "TaskStop" && ownTask(gate, e)) return next(e);
   if (gate.active === undefined || gate.active.controller.signal.aborted)
-    return { deny: "Cerberus reviewer: no active review." };
+    return { deny: t("noActiveReviewer") };
   return next(e);
 };
 const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
   if (e.agentId !== undefined && gate.reviewers.has(e.agentId))
     return e.tool === "SubagentHandback"
       ? next(e)
-      : { decision: "deny", reason: "Cerberus: stale reviewer stopped." };
+      : { decision: "deny", reason: t("staleReviewer") };
   if (next.origin.plugin !== "cerberus-gate") return next(e);
   if (e.tool === "TaskStop" && ownTask(gate, e.input)) return next(e);
   if (gate.active === undefined || gate.active.controller.signal.aborted)
     return {
       decision: "deny",
-      reason: "Cerberus: no active review.",
+      reason: t("noActiveReview"),
     };
   return next(e);
 };
@@ -643,6 +655,7 @@ export const register: Register = (on, options) => {
   log.clear();
   configured = true;
   configError = undefined;
+  config = readConfig({ language: options.language === "ja" ? "ja" : "en" });
   try {
     config = readConfig(options);
   } catch (error) {
@@ -654,9 +667,9 @@ export const register: Register = (on, options) => {
     interactive = e.isInteractive;
     configured = configured && supportedVersion((await $.session.version()).base);
     await initializeDebug($, { event: e, options, configError });
-    log.record($.clock.now(), "Cerberus Gate を起動しました。");
-    if (!configured) log.record($.clock.now(), "設定または Claude Code のバージョンが対象外です。");
-    if (!interactive) log.record($.clock.now(), "非対話セッションは対象外です。");
+    log.record($.clock.now(), t("started"));
+    if (!configured) log.record($.clock.now(), t("unsupported"));
+    if (!interactive) log.record($.clock.now(), t("noninteractive"));
     const recovery = (await $.state.get({ plugin: "cerberus-gate", key: "recovery" })).value;
     if (recovery?.material !== undefined) {
       await $.process
@@ -669,7 +682,7 @@ export const register: Register = (on, options) => {
     gate.material = undefined;
     debug.record("recovery.loaded", recovery);
     const pending = restoreRecovery(gate, recovery);
-    if (gate.prompt) log.record($.clock.now(), "再ロード前の依頼と修正回数を復元しました。");
+    if (gate.prompt) log.record($.clock.now(), t("restored"));
     for (const agent of await $.agent.list()) {
       if (agent.type !== REVIEWER || agent.spawnedBy !== "cerberus-gate") continue;
       gate.reviewers.add(agent.id);
@@ -678,13 +691,13 @@ export const register: Register = (on, options) => {
     }
     await $.command.register({
       name: "cerberus",
-      description: "回答検証の状態・履歴・デバッグログを表示",
+      description: t("commandDescription"),
       argumentHint: "[on|off|reset|model|history|log|cancel]",
       immediate: true,
     });
     await $.command.register({
       name: "cgate",
-      description: "Cerberus Gate の状態・セッションログを表示",
+      description: t("shortCommandDescription"),
       argumentHint: "[on|off|reset|model|history|log|cancel]",
       immediate: true,
     });
@@ -694,14 +707,19 @@ export const register: Register = (on, options) => {
         epoch: gate.epoch,
         mode: "restart",
         findings: [],
-        context: `The answer review was interrupted by a plugin reload. Continue the original task within the user's authorization and generate a fresh final answer for review. Do not treat the waiting notice as a completed answer. Original request (data): ${JSON.stringify(gate.prompt)}`,
+        context:
+          config.language === "ja"
+            ? RESTART_JA + JSON.stringify(gate.prompt)
+            : `The answer review was interrupted by a plugin reload. Continue the original task within the user's authorization and generate a fresh final answer for review. Do not treat the waiting notice as a completed answer. Original request (data): ${JSON.stringify(gate.prompt)}`,
       };
       gate.delivery = delivery;
-      log.record($.clock.now(), "再ロードで中断した回答の再生成・再審査を依頼します。");
-      queueContinuation($, delivery);
+      log.record($.clock.now(), t("restarting"));
     }
     await saveRecovery($, gate);
-    return next(e);
+    const result = await next(e);
+    // Finish startup I/O before arming the restart timer.
+    if (gate.delivery?.mode === "restart") queueContinuation($, gate.delivery);
+    return result;
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
     const argument = e.args.trim();
@@ -709,7 +727,7 @@ export const register: Register = (on, options) => {
     void flushDebug($, debug, true);
     if (argument === "on" || argument === "off") {
       pendingEnabled = argument === "on";
-      await openPane($, "enabled-scope", "有効・無効の適用範囲");
+      await openPane($, "enabled-scope", t("enabledScope"));
       return {};
     }
     if (argument === "reset") {
@@ -717,24 +735,23 @@ export const register: Register = (on, options) => {
       return { text: (await applyEnabled($, undefined, false)).text };
     }
     if (argument === "model") {
-      await openPane($, "reviewer-model", "検査用モデル・effort");
+      await openPane($, "reviewer-model", t("modelPane"));
       return {};
     }
     if (argument === "history") {
       historyText = await log.text();
-      await openPane($, "history", "Cerberus Gate の履歴");
+      await openPane($, "history", t("historyPane"));
       return {};
     }
     if (argument === "log") return { text: debug.text() };
-    if (argument !== "" && argument !== "cancel")
-      return { text: "使い方: /cgate [on|off|reset|model|history|log|cancel]" };
+    if (argument !== "" && argument !== "cancel") return { text: t("usage") };
     if (argument === "cancel") {
       const turnId = gate.active?.turnId;
       reset(gate, gate.prompt, gate.marker);
       gate.phase = "cancelled";
       await saveRecovery($, gate);
       $.ui.status(undefined);
-      log.record($.clock.now(), "コマンドで検証処理を取り消しました。");
+      log.record($.clock.now(), t("cancelled"));
       if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
     }
     return { text: status() };
@@ -748,16 +765,16 @@ export const register: Register = (on, options) => {
     if (e.surface === "mobile" || desired === undefined) {
       const { Text } = $.ui.resolve(e);
       return Text({
-        children: "ターミナルで /cgate on または /cgate off を実行して適用範囲を選んでください。",
+        children: t("mobileScope"),
       });
     }
     const { Select } = $.ui.resolve(e);
     return Select({
       key: `enabled-scope-${desired}`,
-      label: `回答検証を${desired ? "有効" : "無効"}にする範囲`,
+      label: t("scopeLabel", desired ? t("enabledWord") : t("disabledWord")),
       options: [
-        { value: "session", label: "このセッションだけ" },
-        { value: "saved", label: "設定に保存（次回以降も適用）" },
+        { value: "session", label: t("sessionScope") },
+        { value: "saved", label: t("savedScope") },
       ],
       value: "session",
       autoFocus: true,
@@ -775,12 +792,12 @@ export const register: Register = (on, options) => {
   on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
     if (e.surface === "mobile") {
       const { Text } = $.ui.resolve(e);
-      return Text({ children: "検査用モデル・effort は /config で変更してください。" });
+      return Text({ children: t("mobileModel") });
     }
     const { Select } = $.ui.resolve(e);
     return Select({
       key: "reviewer-model",
-      label: "検査用モデル",
+      label: t("modelLabel"),
       options: [
         ...new Set(["inherit", "haiku", "sonnet", "opus", "fable", config.reviewerModel]),
       ].map((value) => ({ value })),
@@ -790,7 +807,7 @@ export const register: Register = (on, options) => {
         try {
           const result = await $.config.set({ key: "cerberus-gate.reviewerModel", value });
           if (result.deny !== undefined) {
-            $.ui.toast(`Cerberus Gate: モデルを保存できませんでした。${result.deny}`, {
+            $.ui.toast(t("modelDenied", result.deny), {
               timeoutMs: 3000,
             });
             return;
@@ -801,15 +818,15 @@ export const register: Register = (on, options) => {
             reviewerModel: result.value,
             reviewerEffort: config.reviewerEffort,
           });
-          $.ui.toast(`Cerberus Gate: 検査用モデルを ${config.reviewerModel} に設定しました。`, {
+          $.ui.toast(t("modelSaved", config.reviewerModel), {
             timeoutMs: 3000,
           });
           await $.ui.close({ id: "reviewer-model" });
-          await openPane($, "reviewer-effort", "検査用 effort");
+          await openPane($, "reviewer-effort", t("effortPane"));
         } catch (error) {
           debug.record("settings.failed", { setting: "reviewerModel", error }, "error");
           await flushDebug($);
-          $.ui.toast("Cerberus Gate: モデルを保存できませんでした。", { timeoutMs: 3000 });
+          $.ui.toast(t("modelFailure"), { timeoutMs: 3000 });
         }
       },
     });
@@ -817,12 +834,12 @@ export const register: Register = (on, options) => {
   on("ui.render", { component: "Pane", requestId: "reviewer-effort" }, ($, e) => {
     if (e.surface === "mobile") {
       const { Text } = $.ui.resolve(e);
-      return Text({ children: "検査用 effort は /config で変更してください。" });
+      return Text({ children: t("mobileEffort") });
     }
     const { Select } = $.ui.resolve(e);
     return Select({
       key: "reviewer-effort",
-      label: `検査用 effort（モデル: ${config.reviewerModel}）`,
+      label: t("effortLabel", config.reviewerModel),
       options: ["inherit", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value })),
       value: config.reviewerEffort,
       autoFocus: true,
@@ -830,7 +847,7 @@ export const register: Register = (on, options) => {
         try {
           const result = await $.config.set({ key: "cerberus-gate.reviewerEffort", value });
           if (result.deny !== undefined) {
-            $.ui.toast(`Cerberus Gate: effort を保存できませんでした。${result.deny}`, {
+            $.ui.toast(t("effortDenied", result.deny), {
               timeoutMs: 3000,
             });
             return;
@@ -841,14 +858,14 @@ export const register: Register = (on, options) => {
             reviewerModel: config.reviewerModel,
             reviewerEffort: result.value,
           });
-          $.ui.toast(`Cerberus Gate: 検査用 effort を ${config.reviewerEffort} に設定しました。`, {
+          $.ui.toast(t("effortSaved", config.reviewerEffort), {
             timeoutMs: 3000,
           });
           await $.ui.close({ id: "reviewer-effort" });
         } catch (error) {
           debug.record("settings.failed", { setting: "reviewerEffort", error }, "error");
           await flushDebug($);
-          $.ui.toast("Cerberus Gate: effort を保存できませんでした。", { timeoutMs: 3000 });
+          $.ui.toast(t("effortFailure"), { timeoutMs: 3000 });
         }
       },
     });
@@ -856,21 +873,21 @@ export const register: Register = (on, options) => {
   on("agent.offer", { agent: REVIEWER }, () => ({ isOffered: false })).catch(() => ({
     isOffered: false,
   }));
-  on("agent.spawn", { subagentType: REVIEWER }, () => ({ deny: "Cerberus: reviews run inline." }));
+  on("agent.spawn", { subagentType: REVIEWER }, () => ({ deny: t("inlineReviews") }));
   on("turn.step", onStep).catch(stepFailure);
   on("prompt.submit", onPrompt);
   on("tool.call", onTool).catch(async ($, e, next) => {
     debug.record("hook.failed", { hook: "tool.call", input: e, error: next.error }, "error");
     await flushDebug($);
-    return { deny: "Cerberus: reviewer tool guard failed." };
+    return { deny: t("guardFailed") };
   });
   on("tool.check", onCheck).catch(async ($, e, next) => {
     debug.record("hook.failed", { hook: "tool.check", input: e, error: next.error }, "error");
     await flushDebug($);
-    return { decision: "deny", reason: "Cerberus: permission guard failed." };
+    return { decision: "deny", reason: t("permissionFailed") };
   });
   on("turn.abort", async ($, e, next) => {
-    log.record($.clock.now(), "回答処理が中断されました。");
+    log.record($.clock.now(), t("interrupted"));
     reset(gate, gate.prompt, gate.marker);
     gate.phase = "cancelled";
     await saveRecovery($, gate);
