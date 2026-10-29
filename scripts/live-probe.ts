@@ -1,3 +1,4 @@
+import { verifyMenu, installMenuKeybindings } from "./live-menu.ts";
 import { translate } from "../plugins/cerberus-gate/hooks/locale.ts";
 import { language, t, verifyLanguage, historyMessage } from "./live-language.ts";
 interface Settings {
@@ -68,16 +69,21 @@ const withoutFindings = (screen: string, findings: unknown[]) =>
     (text, finding) => text.replaceAll(compact(JSON.stringify(finding)), ""),
     compact(screen),
   );
+let menuKeybindings = false;
 const submit = async (session: string, text: string) => {
   tmux("send-keys", "-t", session, "-l", text);
   await pause(500);
+  if (text === "/cgate") {
+    tmux("send-keys", "-t", session, "Tab");
+    await pause(100);
+  }
   // ユーザーの Enter=改行設定にも対応する。通常設定では Enter を使う。
   tmux(
     "send-keys",
     "-t",
     session,
     "-l",
-    process.env.CERBERUS_SUBMIT === "enter" ? "\r" : "\x1b[13;5u",
+    process.env.CERBERUS_SUBMIT === "enter" && !menuKeybindings ? "\r" : "\x1b[13;5u",
   );
   await pause(500);
 };
@@ -115,6 +121,7 @@ const expectedFindings: Record<string, RegExp> = {
 };
 const summary = [];
 for (const mode of cases) {
+  menuKeybindings = mode === "model";
   if (!allCases.includes(mode)) throw new Error(`Unknown case ${mode}`);
   const needsRevision = ["history", "revise", "cap", "bounds", "environment", "causal"].includes(
     mode,
@@ -187,6 +194,7 @@ for (const mode of cases) {
         : reloadSettings(2),
     );
   }
+  if (!installedConfig && mode === "model") await installMenuKeybindings(configDir);
   const fixture = join(work, "fixture");
   await mkdir(join(fixture, ".claude-plugin"), { recursive: true });
   await mkdir(join(fixture, "hooks"));
@@ -428,7 +436,7 @@ for (const mode of cases) {
     }
     if (!ready) throw new Error("TUI did not become ready");
     if (mode === "model") {
-      await submit(session, "/cgate model");
+      await verifyMenu(session, artifacts, settings, (text) => submit(session, text));
       await pause(1000);
       const modelScreen = tmux("capture-pane", "-p", "-t", session, "-S", "-200");
       await writeFile(join(artifacts, "model-picker.txt"), modelScreen);

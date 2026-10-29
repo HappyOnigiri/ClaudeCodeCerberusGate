@@ -1,3 +1,4 @@
+import { phases, settingFor, menuItems } from "./menu.ts";
 import { translate } from "./locale.ts";
 import { RESTART_JA } from "./prompts-ja.ts";
 import { correction, MAX_DRAFT, readConfig, REVIEWER, supportedVersion } from "./policy.ts";
@@ -26,7 +27,14 @@ import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
 import type { Candidate, Delivery, GateState, Shown } from "./state.ts";
 import type { Config, Verdict } from "./policy.ts";
-import type { EngineInterface, Hook, Register, TurnStepInput } from "claude-code";
+import type {
+  EngineInterface,
+  Hook,
+  Register,
+  TurnStepInput,
+  RenderInput,
+  SelectProps,
+} from "claude-code";
 
 const gate = createState();
 const t = (key: Parameters<typeof translate>[1], ...values: (string | number)[]) =>
@@ -42,6 +50,53 @@ function debugFailure($: EngineInterface, error: unknown): void {
   } catch {
     /* Diagnostic notifications must not interrupt publication. */
   }
+}
+async function goBack($: EngineInterface, id: string) {
+  if (id === "enabled-scope") pendingEnabled = undefined;
+  await $.ui.close({ id });
+  if (id !== "menu")
+    await openPane(
+      $,
+      id === "reviewer-effort" ? "reviewer-model" : "menu",
+      t(id === "reviewer-effort" ? "modelPane" : "menuPane"),
+    );
+}
+function picker($: EngineInterface, e: RenderInput, props: SelectProps) {
+  if (e.surface === "mobile") return $.ui.resolve(e).Text({ children: props.label ?? "" });
+  const { Box, Button, Select, Text } = $.ui.resolve(e);
+  return Box({
+    flexDirection: "column",
+    children: [
+      Button({
+        key: "back",
+        label: t("backHint"),
+        onPress: () => goBack($, e.requestId ?? "menu"),
+      }),
+      ...(e.requestId === "menu"
+        ? [
+            Text({ children: props.label }),
+            ...props.options.map((option, index) =>
+              Button({
+                key: `menu-${option.value}`,
+                label: option.label ?? option.value,
+                hotkey: String(index + 1),
+                plain: true,
+                autoFocus: option.value === props.value ? true : undefined,
+                onPress: () =>
+                  props.onSelect(option.value, {
+                    plugin: "cerberus-gate",
+                    component: "Pane",
+                    requestId: e.requestId,
+                    surface: e.surface,
+                    element: props.key,
+                    value: option.value,
+                  }),
+              }),
+            ),
+          ]
+        : [Select(props)]),
+    ],
+  });
 }
 async function openPane($: EngineInterface, id: string, title: string): Promise<void> {
   await $.ui.open({ id, title, focus: true, closeOnEscape: true });
@@ -122,17 +177,9 @@ let configError: unknown;
 let interactive = true;
 let pendingEnabled: boolean | undefined;
 let historyText = "";
+let detailsText = "";
+let menuValue = "status";
 const enabled = (): boolean => gate.sessionEnabled ?? config.enabled;
-const phases = {
-  idle: "phaseIdle",
-  reviewing: "phaseReviewing",
-  "correction queued": "phaseCorrection",
-  publish: "phasePublished",
-  notice: "phaseUnverified",
-  published: "phasePublished",
-  unverified: "phaseUnverified",
-  cancelled: "phaseCancelled",
-} as const;
 const status = (): string =>
   t(
     "status",
@@ -649,7 +696,51 @@ const onCheck: Hook<"tool.check"> = async (_$, e, next) => {
   return next(e);
 };
 
+async function runCommand($: EngineInterface, argument: string) {
+  debug.record("command.received", { argument });
+  void flushDebug($, debug, true);
+  if (argument === "") {
+    await openPane($, "menu", t("menuPane"));
+    return { text: status() };
+  }
+  if (argument === "on" || argument === "off") {
+    pendingEnabled = argument === "on";
+    await openPane($, "enabled-scope", t("enabledScope"));
+    return {};
+  }
+  if (argument === "reset") {
+    pendingEnabled = undefined;
+    return { text: (await applyEnabled($, undefined, false)).text };
+  }
+  if (argument === "language") {
+    await openPane($, "language", t("languageLabel"));
+    return {};
+  }
+  if (argument === "model") {
+    await openPane($, "reviewer-model", t("modelPane"));
+    return {};
+  }
+  if (argument === "history") {
+    historyText = await log.text();
+    await openPane($, "history", t("historyPane"));
+    return {};
+  }
+  if (argument === "log") return { text: debug.text() };
+  if (argument !== "" && argument !== "cancel") return { text: t("usage") };
+  if (argument === "cancel") {
+    const turnId = gate.active?.turnId;
+    reset(gate, gate.prompt, gate.marker);
+    gate.phase = "cancelled";
+    await saveRecovery($, gate);
+    $.ui.status(undefined);
+    log.record($.clock.now(), t("cancelled"));
+    if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
+  }
+  return { text: status() };
+}
+
 export const register: Register = (on, options) => {
+  menuValue = "status";
   gate.sessionEnabled = undefined;
   pendingEnabled = undefined;
   log.clear();
@@ -692,13 +783,13 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: "cerberus",
       description: t("commandDescription"),
-      argumentHint: "[on|off|reset|model|history|log|cancel]",
+      argumentHint: "[on|off|reset|model|language|history|log|cancel]",
       immediate: true,
     });
     await $.command.register({
       name: "cgate",
       description: t("shortCommandDescription"),
-      argumentHint: "[on|off|reset|model|history|log|cancel]",
+      argumentHint: "[on|off|reset|model|language|history|log|cancel]",
       immediate: true,
     });
     if (pending && gate.prompt && configured && interactive && enabled()) {
@@ -721,44 +812,63 @@ export const register: Register = (on, options) => {
     if (gate.delivery?.mode === "restart") queueContinuation($, gate.delivery);
     return result;
   });
-  on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
-    const argument = e.args.trim();
-    debug.record("command.received", { command: e.command, argument });
-    void flushDebug($, debug, true);
-    if (argument === "on" || argument === "off") {
-      pendingEnabled = argument === "on";
-      await openPane($, "enabled-scope", t("enabledScope"));
-      return {};
+  on("command.run", { command: /^(?:cgate|cerberus)$/u }, ($, e) => runCommand($, e.args.trim()));
+  on("ui.render", { component: "Pane", requestId: "menu" }, ($, e) => {
+    if (e.surface === "mobile") {
+      const { Text } = $.ui.resolve(e);
+      return Text({ children: status() + "\n" + t("usage") });
     }
-    if (argument === "reset") {
-      pendingEnabled = undefined;
-      return { text: (await applyEnabled($, undefined, false)).text };
-    }
-    if (argument === "model") {
-      await openPane($, "reviewer-model", t("modelPane"));
-      return {};
-    }
-    if (argument === "history") {
-      historyText = await log.text();
-      await openPane($, "history", t("historyPane"));
-      return {};
-    }
-    if (argument === "log") return { text: debug.text() };
-    if (argument !== "" && argument !== "cancel") return { text: t("usage") };
-    if (argument === "cancel") {
-      const turnId = gate.active?.turnId;
-      reset(gate, gate.prompt, gate.marker);
-      gate.phase = "cancelled";
-      await saveRecovery($, gate);
-      $.ui.status(undefined);
-      log.record($.clock.now(), t("cancelled"));
-      if (turnId !== undefined) await $.turn.abort({ turnId }).catch(() => undefined);
-    }
-    return { text: status() };
+    return picker($, e, {
+      key: "cgate-menu",
+      label: status(),
+      options: menuItems.map(([value, label]) => ({ value, label: t(label) })),
+      value: menuValue,
+      autoFocus: true,
+      onSelect: async (value) => {
+        if (
+          ![
+            "status",
+            "history",
+            "log",
+            "on",
+            "off",
+            "reset",
+            "model",
+            "language",
+            "cancel",
+          ].includes(value)
+        )
+          return;
+        menuValue = value;
+        await $.ui.close({ id: "menu" });
+        if (value === "status" || value === "log") {
+          detailsText = value === "status" ? status() : debug.text();
+          await openPane($, "details", t(value === "status" ? "menuStatus" : "menuLog"));
+        } else if (
+          ["history", "on", "off", "reset", "model", "language", "cancel"].includes(value)
+        ) {
+          const result = await runCommand($, value);
+          if (result.text) $.ui.toast(result.text, { timeoutMs: 3000 });
+        }
+      },
+    });
   });
-  on("ui.render", { component: "Pane", requestId: "history" }, ($, e) => {
-    const { Text } = $.ui.resolve(e);
-    return Text({ children: historyText });
+  on("ui.render", { component: "Pane", requestId: /^(?:details|history)$/u }, ($, e) => {
+    const text = e.requestId === "history" ? historyText : detailsText;
+    if (e.surface === "mobile") return $.ui.resolve(e).Text({ children: text });
+    const { Box, Text, Button } = $.ui.resolve(e);
+    return Box({
+      flexDirection: "column",
+      children: [
+        Button({
+          key: "back",
+          label: t("backHint"),
+          autoFocus: true,
+          onPress: () => goBack($, e.requestId),
+        }),
+        Text({ children: text }),
+      ],
+    });
   });
   on("ui.render", { component: "Pane", requestId: "enabled-scope" }, ($, e) => {
     const desired = pendingEnabled;
@@ -768,8 +878,7 @@ export const register: Register = (on, options) => {
         children: t("mobileScope"),
       });
     }
-    const { Select } = $.ui.resolve(e);
-    return Select({
+    return picker($, e, {
       key: `enabled-scope-${desired}`,
       label: t("scopeLabel", desired ? t("enabledWord") : t("disabledWord")),
       options: [
@@ -789,87 +898,56 @@ export const register: Register = (on, options) => {
       },
     });
   });
-  on("ui.render", { component: "Pane", requestId: "reviewer-model" }, ($, e) => {
-    if (e.surface === "mobile") {
-      const { Text } = $.ui.resolve(e);
-      return Text({ children: t("mobileModel") });
-    }
-    const { Select } = $.ui.resolve(e);
-    return Select({
-      key: "reviewer-model",
-      label: t("modelLabel"),
-      options: [
-        ...new Set(["inherit", "haiku", "sonnet", "opus", "fable", config.reviewerModel]),
-      ].map((value) => ({ value })),
-      value: config.reviewerModel,
-      autoFocus: true,
-      onSelect: async (value) => {
-        try {
-          const result = await $.config.set({ key: "cerberus-gate.reviewerModel", value });
-          if (result.deny !== undefined) {
-            $.ui.toast(t("modelDenied", result.deny), {
-              timeoutMs: 3000,
+  on(
+    "ui.render",
+    { component: "Pane", requestId: /^(?:reviewer-model|reviewer-effort|language)$/u },
+    ($, e) => {
+      const setting = settingFor(e.requestId, config);
+      if (e.surface === "mobile") return $.ui.resolve(e).Text({ children: t(setting.mobile) });
+      return picker($, e, {
+        key: e.requestId,
+        label: t(setting.label, config.reviewerModel),
+        options: setting.values.map((value) => ({
+          value,
+          label: setting.key === "language" ? (value === "ja" ? "日本語" : "English") : value,
+        })),
+        value: setting.value,
+        autoFocus: true,
+        onSelect: async (value) => {
+          if (!setting.values.includes(value)) return;
+          try {
+            const result =
+              setting.key === "reviewerModel"
+                ? await $.config.set({ key: "cerberus-gate.reviewerModel", value })
+                : setting.key === "reviewerEffort"
+                  ? await $.config.set({ key: "cerberus-gate.reviewerEffort", value })
+                  : await $.config.set({ key: "cerberus-gate.language", value });
+            if (result.deny !== undefined) {
+              $.ui.toast(t(setting.denied, result.deny), { timeoutMs: 3000 });
+              return;
+            }
+            config = readConfig({
+              ...options,
+              language: config.language,
+              enabled: config.enabled,
+              reviewerModel: config.reviewerModel,
+              reviewerEffort: config.reviewerEffort,
+              [setting.key]: result.value,
             });
-            return;
+            $.ui.toast(t(setting.saved, String(result.value)), { timeoutMs: 3000 });
+            await $.ui.close({ id: e.requestId });
+            if (setting.key === "reviewerModel")
+              await openPane($, "reviewer-effort", t("effortPane"));
+            if (setting.key === "language") await openPane($, "menu", t("menuPane"));
+          } catch (error) {
+            debug.record("settings.failed", { setting, error }, "error");
+            await flushDebug($);
+            $.ui.toast(t(setting.failure), { timeoutMs: 3000 });
           }
-          config = readConfig({
-            ...options,
-            enabled: config.enabled,
-            reviewerModel: result.value,
-            reviewerEffort: config.reviewerEffort,
-          });
-          $.ui.toast(t("modelSaved", config.reviewerModel), {
-            timeoutMs: 3000,
-          });
-          await $.ui.close({ id: "reviewer-model" });
-          await openPane($, "reviewer-effort", t("effortPane"));
-        } catch (error) {
-          debug.record("settings.failed", { setting: "reviewerModel", error }, "error");
-          await flushDebug($);
-          $.ui.toast(t("modelFailure"), { timeoutMs: 3000 });
-        }
-      },
-    });
-  });
-  on("ui.render", { component: "Pane", requestId: "reviewer-effort" }, ($, e) => {
-    if (e.surface === "mobile") {
-      const { Text } = $.ui.resolve(e);
-      return Text({ children: t("mobileEffort") });
-    }
-    const { Select } = $.ui.resolve(e);
-    return Select({
-      key: "reviewer-effort",
-      label: t("effortLabel", config.reviewerModel),
-      options: ["inherit", "low", "medium", "high", "xhigh", "max"].map((value) => ({ value })),
-      value: config.reviewerEffort,
-      autoFocus: true,
-      onSelect: async (value) => {
-        try {
-          const result = await $.config.set({ key: "cerberus-gate.reviewerEffort", value });
-          if (result.deny !== undefined) {
-            $.ui.toast(t("effortDenied", result.deny), {
-              timeoutMs: 3000,
-            });
-            return;
-          }
-          config = readConfig({
-            ...options,
-            enabled: config.enabled,
-            reviewerModel: config.reviewerModel,
-            reviewerEffort: result.value,
-          });
-          $.ui.toast(t("effortSaved", config.reviewerEffort), {
-            timeoutMs: 3000,
-          });
-          await $.ui.close({ id: "reviewer-effort" });
-        } catch (error) {
-          debug.record("settings.failed", { setting: "reviewerEffort", error }, "error");
-          await flushDebug($);
-          $.ui.toast(t("effortFailure"), { timeoutMs: 3000 });
-        }
-      },
-    });
-  });
+        },
+      });
+    },
+  );
   on("agent.offer", { agent: REVIEWER }, () => ({ isOffered: false })).catch(() => ({
     isOffered: false,
   }));

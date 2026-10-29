@@ -410,12 +410,13 @@ function inspectMember(
           "cerberus-gate.reviewerModel",
           "cerberus-gate.reviewerEffort",
           "cerberus-gate.enabled",
+          "cerberus-gate.language",
         ].some((key) => key === literal(keys[0]?.type === "Property" ? keys[0].value : undefined))
       )
         report(
           n,
           "mods-api-target",
-          "config.set requires an enabled, reviewer model or effort setting",
+          "config.set requires an enabled, reviewer model, effort or language setting",
         );
     }
     if (name === "tool.call" && readCalls.has(n)) return;

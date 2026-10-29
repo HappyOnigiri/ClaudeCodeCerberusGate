@@ -156,6 +156,8 @@ npm run test:live
 `CERBERUS_LANGUAGE=ja npm run test:live -- pass revise` で日本語設定の合格・差し戻しと、実際の審査プロンプトの言語を確認できます。
 
 特定ケースは `npm run test:live -- pass` のように指定する。
+`npm run test:live -- model` は Enter＝改行・Ctrl+Enter＝送信と、Pane の Enter＝選択を設定した隔離環境で実行する。
+メニューを開いた直後・下キーで移動した後・設定再読み込み後の Enter による選択も検査する。
 `npm run test:live -- cap` は修正上限を1回にして差し戻しを作り、修正後は審査資料とレビュアーを追加せず、本文と `[SKIP]` の注記を表示することを確認する。
 ケースの検査内容を変えるときは、スクリプトと [live-materials.ts](/scripts/live-materials.ts) を確認する。
 `npm run test:live -- cli` は審査ツール一覧から `Grep` を外し、CLI による履歴検索と審査完了を確認する。
