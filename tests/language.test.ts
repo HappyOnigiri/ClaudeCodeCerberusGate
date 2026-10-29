@@ -1,10 +1,11 @@
+import { asFixture } from "./helpers/fixture.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readConfig, correction } from "../plugins/cerberus-gate/hooks/policy.ts";
 import { reviewModelRequest, reviewEvidence } from "../plugins/cerberus-gate/hooks/review.ts";
 import { translate } from "../plugins/cerberus-gate/hooks/locale.ts";
 import { createLog } from "../plugins/cerberus-gate/hooks/log.ts";
-import { harness, started, verdict, history } from "./helpers/gate-harness.ts";
+import { harness, started, verdict, history, deferred } from "./helpers/gate-harness.ts";
 
 void test("language defaults to English, accepts Japanese and rejects invalid settings", () => {
   assert.equal(readConfig({}).language, "en");
@@ -134,4 +135,53 @@ void test("reload uses the selected language for restart controls and context", 
     (await next.fire("command.run", { command: "cgate", args: "log" })).text,
     /デバッグログ/u,
   );
+});
+
+void test("reload cannot submit a continuation while startup persistence is still pending", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(verdict("REVISE", ["source:1 contradicts the draft"]));
+  await h.step();
+  h.unload();
+  const next = harness({ language: "ja" }, "2.1.310", h.host);
+  const entered = deferred();
+  const saved = deferred();
+  const persist = next.engine.state.set;
+  next.engine.state.set = async (ref, value) => {
+    entered.resolve(undefined);
+    await saved.promise;
+    return persist(ref, value);
+  };
+  const starting = next.fire("session.start", { isInteractive: true });
+  await entered.promise;
+  assert.equal(next.events.timers.filter((timer) => timer.ms === 0).length, 0);
+  saved.resolve(undefined);
+  await starting;
+  assert.equal(next.events.timers.filter((timer) => timer.ms === 0).length, 1);
+  await next.flushCorrections();
+  assert.match(next.events.prompts[0]!.context.join("\n"), /プラグインの再ロード/u);
+});
+
+void test("reload restart carries its context when startup submissions bypass prompt hooks", async () => {
+  const h = harness();
+  await started(h);
+  h.replies.push(verdict("REVISE", ["source:1 contradicts the draft"]));
+  await h.step();
+  h.unload();
+  const next = harness({ language: "ja" }, "2.1.310", h.host);
+  const submissions: Record<string, unknown>[] = [];
+  next.engine.prompt.submit = async (event) => {
+    submissions.push(event);
+    return asFixture<Awaited<ReturnType<typeof next.engine.prompt.submit>>>({
+      text: String(event.text),
+      drop: undefined,
+    });
+  };
+  await next.fire("session.start", { isInteractive: true });
+  await next.flushCorrections();
+  assert.match(JSON.stringify(submissions[0]!.context), /プラグインの再ロード/u);
+  next.replies.push(verdict());
+  const result = await next.step({ text: "fresh answer" });
+  assert.equal(result.text, "fresh answer");
+  assert.equal(result.notes.at(-1), translate("ja", "passed"));
 });

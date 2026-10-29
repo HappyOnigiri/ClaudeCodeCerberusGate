@@ -195,8 +195,20 @@ function queueContinuation($: EngineInterface, delivery: Delivery): void {
     const operationId = debug.operation();
     debug.record("delivery.start", { operationId, ...delivery });
     await flushDebug($);
+    if (gate.delivery !== delivery || gate.epoch !== delivery.epoch) return;
+    // A reload's session.start dispatch may not include prompt.submit hooks yet.
+    // Carry restart context and its accepted state in the submission itself.
+    if (delivery.mode === "restart") {
+      gate.action = delivery;
+      gate.delivery = undefined;
+      await saveRecovery($, gate);
+      if (gate.action !== delivery || gate.epoch !== delivery.epoch) return;
+    }
     const sent = await $.prompt
-      .submit({ text: controlText(delivery, config.language) })
+      .submit({
+        text: controlText(delivery, config.language),
+        ...(delivery.mode === "restart" ? { context: [delivery.context] } : {}),
+      })
       .catch((error: unknown) => {
         debug.record("delivery.failed", { operationId, error }, "error");
         return undefined;
@@ -566,7 +578,11 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     joins: joinsCycle(gate, e),
   });
   if (e.origin.kind === "plugin" && e.origin.name === "cerberus-gate") {
-    const delivery = gate.delivery;
+    const delivery =
+      gate.delivery ??
+      (gate.action?.mode === "restart" && e.context?.includes(gate.action.context)
+        ? gate.action
+        : undefined);
     if (
       delivery === undefined ||
       e.text !== controlText(delivery, config.language) ||
@@ -576,7 +592,11 @@ const onPrompt: Hook<"prompt.submit"> = async ($, e, next) => {
     gate.action = delivery;
     gate.delivery = undefined;
     await saveRecovery($, gate);
-    return next({ ...e, context: [...(e.context ?? []), delivery.context] });
+    const context = e.context ?? [];
+    return next({
+      ...e,
+      context: context.includes(delivery.context) ? context : [...context, delivery.context],
+    });
   }
   // Before reset(): the reviewer's own notification must not cancel the review it belongs to.
   if (staleNotification(gate, e)) return { drop: t("handledResult") };
@@ -692,10 +712,12 @@ export const register: Register = (on, options) => {
       };
       gate.delivery = delivery;
       log.record($.clock.now(), t("restarting"));
-      queueContinuation($, delivery);
     }
     await saveRecovery($, gate);
-    return next(e);
+    const result = await next(e);
+    // Finish startup I/O before arming the restart timer.
+    if (gate.delivery?.mode === "restart") queueContinuation($, gate.delivery);
+    return result;
   });
   on("command.run", { command: /^(?:cgate|cerberus)$/u }, async ($, e) => {
     const argument = e.args.trim();

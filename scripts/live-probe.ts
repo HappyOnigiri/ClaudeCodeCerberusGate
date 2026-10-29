@@ -703,7 +703,9 @@ for (const mode of cases) {
       tmux("send-keys", "-t", session, "C-o");
       const collapsedDeadline = Date.now() + 10_000;
       while (Date.now() < collapsedDeadline) {
-        latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
+        // Redraws can leave the former expanded frame in tmux scrollback.
+        // Check the current viewport when verifying that the control collapsed.
+        latest = tmux("capture-pane", "-p", "-t", session);
         if (latest.includes(heading) && !latest.includes(body)) break;
         await pause(250);
       }
