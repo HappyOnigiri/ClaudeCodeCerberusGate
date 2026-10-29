@@ -69,6 +69,7 @@ const withoutFindings = (screen: string, findings: unknown[]) =>
     (text, finding) => text.replaceAll(compact(JSON.stringify(finding)), ""),
     compact(screen),
   );
+let menuKeybindings = false;
 const submit = async (session: string, text: string) => {
   tmux("send-keys", "-t", session, "-l", text);
   await pause(500);
@@ -82,7 +83,7 @@ const submit = async (session: string, text: string) => {
     "-t",
     session,
     "-l",
-    process.env.CERBERUS_SUBMIT === "enter" ? "\r" : "\x1b[13;5u",
+    process.env.CERBERUS_SUBMIT === "enter" && !menuKeybindings ? "\r" : "\x1b[13;5u",
   );
   await pause(500);
 };
@@ -120,6 +121,7 @@ const expectedFindings: Record<string, RegExp> = {
 };
 const summary = [];
 for (const mode of cases) {
+  menuKeybindings = mode === "model";
   if (!allCases.includes(mode)) throw new Error(`Unknown case ${mode}`);
   const needsRevision = ["history", "revise", "cap", "bounds", "environment", "causal"].includes(
     mode,
