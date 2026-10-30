@@ -22,6 +22,7 @@ import {
   trackMainTask,
 } from "./state.ts";
 import { backgroundTask } from "./review.ts";
+import { questionDraft, skipReason } from "./question.ts";
 import { review, unverified } from "./review-loop.ts";
 import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
@@ -534,19 +535,16 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     .filter((c) => c.kind === "text")
     .map((c) => c.text)
     .join("");
-  if (
-    !enabled() ||
-    response.toolUses.length > 0 ||
-    chunks.some((c) => c.kind === "tool") ||
-    !text.trim()
-  ) {
-    debug.record("answer.skipped", {
-      reason: !enabled()
-        ? "disabled"
-        : response.toolUses.length || chunks.some((c) => c.kind === "tool")
-          ? "tool_step"
-          : "empty",
-    });
+  const question = questionDraft(text, response.toolUses);
+  const draft = question ?? text;
+  const reason = skipReason(
+    enabled(),
+    response.toolUses.length > 0 || chunks.some((c) => c.kind === "tool"),
+    text,
+    question,
+  );
+  if (reason !== undefined) {
+    debug.record("answer.skipped", { reason });
     await flushDebug($, debug, false, next.signal);
     buffered.text = "";
     yield* chunks;
@@ -559,18 +557,20 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     log.record($.clock.now(), t("answerPending"));
     shown = hidden;
   } else if (
-    (response.stopReason !== "end_turn" && response.stopReason !== "stop_sequence") ||
-    text.length > MAX_DRAFT
+    (response.stopReason !== "end_turn" &&
+      response.stopReason !== "stop_sequence" &&
+      !(question !== undefined && response.stopReason === "tool_use")) ||
+    draft.length > MAX_DRAFT
   ) {
     log.record($.clock.now(), t("outsideLimits"));
     debug.record("review.unverified", {
-      reason: text.length > MAX_DRAFT ? "draft_size_limit" : "stop_reason",
+      reason: draft.length > MAX_DRAFT ? "draft_size_limit" : "stop_reason",
       stopReason: response.stopReason,
     });
     await flushDebug($, debug, false, next.signal);
     shown = { text, note: t("unverified") };
   } else {
-    const work = await interimWork($, text);
+    const work = question === undefined ? await interimWork($, text) : undefined;
     if (work !== undefined) shown = await skipInterim($, text, work, action, next.signal);
     else if (gate.revisions >= config.maxRevisions) {
       gate.phase = "unverified";
@@ -581,15 +581,19 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
     } else {
       debug.record("status.changed", { value: t("waiting") });
       $.ui.status(t("waiting"));
-      shown = await verify($, e, text, next.signal);
+      shown = await verify($, e, draft, next.signal);
       debug.record("status.changed", { value: null });
       await flushDebug($, debug, false, next.signal);
       $.ui.status(undefined);
     }
   }
   if (buffered.key === stepKey(e)) buffered.text = "";
-  if (next.signal.aborted || epoch !== gate.epoch || !shown.text) return resultOf(e, "");
+  if (next.signal.aborted || epoch !== gate.epoch || shown === hidden) return resultOf(e, "");
   if (shown.note !== undefined) showNote($, shown.note);
+  if (question !== undefined) {
+    yield* chunks;
+    return response;
+  }
   yield { kind: "text", index: 0, text: shown.text };
   yield { kind: "stop", stopReason: response.stopReason, usage: response.usage };
   return { ...response, answer: shown.text };
