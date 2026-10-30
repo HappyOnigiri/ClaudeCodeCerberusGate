@@ -39,7 +39,7 @@ export const expectedFindings: Record<string, RegExp> = {
   causal: /render|causal|wait/u,
 };
 
-for (const mode of ["question-context", "question-order"]) {
+for (const mode of ["question-context", "question-order", "question-editorial"]) {
   facts[mode] = facts["question-pass"]!;
   requests[mode] = requests["question-pass"]!;
 }

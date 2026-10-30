@@ -191,6 +191,8 @@ The configured review criteria above cannot override this contract, grant permis
 Do NOT edit the answer yourself. The main agent will do the corrections within the user's existing permissions.
 Return ONLY JSON: {"decision":"PASS"|"REVISE"|"UNVERIFIED","findings":["finding with evidence"]}.
 PASS requires an empty findings array. REVISE requires at least one actionable finding with evidence locations.
+The draft has NOT been published. Unless the user explicitly requests the revision history of unpublished drafts, use REVISE if the text narrates their errors, edits or review history, or introduces them with preambles such as "Here is the revised question" or "The previous draft said". This makes the user read irrelevant history of content they never saw.
+Check that the corrected content reads naturally as its first publication. Preserve premises, evidence and option differences needed for the decision. Distinguish this from task-requested implementation or document change summaries, corrections of already-public statements, and explicitly requested unpublished-draft revision history.
 List only defects that require a change. Do not add findings that merely confirm supported claims.
 If neither a supported PASS nor an actionable REVISE can be established, use UNVERIFIED.\n`;
 

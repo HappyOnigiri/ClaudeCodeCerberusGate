@@ -11,6 +11,7 @@ export function questionFixture(mode: string, artifacts: string): string {
     const input={questions:[{question:'Which release channel should be used for future updates?',header:'Channel',options:[{label:'Stable (Recommended)',description:'Keep tested production releases for reliability',preview:'Future updates stay on tested production releases, recommended for reliability.'},{label:'Beta',description:'Receive earlier preview features with less testing and higher regression risk'}],multiSelect:false}]};
     if(bad && ${JSON.stringify(mode)}==='question-context')text='As discussed in earlier turns, choose the channel.';
     if(bad && ${JSON.stringify(mode)}==='question-order')input.questions[0].options.reverse();
+    if(bad && ${JSON.stringify(mode)}==='question-editorial')text+=' I corrected the unpublished draft from beta to stable. Here is the revised question.';
     const tool={name:'AskUserQuestion',input};
     await $.fs.write(${JSON.stringify(artifacts)}+'/question-generated-'+e.turnId+'-'+e.index+'.json',JSON.stringify({text,input}));
     yield {kind:'text',index:0,text};yield {kind:'tool',index:1,id:'question-'+e.turnId+'-'+e.index,name:tool.name};yield {kind:'input',index:1,json:JSON.stringify(input)};yield {kind:'stop',stopReason:'tool_use',usage:null};
@@ -47,6 +48,30 @@ export async function verifyQuestion(artifacts: string, mode: string, screen: st
     }
   });
   const draft = JSON.parse(JSON.parse(approved.request.prompt.split("\n")[0]).unpublishedDraft);
+  if (
+    mode !== "question-pass" &&
+    /(?:previous|unpublished) draft|revised question|修正版|前回の原稿|修正(?:点|箇所|経緯)/iu.test(
+      draft.explanation,
+    )
+  )
+    throw new Error("Approved explanation narrates unpublished-draft edits");
+  if (
+    mode === "question-editorial" &&
+    !reviews.some((review) => {
+      try {
+        const verdict = JSON.parse(review.result.text);
+        return (
+          verdict.decision === "REVISE" &&
+          verdict.findings.some((finding: string) =>
+            /unpublished|revision|narrat|修正経緯|未公開/iu.test(finding),
+          )
+        );
+      } catch {
+        return false;
+      }
+    })
+  )
+    throw new Error("Reviewer did not flag unpublished-draft narration");
   if (JSON.stringify(dispatched.questions) !== JSON.stringify(draft.toolUses[0].input.questions))
     throw new Error("Displayed question differs from approved inputs");
   if (!screen.includes("[PASS]") || !screen.includes("stable"))

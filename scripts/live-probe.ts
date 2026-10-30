@@ -28,13 +28,18 @@ if (
     process.argv.slice(2).some((mode) => !["pass", "revise"].includes(mode)))
 )
   throw new Error("Installed verification supports pass and revise only");
-const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceAll(":", "-"));
+const report = resolve(
+  root,
+  "tmp/live-probe",
+  `${new Date().toISOString().replaceAll(":", "-")}-${process.pid}`,
+);
 await mkdir(report, { recursive: true });
 const allCases = [
   "question-pass",
   "question-revise",
   "question-context",
   "question-order",
+  "question-editorial",
   "pass",
   "history",
   "model",
