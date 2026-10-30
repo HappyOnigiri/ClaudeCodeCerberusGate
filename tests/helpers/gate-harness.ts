@@ -96,6 +96,7 @@ interface Chunk {
   text?: string;
   index?: number;
   id?: string;
+  json?: string;
   name?: string;
   stopReason?: string;
   usage?: null;
@@ -388,7 +389,10 @@ export function harness(
         return (async function* (): StepStream {
           yield { kind: "text", index: 0, text };
           if (fail) throw new Error("stream failure");
-          for (const t of tools) yield { kind: "tool", index: 1, id: "tool-1", name: t.name };
+          for (const [toolIndex, t] of tools.entries()) {
+            yield { kind: "tool", index: toolIndex + 1, id: `tool-${toolIndex + 1}`, name: t.name };
+            yield { kind: "input", index: toolIndex + 1, json: JSON.stringify(t.input) };
+          }
           yield { kind: "stop", stopReason, usage: null };
           return { ...e, answer: text, toolUses: tools, stopReason, usage: null };
         })();

@@ -1,3 +1,5 @@
+import { customPrompt, drafts, facts, requests, expectedFindings } from "./live-scenarios.ts";
+import { questionFixture, verifyQuestion } from "./live-question.ts";
 import { verifyMenu, installMenuKeybindings } from "./live-menu.ts";
 import { translate } from "../plugins/cerberus-gate/hooks/locale.ts";
 import { language, t, verifyLanguage, historyMessage } from "./live-language.ts";
@@ -29,6 +31,10 @@ if (
 const report = resolve(root, "tmp/live-probe", new Date().toISOString().replaceAll(":", "-"));
 await mkdir(report, { recursive: true });
 const allCases = [
+  "question-pass",
+  "question-revise",
+  "question-context",
+  "question-order",
   "pass",
   "history",
   "model",
@@ -87,38 +93,6 @@ const submit = async (session: string, text: string) => {
   );
   await pause(500);
 };
-const customPrompt =
-  "Check the release channel against fact.txt.\nBefore deciding, request Read for fact.txt and use its successful result in the evidence array. Do not substitute main-agent reads from the conversation. CUSTOM_REVIEW_CRITERIA";
-const drafts: Record<string, string> = {
-  bounds: "stable. A closing hour of 26 is a valid configuration example.",
-  environment: "stable. The default is false, so this feature has no effect in production.",
-  causal: "stable. The provider watch waits for timeline rendering to complete.",
-  choice:
-    "stable. I propose CreatedAt as the origin of the 720-day retention period; this is an unresolved specification choice requiring approval.",
-};
-const facts: Record<string, string> = {
-  bounds: "The closing hour accepts integers from 12 through 24 inclusive.",
-  environment:
-    "The feature default is false. The production deployment manifest sets it to true. The running cluster has not been inspected.",
-  causal:
-    "The provider watches data changes. No implementation or other evidence about waiting for timeline rendering is available.",
-  choice:
-    "CreatedAt is set at creation and unchanged on re-entry. The retention duration is 720 days. The specification does not define the retention origin.",
-};
-const requests: Record<string, string> = {
-  bounds: "Assess whether a closing hour of 26 is a valid configuration example.",
-  environment:
-    "Assess whether the feature default establishes that it has no effect in production.",
-  causal:
-    "Using only fact.txt as evidence, assess whether its contents support the assertion that the provider watch waits for timeline rendering to complete. Do not search other files; if the file does not establish the behavior, state that limit.",
-  choice:
-    "Propose an origin for the 720-day retention period, explicitly identifying any unresolved specification choice requiring approval.",
-};
-const expectedFindings: Record<string, RegExp> = {
-  bounds: /26|12.*24/u,
-  environment: /production|manifest/u,
-  causal: /render|causal|wait/u,
-};
 const summary = [];
 for (const mode of cases) {
   menuKeybindings = mode === "model";
@@ -139,10 +113,10 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
-  if (mode === "cap") {
+  if (mode === "cap" || mode.startsWith("question-")) {
     const path = join(plugin, ".claude-plugin/plugin.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
-    manifest.userConfig.maxRevisions.default = 1;
+    manifest.userConfig.maxRevisions.default = mode === "cap" ? 1 : 4;
     await writeFile(path, JSON.stringify(manifest));
   }
   if (mode === "missing-log")
@@ -218,6 +192,7 @@ for (const mode of cases) {
  export const register=on=>{
   if(${JSON.stringify(mode)}==='cli')on('tool.list',async($,e,next)=>{const r=await next(e);return {...r,value:r.value.filter(t=>t.name!=='Grep')};});
   on('turn.step',async function*($,e,next){
+   ${questionFixture(mode, artifacts)}
    if(!e.agentId && first && (['revise','cap','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)}) || (${JSON.stringify(mode)}==='history' && userPrompts>=2))){
     first=false;
     const text=${JSON.stringify(mode)}==='history'?'The limit is 8. CERBERUS_REJECTED_DRAFT':${JSON.stringify(drafts[mode] ?? "The release channel is beta. CERBERUS_REJECTED_DRAFT")};
@@ -258,6 +233,7 @@ for (const mode of cases) {
    if(${JSON.stringify(mode)}==='history' && JSON.parse(e.prompt).unpublishedDraft.includes('CERBERUS_REJECTED_DRAFT'))e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain both a successful Grep on sessionLog.history with output_mode content and a successful Read of narrow matching history.txt ranges around the prior LIMIT tool result. Do not substitute a read of limits.ts for reading history.txt. Do not decide based solely on the current draft or request.'};
    if(${JSON.stringify(mode)}==='recover')e={...e,prompt:e.prompt+'\\nBefore deciding, after the required sessionLog.users Read, the evidence array must also contain a Read of '+${JSON.stringify(join(work, "missing-fact.txt"))}+' (it may not exist) followed by a successful Read of fact.txt. If the missing-file Read is already in evidence, request Read of fact.txt next; if both exist, return the verdict. Do not repeat completed reads.'};
    if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
+   if(${JSON.stringify(mode)}.startsWith('question-'))e={...e,prompt:e.prompt+'\\nBefore deciding, your evidence array must contain successful Read results for sessionLog.users and fact.txt. If missing, request those reads first, one at a time; do not repeat successful reads. Use Read or Grep for this fixture rather than Bash.'};
    const result=${JSON.stringify(mode)}==='cap'
     ? {value:{isAnswered:true,text:JSON.stringify({decision:'REVISE',findings:['fact.txt:1 says stable; correct the beta release channel.']}),usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
     : ${JSON.stringify(mode)}==='unverified'
@@ -267,6 +243,7 @@ for (const mode of cases) {
    return result;
   });
   on('tool.call',async($,e,next)=>{
+   if(e.tool==='AskUserQuestion')await $.fs.write(${JSON.stringify(artifacts)}+'/question-dispatched.json',JSON.stringify(e));
    const result=await next(e);
    if(e.tool==='Read' && !e.agentId && next.origin.plugin!=='cerberus-gate' && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
     await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');for(let wait=0;wait<100 && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reload-confirmed'));wait++)await $.clock.sleep(250);
@@ -577,6 +554,14 @@ for (const mode of cases) {
     while (Date.now() < deadline) {
       latest = tmux("capture-pane", "-p", "-t", session, "-S", "-1000");
       await writeFile(join(artifacts, "screen.txt"), latest);
+      if (
+        mode.startsWith("question-") &&
+        (await readdir(artifacts)).includes("question-dispatched.json") &&
+        latest.includes("Enter to select")
+      ) {
+        passed = true;
+        break;
+      }
       if (mode === "slow" && latest.includes(t("waiting"))) {
         reviewingSince ??= Date.now();
         if (Date.now() - reviewingSince > 3500) {
@@ -661,6 +646,12 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
+    if (mode.startsWith("question-")) {
+      await verifyQuestion(artifacts, mode, latest);
+      summary.push({ case: mode, language, status: "PASS", workspace: work });
+      console.log(`PASS ${mode}`);
+      continue;
+    }
     if (needsRevision && latest.includes(t("waiting")))
       throw new Error("Waiting notice remained in the completed answer");
     if (mode === "history") {

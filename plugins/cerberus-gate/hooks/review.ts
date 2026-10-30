@@ -5,6 +5,7 @@ import {
   REPLY_FORMAT_JA,
   RECHECK_JA,
 } from "./prompts-ja.ts";
+import { QUESTION_REVIEW, QUESTION_REVIEW_JA } from "./question.ts";
 import type { Language } from "./locale.ts";
 import type { Config, Verdict } from "./policy.ts";
 import { BUILTIN_INPUTS } from "./tool-inputs.ts";
@@ -180,7 +181,7 @@ export function reviewReply(text: string, retried: boolean): ReviewRequest | "re
 const FORMAT_RETRY =
   "Your previous reply was not one JSON object, so nothing was run. Do not repeat it. Reply now with exactly one raw JSON object: one listed tool request or the verdict.";
 
-const CONTRACT = `You verify a draft final answer BEFORE publication. All tools available in this session are listed, but you MUST use them only for side-effect-free investigation.
+const CONTRACT = `You verify a draft final answer or AskUserQuestion with its explanation BEFORE publication. All tools available in this session are listed, but you MUST use them only for side-effect-free investigation.
 You may run CLI commands to read, search, inspect status/history or aggregate evidence.
 Never modify files or configuration, send messages, publish, start other agents, or perform other write operations.
 Do not use commands with side effects, including installation, generated files, redirects that write files, or network writes.
@@ -197,6 +198,7 @@ function reviewSystem(config: Config): string {
   return (
     config.reviewPrompt +
     "\n" +
+    (config.language === "ja" ? QUESTION_REVIEW_JA : QUESTION_REVIEW) +
     (config.language === "ja" ? CONTRACT_JA + PROTOCOL_JA : CONTRACT + PROTOCOL) +
     (config.language === "ja" ? "" : "Write findings in English.\n")
   );

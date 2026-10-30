@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Claude Code Cerberus Gate は、最終回答を表示前に検証する TypeScript 製 Claude Code Mods である。
+Claude Code Cerberus Gate は、最終回答と AskUserQuestion の質問を表示前に検証する TypeScript 製 Claude Code Mods である。
 
 ## 常に守る事項
 
