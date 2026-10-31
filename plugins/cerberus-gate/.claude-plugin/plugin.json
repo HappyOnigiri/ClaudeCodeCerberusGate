@@ -1,7 +1,7 @@
 {
   "name": "cerberus-gate",
   "displayName": "Cerberus Gate",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Review final answers using session tools under instructions prohibiting side effects, and route corrections to the main agent.",
   "author": {
     "name": "HappyOnigiri"
