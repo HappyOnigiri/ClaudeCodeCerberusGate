@@ -229,3 +229,22 @@ forkの修正上限・形式不正・タイムアウト・取消のケースは�
 1秒のタイムアウトと7秒の応答遅延を使った試験では、待機解除後のforkがPASSとusageを返し、公開に使われず `model.discarded` に保存された。
 独自の取消で計算が止まるとは扱わない。
 旧方式の回答のPASS・REVISE、質問のPASS、最後の修正後の審査は実地で確認した。
+
+### Sonnet・mediumによる追試
+
+ユーザー指定により、検証用スクリプトの使い捨ての複製で起動引数を `--model sonnet --effort medium` に変えて追試した。
+審査設定はモデル・effortとも `inherit` とし、製品コードと通常のHaiku検証設定は変更していない。
+メインのステップ記録では `claude-sonnet-5-5`・`medium`、fork呼び出し中のAPI送信ログでも `claude-sonnet-5-5` を確認した。
+
+依頼文に根拠を含めた次の通常回答は、独立した3セッションすべてでPASSとなり、本文 `stable` が公開された。
+各セッションでforkは1回、判定は `{"decision":"PASS","findings":[]}` だった。
+
+```text
+The release channel is stable. Reply with exactly the release channel, with no other text.
+```
+
+一方、`Read fact.txt` を根拠にする従来の通常回答は、Sonnet・mediumでも証拠不足のREVISEを繰り返した。
+また、上の依頼で初稿を誤った `beta` に差し替える試験ではREVISEを確認したが、修正後の再審査が判定JSONの代わりに `stable` とだけ返し、UNVERIFIEDになった。
+
+前回の「通常PASSを未確認」という結果は、依頼文に根拠があるSonnet・mediumの通常回答についてはPASS確認へ更新する。
+ツール結果の照合と差し戻し後のPASSは未解決であり、既定経路としての導入判定は引き続き未完了とする。
