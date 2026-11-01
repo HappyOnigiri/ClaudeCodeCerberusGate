@@ -27,11 +27,11 @@ export function liveFixture(
    let result=await stream.result;
    if(${useFork}) {
      ${useFork ? questionFixture(mode, artifacts).replace("if(!e.agentId && first)", "if(!e.agentId && first && (result.toolUses.length===0 || result.toolUses.some(t=>t.name==='AskUserQuestion')))") : ""}
-     if(!e.agentId && first && result.toolUses.length===0 && ['revise','cap'].includes(${JSON.stringify(mode)})) {
-       first=false;const text='The release channel is beta. CERBERUS_REJECTED_DRAFT';
+     if(!e.agentId && first && result.toolUses.length===0 && (['revise','cap','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)}) || (${JSON.stringify(mode)}==='history' && userPrompts>=2))) {
+       first=false;const text=${JSON.stringify(mode === "history" ? "The limit is 8. CERBERUS_REJECTED_DRAFT" : (drafts[mode] ?? "The release channel is beta. CERBERUS_REJECTED_DRAFT"))};
        pieces.splice(0,pieces.length,{kind:'text',index:0,text},{kind:'stop',stopReason:'end_turn',usage:result.usage});result={...result,answer:text};
      }
-     yield* pieces;
+     if(${JSON.stringify(mode)}!=='history')yield* pieces;
    }
    if(${JSON.stringify(mode)}==='history'){
     if(!e.agentId && userPrompts===1 && result.toolUses.length===0){
@@ -67,6 +67,7 @@ export function liveFixture(
    if(${JSON.stringify(mode)}==='recover')e={...e,prompt:e.prompt+'\\nBefore deciding, after the required sessionLog.users Read, the evidence array must also contain a Read of '+${JSON.stringify(join(work, "missing-fact.txt"))}+' (it may not exist) followed by a successful Read of fact.txt. If the missing-file Read is already in evidence, request Read of fact.txt next; if both exist, return the verdict. Do not repeat completed reads.'};
    if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
    if(${JSON.stringify(mode)}.startsWith('question-'))e={...e,prompt:e.prompt+'\\nBefore deciding, your evidence array must contain successful Read results for sessionLog.users and fact.txt. If missing, request those reads first, one at a time; do not repeat successful reads. Use Read or Grep for this fixture rather than Bash.'};
+   if(${JSON.stringify(mode)}!=='cli')e={...e,prompt:e.prompt+'\\nThis isolated fixture authorizes Read, Grep and Glob for investigation. Use those tools, not Bash or other tools requiring interactive approval. Keep the actual verification criteria and verdict protocol.'};
    const result=${JSON.stringify(mode)}==='cap'
     ? {value:{isAnswered:true,text:JSON.stringify({decision:'REVISE',findings:['fact.txt:1 says stable; correct the beta release channel.']}),usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
     : ${JSON.stringify(mode)}==='unverified'

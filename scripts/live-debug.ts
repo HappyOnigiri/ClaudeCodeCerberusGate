@@ -15,6 +15,7 @@ interface DebugRecord {
     operationId: string;
     elapsedMs: number;
     reason: unknown;
+    verdict: { decision: string; findings: string[] };
   };
 }
 import { readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
@@ -102,6 +103,9 @@ export async function verifyDebug(work: string, artifacts: string, installedConf
           models: starts.length,
           modelElapsedMs: ends.reduce((sum, item) => sum + item.data.elapsedMs, 0),
           materials: material.length,
+          verdicts: events
+            .filter((item) => item.event === "review.complete")
+            .map((item) => item.data.verdict),
           reasons: events
             .filter((item) =>
               ["review.failed", "review.unverified", "verdict.parsed"].includes(item.event),

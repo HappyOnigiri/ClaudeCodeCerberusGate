@@ -46,12 +46,28 @@ export async function verifyFork(artifacts: string, mode: string, screen: string
     }
   });
   if (
-    ["pass", "revise", "question-pass", "question-revise"].includes(mode) &&
+    [
+      "pass",
+      "revise",
+      "question-pass",
+      "question-revise",
+      "cli",
+      "history",
+      "bounds",
+      "environment",
+      "causal",
+      "choice",
+    ].includes(mode) &&
     !decisions.includes("PASS")
   )
     throw new Error("No real fork PASS");
-  if (["revise", "question-revise"].includes(mode) && !decisions.includes("REVISE"))
+  if (
+    ["revise", "question-revise", "history", "bounds", "environment", "causal"].includes(mode) &&
+    !decisions.includes("REVISE")
+  )
     throw new Error("Missing fork REVISE");
+  if (mode === "choice" && decisions.includes("REVISE"))
+    throw new Error("Unresolved specification choice was rejected");
   if (mode === "cap" && (reviews.length !== 2 || !screen.includes("[UNVERIFIED]")))
     throw new Error("Cap did not review final correction");
 }

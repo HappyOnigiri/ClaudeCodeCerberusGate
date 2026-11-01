@@ -1,3 +1,5 @@
+import { mainEvidenceText } from "./main-evidence.ts";
+import type { MainEvidence } from "./main-evidence.ts";
 import { forkPrompt } from "./fork-prompt.ts";
 import { MAX_DRAFT, diagnoseVerdict } from "./policy.ts";
 import {
@@ -209,6 +211,7 @@ export async function forkReview(
   request: string,
   previousFindings: readonly string[],
   { logger, flush }: ReviewIo,
+  evidence?: MainEvidence,
 ): Promise<Verdict> {
   const signal = candidate.controller.signal;
   const operationId = logger.operation();
@@ -220,7 +223,17 @@ export async function forkReview(
   };
   try {
     if (signal.aborted) return unverified();
-    const prompt = forkPrompt(config, request, candidate.text, previousFindings);
+    if (evidence?.incomplete) {
+      logger.record("review.unverified", { ...correlation, reason: "main_evidence_incomplete" });
+      return unverified();
+    }
+    const prompt = forkPrompt(
+      config,
+      request,
+      candidate.text,
+      previousFindings,
+      evidence ? mainEvidenceText(evidence) : "[]",
+    );
     logger.record("model.start", { ...correlation, request: { prompt } });
     await flush(signal);
     if (signal.aborted) return unverified();

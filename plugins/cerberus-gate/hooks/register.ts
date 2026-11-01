@@ -1,3 +1,4 @@
+import { observeMainCall } from "./main-evidence.ts";
 import { picker as renderPicker } from "./panes.ts";
 import { phases, settingFor, menuItems } from "./menu.ts";
 import { translate } from "./locale.ts";
@@ -358,6 +359,12 @@ async function verify(
     candidate.timedOut = true;
     candidate.controller.abort();
   });
+  const io = {
+    logger,
+    flush: (s: AbortSignal) => flushDebug($, logger, false, s),
+    rememberTask: (id: string) => rememberTask(gate, id),
+    saveTasks: () => saveRecovery($, gate),
+  };
   let directory: string | undefined;
   const materialOperationId = debug.operation();
   try {
@@ -368,12 +375,7 @@ async function verify(
         $,
         gate.marker,
         `${epoch}-${candidate.token}`,
-        {
-          logger,
-          flush: (s) => flushDebug($, logger, false, s),
-          rememberTask: (id) => rememberTask(gate, id),
-          saveTasks: () => saveRecovery($, gate),
-        },
+        io,
         candidate,
         materialOperationId,
       );
@@ -394,16 +396,17 @@ async function verify(
       gate.material = directory;
       await saveRecovery($, gate, signal);
     }
-    const reviewLogger = logger;
-    const io = {
-      logger: reviewLogger,
-      flush: (s: AbortSignal) => flushDebug($, reviewLogger, false, s),
-      rememberTask: (id: string) => rememberTask(gate, id),
-      saveTasks: () => saveRecovery($, gate),
-    };
     let verdict =
       method === "fork"
-        ? await forkReview($, reviewConfig, candidate, gate.prompt, gate.findings, io)
+        ? await forkReview(
+            $,
+            reviewConfig,
+            candidate,
+            gate.prompt,
+            gate.findings,
+            io,
+            gate.evidence,
+          )
         : await review($, reviewConfig, candidate, gate.prompt, e.model, e.effort, io);
     if (!current(gate, candidate) || signal.aborted) return hidden;
     if (candidate.timedOut) {
@@ -664,6 +667,7 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
   }
   if (next.origin.plugin !== "cerberus-gate") {
     const active = gate.active;
+    const epoch = gate.epoch;
     const result = await next(e);
     if (
       active &&
@@ -675,7 +679,8 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
       result.text === "A model fork cannot use tools"
     )
       active.toolRequested = true;
-    if (e.agentId === undefined) {
+    if (e.agentId === undefined && epoch === gate.epoch) {
+      observeMainCall(gate.evidence, e, result);
       trackMainTask(gate, e, backgroundTask(result));
       trackMainAgent(gate, result);
     }

@@ -608,27 +608,14 @@ for (const mode of cases) {
     }
     if (needsRevision && latest.includes(t("waiting")))
       throw new Error("Waiting notice remained in the completed answer");
-    if (mode === "history") {
-      for (const name of (await readdir(artifacts)).filter((entry) =>
-        /^review-\d+\.json$/u.test(entry),
-      )) {
-        const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
-        if (decisionOf(review.result.text) === "REVISE")
-          visibleFindings.push(...JSON.parse(review.result.text).findings);
-      }
-    }
+    const completedDebug = await verifyDebug(work, artifacts, installedConfig);
+    // The history gate can replace an intermediate REVISE; only settled verdicts are delivered.
+    const acceptedVerdicts = completedDebug.flatMap((entry) =>
+      entry.instances.flatMap((instance) => instance.verdicts),
+    );
+    for (const verdict of acceptedVerdicts)
+      if (verdict.decision === "REVISE") visibleFindings.push(...verdict.findings);
     if ((needsRevision && mode !== "history") || mode === "reload-review") {
-      for (const name of (await readdir(artifacts)).filter((entry) =>
-        /^review-\d+\.json$/u.test(entry),
-      )) {
-        const review = JSON.parse(await readFile(join(artifacts, name), "utf8"));
-        try {
-          const result = JSON.parse(review.result.text);
-          if (result.decision === "REVISE") visibleFindings.push(...result.findings);
-        } catch {
-          // Tool requests and malformed responses contain no displayed findings.
-        }
-      }
       if (expectedFindings[mode] && !visibleFindings.some((f) => expectedFindings[mode]!.test(f)))
         throw new Error("Reviewer did not identify the intended material evidence problem");
       const heading = "Prompt from the cerberus-gate plugin";
@@ -787,13 +774,7 @@ for (const mode of cases) {
     ).length;
     if (needsRevision && !verdicts.some((v) => v.includes('"REVISE"')))
       throw new Error("No real reviewer REVISE verdict observed");
-    const revisions = verdicts.filter((text: string) => {
-      try {
-        return JSON.parse(text).decision === "REVISE";
-      } catch {
-        return false;
-      }
-    }).length;
+    const revisions = acceptedVerdicts.filter((verdict) => verdict.decision === "REVISE").length;
     const expectedPrompts =
       (needsRevision || mode === "reload-review"
         ? Math.min(revisions, mode === "cap" ? 1 : 2)
@@ -882,7 +863,7 @@ for (const mode of cases) {
       const end = JSON.parse(await readFile(join(artifacts, "review-1.json"), "utf8"));
       if (end.at - start.at < 10000) throw new Error("Slow review did not exceed ten seconds");
     }
-    const debugReport = await verifyDebug(work, artifacts, installedConfig);
+    const debugReport = completedDebug;
     await submit(session, "/cgate log");
     let debugScreen = "";
     const debugDeadline = Date.now() + 15_000;

@@ -1,3 +1,4 @@
+import { createMainEvidence } from "./main-evidence.ts";
 import { translate } from "./locale.ts";
 import type { Language } from "./locale.ts";
 import { formatFindings } from "./policy.ts";
@@ -38,6 +39,7 @@ export function createState() {
     revisions: 0,
     reviewMode: undefined as ReviewMode | undefined,
     findings: [] as readonly string[],
+    evidence: createMainEvidence(),
     active: undefined as Candidate | undefined,
     material: undefined as string | undefined,
     delivery: undefined as Delivery | undefined,
@@ -66,6 +68,7 @@ export function reset(state: GateState, prompt: string, marker = prompt): void {
   state.revisions = 0;
   state.reviewMode = undefined;
   state.findings = [];
+  state.evidence = createMainEvidence();
   state.active = undefined;
   state.delivery = undefined;
   state.action = undefined;
