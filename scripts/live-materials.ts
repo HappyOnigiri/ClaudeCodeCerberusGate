@@ -21,12 +21,12 @@ export async function verifyMaterials(records: string[], artifacts: string, mode
     throw new Error("Unavailable log started a reviewer");
   if (mode === "cap") {
     if (
-      records.filter((n) => /^review-\d+\.json$/u.test(n)).length !== 1 ||
-      records.filter((n) => /^material-\d+\.json$/u.test(n)).length !== 1
+      records.filter((n) => /^review-\d+\.json$/u.test(n)).length !== 2 ||
+      records.filter((n) => /^material-\d+\.json$/u.test(n)).length !== 2
     )
-      throw new Error("Revision cap started another review or generated more materials");
-    if (!(await readFile(join(artifacts, "screen.txt"), "utf8")).includes("[SKIP]"))
-      throw new Error("Revision cap did not show its skip notice");
+      throw new Error("Revision cap did not review the last correction");
+    if (!(await readFile(join(artifacts, "screen.txt"), "utf8")).includes("[UNVERIFIED]"))
+      throw new Error("Revision cap did not show its unverified notice");
   }
   const snapshots = new Map();
   let cliHistorySearched = false;

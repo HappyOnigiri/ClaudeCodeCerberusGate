@@ -126,7 +126,7 @@ void test("the review loop may call only the reviewer APIs and receive the engin
     [],
   );
   for (const source of [
-    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mts`, "create"], {});',
+    '$.process.run(["node", `${$.plugin.root}/hooks/session-log.mts`, "other"], {});',
     '$.state.set({plugin: "cerberus-gate", key: "recovery"}, null);',
     '$.prompt.submit({text: "x"});',
     '$.tool.call({tool: "Write"});',
@@ -372,4 +372,24 @@ void test("native checks reject empty targets and missing tools", async (t) => {
   const missing = run(process.execPath, [script, "shell"], { cwd: path });
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /missing-tool: run npm run setup:checks/u);
+});
+
+void test("fork API accepts only prompt in reviewed boundaries and panes cannot use model APIs", () => {
+  for (const file of [
+    "plugins/cerberus-gate/hooks/register.ts",
+    "plugins/cerberus-gate/hooks/review-loop.ts",
+  ]) {
+    assert.deepEqual(architecture(file, '$.model.fork({prompt: "review"});'), []);
+    for (const args of [
+      '{prompt: "review", model: "haiku"}',
+      "{...request}",
+      "request",
+      '{prompt: "review"}, {signal}',
+    ])
+      assert.ok(architecture(file, `$.model.fork(${args});`).length);
+  }
+  assert.ok(
+    architecture("plugins/cerberus-gate/hooks/panes.ts", '$.model.fork({prompt: "review"});')
+      .length,
+  );
 });

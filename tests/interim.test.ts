@@ -1,12 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  PASSED,
-  REVISION_LIMIT,
-  readConfig,
-  revising,
-  skipped,
-} from "../plugins/cerberus-gate/hooks/policy.ts";
+import { PASSED, readConfig, revising, skipped } from "../plugins/cerberus-gate/hooks/policy.ts";
 
 import { harness, verdict, started } from "./helpers/gate-harness.ts";
 
@@ -168,7 +162,7 @@ void test("interimMaxChars defaults to 500 and rejects values outside 0 to 10000
     assert.throws(() => readConfig({ interimMaxChars: value }), /Invalid interimMaxChars/u);
 });
 
-void test("an interim report at the revision cap keeps the cycle until the final answer skips review", async () => {
+void test("an interim report at the revision cap keeps the cycle until the final answer is reviewed", async () => {
   const h = harness({ maxRevisions: 1 });
   await started(h);
   h.replies.push(verdict("REVISE", ["finding"]));
@@ -186,8 +180,8 @@ void test("an interim report at the revision cap keeps the cycle until the final
   h.setDraft("CORRECTED");
   const reviewsAtCap = h.events.models.length;
   const materialsAtCap = h.events.materialRequests.length;
-  assert.deepEqual(shown(await h.step()), noted(REVISION_LIMIT, "CORRECTED"));
-  assert.equal(h.events.models.length, reviewsAtCap);
-  assert.equal(h.events.materialRequests.length, materialsAtCap);
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "CORRECTED"));
+  assert.equal(h.events.models.length, reviewsAtCap + 1);
+  assert.equal(h.events.materialRequests.length, materialsAtCap + 1);
   assert.equal(h.host.states.get("recovery")!.pending, false);
 });

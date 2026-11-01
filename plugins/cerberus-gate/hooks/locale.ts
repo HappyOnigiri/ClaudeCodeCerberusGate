@@ -215,8 +215,8 @@ const messages = {
   currentLog: ["Current log: {0}", "現在のログ: {0}"],
 
   status: [
-    "Cerberus Gate: {0} ({1}); {2}; corrections={3}",
-    "Cerberus Gate: {0}（{1}）; {2}; 修正回数={3}",
+    "Cerberus Gate: {0} ({1}); {2}; corrections={3}; method={4}",
+    "Cerberus Gate: {0}（{1}）; {2}; 修正回数={3}; 審査方式={4}",
   ],
   savedSource: ["saved", "保存設定"],
   sessionSource: ["session", "セッション設定"],

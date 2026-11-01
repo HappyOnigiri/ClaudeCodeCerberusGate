@@ -28,7 +28,7 @@ export function historyMessage(mode: string): string {
     case "timeout":
       return language === "ja" ? "タイムアウト" : "timed out";
     case "cap":
-      return t("limitPublished");
+      return t("unverifiedPublished");
     case "cancel":
       return t("cancelled");
     case "unverified":

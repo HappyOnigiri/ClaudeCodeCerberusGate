@@ -1,3 +1,4 @@
+import { forkPrompt } from "./fork-prompt.ts";
 import { MAX_DRAFT, diagnoseVerdict } from "./policy.ts";
 import {
   MAX_ROUNDS,
@@ -198,4 +199,95 @@ export async function review(
     return history.fallback();
   }
   return fail("round_limit");
+}
+
+// fork accepts no AbortSignal: stop waiting locally, retain late usage, never reuse its result.
+export async function forkReview(
+  $: EngineInterface,
+  config: Config,
+  candidate: Candidate,
+  request: string,
+  previousFindings: readonly string[],
+  { logger, flush }: ReviewIo,
+): Promise<Verdict> {
+  const signal = candidate.controller.signal;
+  const operationId = logger.operation();
+  const correlation = {
+    epoch: candidate.epoch,
+    reviewToken: candidate.token,
+    operationId,
+    method: "fork",
+  };
+  try {
+    if (signal.aborted) return unverified();
+    const prompt = forkPrompt(config, request, candidate.text, previousFindings);
+    logger.record("model.start", { ...correlation, request: { prompt } });
+    await flush(signal);
+    if (signal.aborted) return unverified();
+    const response = await cancellable(
+      $.model.fork({ prompt }).then(async (result) => {
+        logger.record(signal.aborted ? "model.discarded" : "model.complete", {
+          ...correlation,
+          response: result,
+        });
+        // A stale turn queues its logger for the next live dispatch without starting helpers.
+        if (signal.aborted) await flush(signal);
+        return result;
+      }),
+      signal,
+    );
+    await flush(signal);
+    if (signal.aborted || candidate.timedOut || candidate.toolRequested) return unverified();
+    if (!response.isAnswered || !response.text || response.text.length > MAX_DRAFT) {
+      logger.record("review.unverified", {
+        ...correlation,
+        reason: "model_empty_or_failed",
+        response,
+      });
+      return unverified();
+    }
+    // Strict verdict parsing only: no tools, history gate, format rescue or retry.
+    const value: unknown = JSON.parse(response.text);
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Object.keys(value).some((key) => key !== "decision" && key !== "findings")
+    )
+      return unverified();
+    const parsed = diagnoseVerdict(response.text);
+    logger.record("verdict.parsed", { ...correlation, ...parsed });
+    return parsed.verdict;
+  } catch (error) {
+    logger.record("review.failed", { ...correlation, error }, "error");
+    return unverified();
+  }
+}
+
+// Material I/O belongs only to the complete investigation route.
+export async function prepareMaterial(
+  $: EngineInterface,
+  request: string,
+  reviewId: string,
+  { logger, flush }: ReviewIo,
+  candidate: Candidate,
+  operationId: string,
+) {
+  const signal = candidate.controller.signal;
+  logger.record("material.start", {
+    operationId,
+    epoch: candidate.epoch,
+    reviewToken: candidate.token,
+  });
+  await flush(signal);
+  const result = await $.process.run(["node", `${$.plugin.root}/hooks/session-log.mts`, "create"], {
+    stdin: JSON.stringify({
+      sessionId: await $.session.id(),
+      request,
+      debug: { ...logger.identity(), reviewId },
+    }),
+    timeoutMs: 15_000,
+  });
+  logger.record("material.complete", { operationId, result });
+  await flush(signal);
+  return result;
 }

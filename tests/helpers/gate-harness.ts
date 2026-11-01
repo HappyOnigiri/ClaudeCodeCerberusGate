@@ -70,6 +70,7 @@ interface Captured {
   closed?: boolean;
   released?: boolean;
   materialRequests: unknown[];
+  forks: { prompt: string }[];
   setting?: { key: string; value: unknown };
 }
 interface Host {
@@ -137,6 +138,7 @@ export function harness(
     inputs: [],
     debug: [],
     materialRequests: [],
+    forks: [],
   };
   const replies: Reply[] = [];
   let draft = "UNPUBLISHED DRAFT";
@@ -166,7 +168,7 @@ export function harness(
         },
       };
     }),
-    asFixture<PluginOptions>(options),
+    asFixture<PluginOptions>({ reviewerModel: "haiku", ...options }),
   );
   const engine = {
     plugin: { root: "/plugin" },
@@ -284,6 +286,13 @@ export function harness(
       version: async () => ({ version, base: version }),
     },
     model: {
+      fork: async (request: { prompt: string }) => {
+        events.forks.push(request);
+        const reply = replies.length ? replies.shift() : verdict();
+        if (typeof reply === "function")
+          return reply(asFixture<ModelRequest>(request), { signal: controller.signal });
+        return { isAnswered: true, text: reply, usage: {} };
+      },
       complete: async (request: ModelRequest, callOptions: ModelOptions) => {
         events.models.push({ request, options: callOptions });
         const reply = replies.length ? replies.shift() : verdict();

@@ -1,7 +1,7 @@
 import { translate } from "./locale.ts";
 import type { Language } from "./locale.ts";
 import { formatFindings } from "./policy.ts";
-import type { Verdict } from "./policy.ts";
+import type { ReviewMode, Verdict } from "./policy.ts";
 export type Candidate = {
   token: number;
   turnId: string;
@@ -11,6 +11,7 @@ export type Candidate = {
   context: string;
   controller: AbortController;
   timedOut: boolean;
+  toolRequested?: boolean;
 };
 export type Delivery = {
   token: number;
@@ -35,6 +36,8 @@ export function createState() {
     epoch: 0,
     serial: 0,
     revisions: 0,
+    reviewMode: undefined as ReviewMode | undefined,
+    findings: [] as readonly string[],
     active: undefined as Candidate | undefined,
     material: undefined as string | undefined,
     delivery: undefined as Delivery | undefined,
@@ -61,6 +64,8 @@ export function reset(state: GateState, prompt: string, marker = prompt): void {
   state.active?.controller.abort();
   state.epoch++;
   state.revisions = 0;
+  state.reviewMode = undefined;
+  state.findings = [];
   state.active = undefined;
   state.delivery = undefined;
   state.action = undefined;

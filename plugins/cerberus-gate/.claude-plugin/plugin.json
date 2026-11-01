@@ -18,14 +18,14 @@
     "reviewerModel": {
       "type": "string",
       "title": "Reviewer model",
-      "description": "inherit, haiku, sonnet, opus, or a model ID.",
+      "description": "Both model and effort inherit uses a tool-less session fork. Any explicit value uses the complete investigation loop. Model: inherit, haiku, sonnet, opus, or a model ID.",
       "default": "inherit",
       "required": false
     },
     "maxRevisions": {
       "type": "number",
       "title": "Maximum corrections",
-      "description": "Number of correction prompts per user request (0–10). Skip review once reached; 0 skips all reviews.",
+      "description": "Number of correction prompts per user request (0–10). Review the final correction too; 0 skips all reviews.",
       "default": 2,
       "required": false
     },
@@ -46,7 +46,7 @@
     "reviewerEffort": {
       "type": "string",
       "title": "Reviewer effort",
-      "description": "inherit uses the main answer effort. Model support may limit the effective effort.",
+      "description": "Both settings inherit uses fork. Otherwise inherit uses the main answer effort in the complete loop; model support may limit effort.",
       "options": ["inherit", "low", "medium", "high", "xhigh", "max"],
       "default": "inherit",
       "required": false

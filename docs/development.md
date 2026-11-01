@@ -155,12 +155,17 @@ npm run test:live
 実地検証は既定で英語を確認します。
 `CERBERUS_LANGUAGE=ja npm run test:live -- pass revise` で日本語設定の合格・差し戻しと、実際の審査プロンプトの言語を確認できます。
 
+旧方式の試験では、使い捨てのプラグインで審査モデルを明示的に `haiku` にする。
+`CERBERUS_REVIEW_METHOD=fork npm run test:live -- pass revise question-pass cap timeout cancel` で両設定がinheritのfork経路を検証する。
+各ケースの `metrics.json` にメインと審査のusage、呼び出し数、調査数を記録する。
+取消後の計算停止は保証せず、遅延結果の破棄を確認する。
+
 特定ケースは `npm run test:live -- pass` のように指定する。
 `npm run test:live -- question-pass question-revise question-context question-order question-editorial` は質問と説明文の保留、実際のレビュアーによる判定、誤った前提・過去ターン依存の説明・推奨案が先頭にない質問・未公開原稿の修正経緯を含む説明の差し戻しと、修正後の質問画面の表示を確認する。
 質問のケースは検証用のプラグイン複製で修正上限を4回にし、メインエージェント自身による修正と再審査を確認する。
 `npm run test:live -- model` は Enter＝改行・Ctrl+Enter＝送信と、Pane の Enter＝選択を設定した隔離環境で実行する。
 メニューを開いた直後・下キーで移動した後・設定再読み込み後の Enter による選択も検査する。
-`npm run test:live -- cap` は修正上限を1回にして差し戻しを作り、修正後は審査資料とレビュアーを追加せず、本文と `[SKIP]` の注記を表示することを確認する。
+`npm run test:live -- cap` は修正上限を1回にして差し戻しを作り、最後の修正後も審査し、未解消なら本文と `[UNVERIFIED]` の注記を表示することを確認する。
 ケースの検査内容を変えるときは、スクリプトと [live-materials.ts](/scripts/live-materials.ts) を確認する。
 `npm run test:live -- cli` は審査ツール一覧から `Grep` を外し、CLI による履歴検索と審査完了を確認する。
 `npm run test:live -- recover` は存在しないファイルをレビュアーに読ませ、実行エラーが調査結果として返り、再試行後に公開されることを確認する。
@@ -189,3 +194,38 @@ npm run test:distribution
 このパスを `CERBERUS_INSTALLED_CONFIG` に指定して `npm run test:live -- pass revise` を実行すると、インストール済みの2つを読み込み、合格・差し戻し・Ctrl+O を確認する。
 この指定では常用環境のパスを使わない。
 認証・導入案内に必要なアカウント情報だけを隔離設定へ複製し、認証ストレージは既存のものを参照する。
+
+## fork経路の導入判定
+
+2026-11-01、Claude Code 2.1.316、メインモデル `haiku`（応答のusageでは `claude-haiku-5-5`）で実地検証した。
+実装と自動検査は通っているが、既定経路としての導入判定は未完了である。
+
+`Read fact.txt and reply with exactly the release channel, with no other text.` という同じ依頼で比較した。
+メインのRead結果が記録されている一方、保留中のforkは結果が見えないと判定し、修正後もREVISEを繰り返した。
+最終的には修正上限後に未検証の注記付きで公開された。
+原因がforkの履歴取得時点かモデルの解釈かは未確定であり、履歴と原稿の照合が成功したとは扱わない。
+旧方式はPASSで公開された。
+
+次のusageはメインの調査・修正を含む合計で、審査だけの比較ではない。
+呼び出し数はfixtureが記録したメインのステップと審査APIの回数である。
+
+| 観測値                         |    fork | complete |
+| ------------------------------ | ------: | -------: |
+| メイン呼び出し                 |       4 |        2 |
+| 審査呼び出し                   |       3 |        3 |
+| メインのツール呼び出し         |       2 |        2 |
+| Modの調査ツール呼び出し        |       0 |        2 |
+| 同一パスへのメインのRead再実行 |       0 |        0 |
+| input_tokens                   |  24,302 |   42,692 |
+| output_tokens                  |   2,392 |      778 |
+| cache_read_input_tokens        | 219,016 |   63,740 |
+| cache_creation_input_tokens    |   8,935 |    5,783 |
+
+完了条件が一致していないため、利用量の削減率や同等の検出精度は示せない。
+重大な誤りの見逃しを比較する検証も未完了である。
+通常の質問と誤った説明からの再質問でもforkのPASSを確認できず、上限後の未検証表示に進んだ。
+
+forkの修正上限・形式不正・タイムアウト・取消のケースは通った。
+1秒のタイムアウトと7秒の応答遅延を使った試験では、待機解除後のforkがPASSとusageを返し、公開に使われず `model.discarded` に保存された。
+独自の取消で計算が止まるとは扱わない。
+旧方式の回答のPASS・REVISE、質問のPASS、最後の修正後の審査は実地で確認した。

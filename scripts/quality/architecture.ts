@@ -28,10 +28,15 @@ const reviewLoop = "plugins/cerberus-gate/hooks/review-loop.ts";
 const reviewLoopApi = new Set([
   "clock.now",
   "model.complete",
+  "model.fork",
   "session.cwd",
+  "session.id",
+  "plugin.root",
+  "process.run",
   "tool.call",
   "tool.list",
 ]);
+const panes = "plugins/cerberus-gate/hooks/panes.ts";
 const displayRegistration = "plugins/cerberus-gate-display/hooks/register.ts";
 const api = new Set([
   "agent.list",
@@ -58,6 +63,7 @@ const api = new Set([
   "ui.toast",
   "ui.log",
   "model.complete",
+  "model.fork",
   "turn.abort",
 ]);
 const engineNames = new Set(["$", "_$"]);
@@ -158,7 +164,7 @@ export function inspect(
   const errors: string[] = [];
   const report: Context["report"] = (n, rule, message) =>
     errors.push(diagnostic(file, text, n, rule, message));
-  const privileged = file === registration || file === reviewLoop;
+  const privileged = file === registration || file === reviewLoop || file === panes;
   const values = new Map([...importedConstants, ...constants(program)]);
   const bindings = new Map<string, number>();
   const bind = (id: Node | null | undefined) =>
@@ -209,7 +215,10 @@ export function inspect(
   // Registration may pass the engine to the review loop exports, which are checked in their own file.
   if (file === registration)
     walk(program, (n) => {
-      if (n.type === "ImportDeclaration" && literal(n.source) === "./review-loop.ts")
+      if (
+        n.type === "ImportDeclaration" &&
+        ["./review-loop.ts", "./panes.ts"].includes(String(literal(n.source)))
+      )
         for (const s of n.specifiers) if (s.type === "ImportSpecifier") helpers.add(s.local.name);
     });
   for (const [name, count] of bindings) if (count > 1) helpers.delete(name);
@@ -222,7 +231,8 @@ export function inspect(
     helpers,
     typeName,
     readCalls: guardedReadCalls(program),
-    allowedApi: file === reviewLoop ? reviewLoopApi : api,
+    allowedApi:
+      file === reviewLoop ? reviewLoopApi : file === panes ? new Set(["ui.resolve"]) : api,
   };
   walk(program, (n, parent) => {
     inspectDependency(n, context);
@@ -378,6 +388,18 @@ function propertyKey(property: ObjectPropertyKind): unknown {
     ? (nodeName(property.key) ?? (property.key.type === "Literal" ? property.key.value : undefined))
     : undefined;
 }
+function inspectFork(n: Node, call: CallExpression, report: Context["report"]) {
+  const argument = call.arguments[0];
+  const fields = argument?.type === "ObjectExpression" ? argument.properties : [];
+  if (
+    call.arguments.length !== 1 ||
+    fields.length !== 1 ||
+    fields[0]?.type !== "Property" ||
+    fields[0].computed ||
+    propertyKey(fields[0]) !== "prompt"
+  )
+    report(n, "mods-api-target", "model.fork permits only an explicit prompt");
+}
 function inspectMember(
   n: Node,
   parent: Node | undefined,
@@ -398,6 +420,7 @@ function inspectMember(
     }
     if (name === "plugin.root") return;
     if (parent?.type !== "CallExpression") return;
+    if (name === "model.fork") inspectFork(n, parent, report);
     if (name === "process.run") inspectProcess(n, parent, literal, report);
     if (name === "config.set") {
       const argument = parent.arguments[0];

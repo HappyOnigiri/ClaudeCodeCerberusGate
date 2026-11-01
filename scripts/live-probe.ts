@@ -1,5 +1,8 @@
-import { customPrompt, drafts, facts, requests, expectedFindings } from "./live-scenarios.ts";
-import { questionFixture, verifyQuestion } from "./live-question.ts";
+import { recordMetrics } from "./live-metrics.ts";
+import { liveFixture } from "./live-fixture.ts";
+import { verifyFork, verifyForkDiscard } from "./live-fork.ts";
+import { customPrompt, facts, requests, expectedFindings } from "./live-scenarios.ts";
+import { verifyQuestion } from "./live-question.ts";
 import { verifyMenu, installMenuKeybindings } from "./live-menu.ts";
 import { translate } from "../plugins/cerberus-gate/hooks/locale.ts";
 import { language, t, verifyLanguage, historyMessage } from "./live-language.ts";
@@ -21,6 +24,7 @@ import { resolve, join } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 
 const root = process.cwd();
+const useFork = process.env.CERBERUS_REVIEW_METHOD === "fork";
 const installedConfig = process.env.CERBERUS_INSTALLED_CONFIG;
 if (
   installedConfig &&
@@ -118,10 +122,12 @@ for (const mode of cases) {
     recursive: true,
     filter: (p) => !p.includes("/.claude-plugin/types"),
   });
-  if (mode === "cap" || mode.startsWith("question-")) {
+  {
     const path = join(plugin, ".claude-plugin/plugin.json");
     const manifest = JSON.parse(await readFile(path, "utf8"));
-    manifest.userConfig.maxRevisions.default = mode === "cap" ? 1 : 4;
+    if (mode === "cap" || mode.startsWith("question-"))
+      manifest.userConfig.maxRevisions.default = mode === "cap" ? 1 : 4;
+    manifest.userConfig.reviewerModel.default = useFork ? "inherit" : "haiku";
     await writeFile(path, JSON.stringify(manifest));
   }
   if (mode === "missing-log")
@@ -192,77 +198,7 @@ for (const mode of cases) {
   );
   await writeFile(
     join(fixture, "hooks/register.ts"),
-    `
- let first=true,review=0,prompts=0,tools=0,userPrompts=0,materials=0;const seenMaterials=new Set();
- export const register=on=>{
-  if(${JSON.stringify(mode)}==='cli')on('tool.list',async($,e,next)=>{const r=await next(e);return {...r,value:r.value.filter(t=>t.name!=='Grep')};});
-  on('turn.step',async function*($,e,next){
-   ${questionFixture(mode, artifacts)}
-   if(!e.agentId && first && (['revise','cap','reload-review','bounds','environment','causal','choice'].includes(${JSON.stringify(mode)}) || (${JSON.stringify(mode)}==='history' && userPrompts>=2))){
-    first=false;
-    const text=${JSON.stringify(mode)}==='history'?'The limit is 8. CERBERUS_REJECTED_DRAFT':${JSON.stringify(drafts[mode] ?? "The release channel is beta. CERBERUS_REJECTED_DRAFT")};
-    yield {kind:'text',index:0,text};yield {kind:'stop',stopReason:'end_turn',usage:null};
-    return {turnId:e.turnId,index:e.index,answer:text,toolUses:[],stopReason:'end_turn',usage:null};
-   }
-   const stream=next(e);const pieces=[];for await(const c of stream){pieces.push(c);if(${JSON.stringify(mode)}!=='history')yield c;}
-   let result=await stream.result;
-   if(${JSON.stringify(mode)}==='history'){
-    if(!e.agentId && userPrompts===1 && result.toolUses.length===0){
-     const text='ORCHID ACK'; pieces.splice(0,pieces.length,{kind:'text',index:0,text},{kind:'stop',stopReason:'end_turn',usage:null});result={...result,answer:text};
-    }
-    yield* pieces;
-   }
-   await $.fs.write(${JSON.stringify(artifacts)}+'/step-'+(e.agentId??'main')+'-'+e.turnId+'-'+e.index+'.json',JSON.stringify({event:e,result,pieces}));
-   return result;
-  });
-  on('prompt.submit',async($,e,next)=>{
-   if(e.origin.kind==='composer')userPrompts++;
-   const result=await next(e);await $.fs.write(${JSON.stringify(artifacts)}+'/prompt-'+(++prompts)+'.json',JSON.stringify({...e,context:result.context??e.context}));return result;
-  });
-  on('model.complete',async($,e,next)=>{
-   const index=++review;
-   const material=JSON.parse(e.prompt).sessionLog;
-   if(!seenMaterials.has(material.source)){
-    seenMaterials.add(material.source);
-    const raw=await $.fs.read(material.source), original=await $.fs.read(material.sourcePath);
-    if(!original.startsWith(raw))throw new Error('Source prefix changed');
-    await $.fs.write(${JSON.stringify(artifacts)}+'/material-'+(++materials)+'.json',JSON.stringify({material,raw,users:await $.fs.read(material.users),history:await $.fs.read(material.history)}));
-   }
-   if(${JSON.stringify(mode)}==='reload-review' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
-    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','review');await $.clock.sleep(7000);
-   }
-   await $.fs.write(${JSON.stringify(artifacts)}+'/review-start-'+index+'.json',JSON.stringify({at:Date.now(),request:e}));
-   if(['cancel','timeout'].includes(${JSON.stringify(mode)}))await $.clock.sleep(7000);
-   if(${JSON.stringify(mode)}==='slow')await $.clock.sleep(6000);
-   if(${JSON.stringify(mode)}==='cli')e={...e,prompt:e.prompt+'\\nBefore deciding, request Bash with command '+${JSON.stringify(JSON.stringify(cliCommand))}+' to inspect the latest commit subject. The evidence array must contain this successful CLI output AND a successful read-only Bash grep search of sessionLog.history that returns matching lines. Grep is not listed; do not request it. Verify both the release channel and evidence token in the draft against that output. Do not substitute file reads. If this command is already in evidence, use it and decide; do not repeat it.'};
-   if(${JSON.stringify(mode)}==='history' && JSON.parse(e.prompt).unpublishedDraft.includes('CERBERUS_REJECTED_DRAFT'))e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain both a successful Grep on sessionLog.history with output_mode content and a successful Read of narrow matching history.txt ranges around the prior LIMIT tool result. Do not substitute a read of limits.ts for reading history.txt. Do not decide based solely on the current draft or request.'};
-   if(${JSON.stringify(mode)}==='recover')e={...e,prompt:e.prompt+'\\nBefore deciding, after the required sessionLog.users Read, the evidence array must also contain a Read of '+${JSON.stringify(join(work, "missing-fact.txt"))}+' (it may not exist) followed by a successful Read of fact.txt. If the missing-file Read is already in evidence, request Read of fact.txt next; if both exist, return the verdict. Do not repeat completed reads.'};
-   if(${JSON.stringify(mode)}==='search')e={...e,prompt:e.prompt+'\\nBefore deciding, the evidence array must contain successful results from both Glob (find **/fact.txt) and Grep (search stable in fact.txt). If Glob is already in evidence, request Grep next; if both exist, return the verdict. Do not repeat completed searches.'};
-   if(${JSON.stringify(mode)}.startsWith('question-'))e={...e,prompt:e.prompt+'\\nBefore deciding, your evidence array must contain successful Read results for sessionLog.users and fact.txt. If missing, request those reads first, one at a time; do not repeat successful reads. Use Read or Grep for this fixture rather than Bash.'};
-   const result=${JSON.stringify(mode)}==='cap'
-    ? {value:{isAnswered:true,text:JSON.stringify({decision:'REVISE',findings:['fact.txt:1 says stable; correct the beta release channel.']}),usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
-    : ${JSON.stringify(mode)}==='unverified'
-    ? {value:{isAnswered:true,text:'INVALID_REVIEW',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}
-    : await next(e);
-   await $.fs.write(${JSON.stringify(artifacts)}+'/review-'+index+'.json',JSON.stringify({request:e,result:result.value,at:Date.now()}));
-   return result;
-  });
-  on('tool.call',async($,e,next)=>{
-   if(e.tool==='AskUserQuestion')await $.fs.write(${JSON.stringify(artifacts)}+'/question-dispatched.json',JSON.stringify(e));
-   const result=await next(e);
-   if(e.tool==='Read' && !e.agentId && next.origin.plugin!=='cerberus-gate' && ${JSON.stringify(mode)}==='reload-work' && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reloaded'))){
-    await $.fs.write(${JSON.stringify(artifacts)}+'/reload-ready','work');for(let wait=0;wait<100 && !(await $.fs.exists(${JSON.stringify(artifacts)}+'/reload-confirmed'));wait++)await $.clock.sleep(250);
-   }
-   await $.fs.write(${JSON.stringify(artifacts)}+'/tool-'+(++tools)+'.json',JSON.stringify({tool:e.tool,input:e,origin:next.origin,result}));return result;
-  });
-  on('turn.complete',async($,e,next)=>{
-   await $.fs.write(${JSON.stringify(artifacts)}+'/complete-'+e.turnId+'.json',JSON.stringify(e));return next(e);
-  });
-  on('session.end',async($,e,next)=>{
-   await $.fs.write(${JSON.stringify(artifacts)}+'/session-end.json',JSON.stringify(e));return next(e);
-  });
- };
- `,
+    liveFixture(mode, artifacts, useFork, cliCommand, work),
   );
   const delay = join(work, "delay");
   if (mode === "slow") {
@@ -394,7 +330,7 @@ for (const mode of cases) {
       "-x",
       "140",
       "-y",
-      "45",
+      "80",
       "-c",
       work,
       args.map(quote).join(" "),
@@ -635,7 +571,10 @@ for (const mode of cases) {
               .some((line) => /⏺/u.test(line) && line.includes("ORCHID") && /\b7\b/u.test(line))
           : mode === "cli"
             ? latest.includes(cliToken) && /⏺\s*\{/u.test(latest)
-            : /⏺\s+stable\b/u.test(latest) &&
+            : (mode === "cap"
+                ? latest.includes(t("unverified")) && latest.includes("stable")
+                : /⏺\s+stable\b/u.test(latest)) &&
+              (mode !== "cap" || latest.includes(t("unverified"))) &&
               (mode !== "pass" || latest.includes("⏺ cerberus-gate: Cerberus Gate: [PASS]")))
       ) {
         // A reload may queue another continuation after an earlier stable answer.
@@ -651,6 +590,16 @@ for (const mode of cases) {
       await pause(500);
     }
     if (!passed) throw new Error("Expected completion not observed before deadline");
+    if (useFork) {
+      await pause(mode === "timeout" ? 8500 : 500);
+      await verifyFork(artifacts, mode, latest);
+      await submit(session, "/cgate log");
+      const debugReport = await verifyDebug(work, artifacts, installedConfig);
+      await verifyForkDiscard(debugReport, mode);
+      summary.push({ case: mode, method: "fork", status: "PASS", workspace: work });
+      console.log(`PASS fork ${mode}`);
+      continue;
+    }
     if (mode.startsWith("question-")) {
       await verifyQuestion(artifacts, mode, latest);
       summary.push({ case: mode, language, status: "PASS", workspace: work });
@@ -809,8 +758,7 @@ for (const mode of cases) {
       const main = steps.find((s) => !s.event.agentId);
       if (!main) throw new Error("No main answer step observed");
       for (const review of reviews) {
-        if (review.request.model !== (mode === "model" ? "haiku" : main.event.model))
-          throw new Error("Reviewer model did not match haiku");
+        if (review.request.model !== "haiku") throw new Error("Reviewer model did not match haiku");
         if (review.request.effort !== (mode === "model" ? "low" : main.event.effort))
           throw new Error("Reviewer effort did not match the configured or inherited effort");
       }
@@ -847,7 +795,9 @@ for (const mode of cases) {
       }
     }).length;
     const expectedPrompts =
-      (needsRevision || mode === "reload-review" ? revisions : 0) + restartPrompts;
+      (needsRevision || mode === "reload-review"
+        ? Math.min(revisions, mode === "cap" ? 1 : 2)
+        : 0) + restartPrompts;
     if (
       restartPrompts > (mode === "reload-review" ? 1 : 0) ||
       (needsRevision && revisions < 1) ||
@@ -973,6 +923,7 @@ for (const mode of cases) {
     console.error(`FAIL ${mode}: ${String(error)}`);
     process.exitCode = 1;
   } finally {
+    await recordMetrics(artifacts, useFork ? "fork" : "complete");
     if (started) tmux("kill-session", "-t", session);
     removeInstalledFixture?.();
   }

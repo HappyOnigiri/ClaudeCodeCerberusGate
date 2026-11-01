@@ -1,7 +1,15 @@
+import { picker as renderPicker } from "./panes.ts";
 import { phases, settingFor, menuItems } from "./menu.ts";
 import { translate } from "./locale.ts";
 import { RESTART_JA } from "./prompts-ja.ts";
-import { correction, MAX_DRAFT, readConfig, REVIEWER, supportedVersion } from "./policy.ts";
+import {
+  correction,
+  MAX_DRAFT,
+  readConfig,
+  reviewMode,
+  REVIEWER,
+  supportedVersion,
+} from "./policy.ts";
 import { restoreRecovery, snapshotRecovery } from "./recovery.ts";
 import {
   controlText,
@@ -23,7 +31,7 @@ import {
 } from "./state.ts";
 import { backgroundTask } from "./review.ts";
 import { questionDraft, skipReason } from "./question.ts";
-import { review, unverified } from "./review-loop.ts";
+import { review, forkReview, prepareMaterial, unverified } from "./review-loop.ts";
 import { createDebug } from "./debug.ts";
 import { createLog } from "./log.ts";
 import type { Candidate, Delivery, GateState, Shown } from "./state.ts";
@@ -43,6 +51,7 @@ const t = (key: Parameters<typeof translate>[1], ...values: (string | number)[])
 const log = createLog(() => config.language);
 let debug = createDebug(() => config.language);
 let debugQueue: Promise<void> = Promise.resolve();
+const pendingLogs = new Set<ReturnType<typeof createDebug>>();
 function debugFailure($: EngineInterface, error: unknown): void {
   debug.failed(error);
   try {
@@ -63,41 +72,7 @@ async function goBack($: EngineInterface, id: string) {
     );
 }
 function picker($: EngineInterface, e: RenderInput, props: SelectProps) {
-  if (e.surface === "mobile") return $.ui.resolve(e).Text({ children: props.label ?? "" });
-  const { Box, Button, Select, Text } = $.ui.resolve(e);
-  return Box({
-    flexDirection: "column",
-    children: [
-      Button({
-        key: "back",
-        label: t("backHint"),
-        onPress: () => goBack($, e.requestId ?? "menu"),
-      }),
-      ...(e.requestId === "menu"
-        ? [
-            Text({ children: props.label }),
-            ...props.options.map((option, index) =>
-              Button({
-                key: `menu-${option.value}`,
-                label: option.label ?? option.value,
-                hotkey: String(index + 1),
-                plain: true,
-                autoFocus: option.value === props.value ? true : undefined,
-                onPress: () =>
-                  props.onSelect(option.value, {
-                    plugin: "cerberus-gate",
-                    component: "Pane",
-                    requestId: e.requestId,
-                    surface: e.surface,
-                    element: props.key,
-                    value: option.value,
-                  }),
-              }),
-            ),
-          ]
-        : [Select(props)]),
-    ],
-  });
+  return renderPicker($, e, props, t("backHint"), () => goBack($, e.requestId ?? "menu"));
 }
 async function openPane($: EngineInterface, id: string, title: string): Promise<void> {
   await $.ui.open({ id, title, focus: true, closeOnEscape: true });
@@ -117,21 +92,25 @@ async function flushDebug(
 ): Promise<void> {
   // A cancelled turn cannot launch helpers. Keep its tail for the next live dispatch.
   if (!logger.ready()) return;
+  pendingLogs.add(logger);
   debugQueue = debugQueue.then(async () => {
     if ((signal?.aborted || gate.phase === "cancelled") && !force) return;
-    const records = logger.take();
-    if (!records.length) return;
-    try {
-      const result = await $.process.run(
-        ["node", `${$.plugin.root}/hooks/debug-log.mts`, "append"],
-        {
-          stdin: JSON.stringify({ ...logger.identity(), records }),
-          timeoutMs: 1000,
-        },
-      );
-      if (result.exitCode !== 0) throw result;
-    } catch (error) {
-      if (logger === debug) debugFailure($, error);
+    for (const sink of pendingLogs) {
+      pendingLogs.delete(sink);
+      const records = sink.take();
+      if (!records.length) continue;
+      try {
+        const result = await $.process.run(
+          ["node", `${$.plugin.root}/hooks/debug-log.mts`, "append"],
+          {
+            stdin: JSON.stringify({ ...sink.identity(), records }),
+            timeoutMs: 1000,
+          },
+        );
+        if (result.exitCode !== 0) throw result;
+      } catch (error) {
+        if (sink === debug) debugFailure($, error);
+      }
     }
   });
   await debugQueue;
@@ -188,6 +167,7 @@ const status = (): string =>
     t(gate.sessionEnabled === undefined ? "savedSource" : "sessionSource"),
     t(phases[gate.phase]),
     gate.revisions,
+    gate.active ? (gate.reviewMode ?? reviewMode(config)) : reviewMode(config),
   );
 let buffered = { key: "", text: "" };
 const stepKey = (e: TurnStepInput): string => `${e.agentId ?? ""}:${e.turnId}:${e.index}`;
@@ -291,12 +271,18 @@ async function finishReview(
   $: EngineInterface,
   candidate: Candidate,
   verdict: Verdict,
+  reviewConfig: Config,
 ): Promise<Shown> {
-  const mode = disposition(verdict);
+  const mode =
+    verdict.decision === "REVISE" && gate.revisions >= reviewConfig.maxRevisions
+      ? "notice"
+      : disposition(verdict);
+  gate.findings = verdict.findings;
   debug.record("review.complete", {
     epoch: candidate.epoch,
     reviewToken: candidate.token,
     verdict,
+    method: gate.reviewMode,
     mode,
     revisions: gate.revisions,
   });
@@ -307,7 +293,7 @@ async function finishReview(
     const delivery: Delivery = {
       token: candidate.token,
       epoch: candidate.epoch,
-      context: correction(candidate.text, verdict.findings, config.language),
+      context: correction(candidate.text, verdict.findings, reviewConfig.language),
       mode: "revise",
       findings: verdict.findings,
     };
@@ -347,6 +333,9 @@ async function verify(
   signal: AbortSignal,
 ): Promise<Shown> {
   const epoch = gate.epoch;
+  const reviewConfig = { ...config };
+  const method = reviewMode(reviewConfig);
+  gate.reviewMode = method;
   const logger = debug;
   const candidate: Candidate = {
     token: ++gate.serial,
@@ -364,7 +353,7 @@ async function verify(
   gate.active = candidate;
   gate.phase = "reviewing";
   log.record($.clock.now(), t("reviewStarted", candidate.token));
-  const timer = $.clock.after(config.reviewTimeoutMs, () => {
+  const timer = $.clock.after(reviewConfig.reviewTimeoutMs, () => {
     if (!current(gate, candidate)) return;
     candidate.timedOut = true;
     candidate.controller.abort();
@@ -373,58 +362,59 @@ async function verify(
   const materialOperationId = debug.operation();
   try {
     await saveRecovery($, gate, signal);
-    logger.record("material.start", {
-      operationId: materialOperationId,
-      epoch,
-      reviewToken: candidate.token,
-    });
-    if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
-    const generated = await $.process.run(
-      ["node", `${$.plugin.root}/hooks/session-log.mts`, "create"],
-      {
-        stdin: JSON.stringify({
-          sessionId: await $.session.id(),
-          request: gate.marker,
-          debug: { ...debug.identity(), reviewId: `${epoch}-${candidate.token}` },
-        }),
-        timeoutMs: 15_000,
-      },
-    );
-    logger.record("material.complete", { operationId: materialOperationId, result: generated });
-    if (epoch === gate.epoch) await flushDebug($, logger, false, signal);
-    if (generated.exitCode !== 0 || generated.isStdoutTruncated) {
-      if (!current(gate, candidate) || signal.aborted) return hidden;
-      logger.record("review.unverified", {
-        reason: "material_failed",
-        epoch,
-        reviewToken: candidate.token,
-      });
-      return await finishReview($, candidate, unverified());
-    }
-    const material = JSON.parse(generated.stdout);
-    if (material.debug?.state === "failed") debugFailure($, material.debug);
-    directory = material.directory;
-    candidate.context = generated.stdout;
     if (!current(gate, candidate) || signal.aborted) return hidden;
-    gate.material = directory;
-    await saveRecovery($, gate, signal);
-    const reviewLogger = debug;
-    let verdict = await review($, config, candidate, gate.prompt, e.model, e.effort, {
+    if (method === "complete") {
+      const generated = await prepareMaterial(
+        $,
+        gate.marker,
+        `${epoch}-${candidate.token}`,
+        {
+          logger,
+          flush: (s) => flushDebug($, logger, false, s),
+          rememberTask: (id) => rememberTask(gate, id),
+          saveTasks: () => saveRecovery($, gate),
+        },
+        candidate,
+        materialOperationId,
+      );
+      if (generated.exitCode !== 0 || generated.isStdoutTruncated) {
+        if (!current(gate, candidate) || signal.aborted) return hidden;
+        logger.record("review.unverified", {
+          reason: "material_failed",
+          epoch,
+          reviewToken: candidate.token,
+        });
+        return await finishReview($, candidate, unverified(), reviewConfig);
+      }
+      const material = JSON.parse(generated.stdout);
+      if (material.debug?.state === "failed") debugFailure($, material.debug);
+      directory = material.directory;
+      candidate.context = generated.stdout;
+      if (!current(gate, candidate) || signal.aborted) return hidden;
+      gate.material = directory;
+      await saveRecovery($, gate, signal);
+    }
+    const reviewLogger = logger;
+    const io = {
       logger: reviewLogger,
-      flush: (s) => flushDebug($, reviewLogger, false, s),
-      rememberTask: (id) => rememberTask(gate, id),
+      flush: (s: AbortSignal) => flushDebug($, reviewLogger, false, s),
+      rememberTask: (id: string) => rememberTask(gate, id),
       saveTasks: () => saveRecovery($, gate),
-    });
+    };
+    let verdict =
+      method === "fork"
+        ? await forkReview($, reviewConfig, candidate, gate.prompt, gate.findings, io)
+        : await review($, reviewConfig, candidate, gate.prompt, e.model, e.effort, io);
     if (!current(gate, candidate) || signal.aborted) return hidden;
     if (candidate.timedOut) {
       log.record($.clock.now(), t("reviewTimeout", candidate.token));
       verdict = { decision: "UNVERIFIED", findings: [] };
     }
-    return await finishReview($, candidate, verdict);
+    return await finishReview($, candidate, verdict, reviewConfig);
   } catch (error) {
     logger.record("review.exception", { epoch, reviewToken: candidate.token, error }, "error");
     if (!current(gate, candidate) || signal.aborted) return hidden;
-    return await finishReview($, candidate, unverified());
+    return await finishReview($, candidate, unverified(), reviewConfig);
   } finally {
     if (directory !== undefined) {
       logger.record("material.release.start", { operationId: materialOperationId, directory });
@@ -572,7 +562,7 @@ const onStep: Hook<"turn.step"> = async function* ($, e, next) {
   } else {
     const work = question === undefined ? await interimWork($, text) : undefined;
     if (work !== undefined) shown = await skipInterim($, text, work, action, next.signal);
-    else if (gate.revisions >= config.maxRevisions) {
+    else if (config.maxRevisions === 0) {
       gate.phase = "unverified";
       log.record($.clock.now(), t("limitPublished"));
       debug.record("review.skipped", { reason: "revision_limit", revisions: gate.revisions });
@@ -673,7 +663,18 @@ const onTool: Hook<"tool.call"> = async (_$, e, next) => {
     return { deny: t("staleReviewer") };
   }
   if (next.origin.plugin !== "cerberus-gate") {
+    const active = gate.active;
     const result = await next(e);
+    if (
+      active &&
+      gate.reviewMode === "fork" &&
+      e.agentId !== undefined &&
+      "isError" in result &&
+      result.isError &&
+      "text" in result &&
+      result.text === "A model fork cannot use tools"
+    )
+      active.toolRequested = true;
     if (e.agentId === undefined) {
       trackMainTask(gate, e, backgroundTask(result));
       trackMainAgent(gate, result);

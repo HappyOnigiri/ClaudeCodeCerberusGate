@@ -10,6 +10,7 @@ interface DebugRecord {
   lines: number;
   data: {
     cwd: string;
+    method?: string;
     request: { prompt: string; system: string };
     operationId: string;
     elapsedMs: number;
@@ -57,7 +58,10 @@ export async function verifyDebug(work: string, artifacts: string, installedConf
         )
           throw new Error("Debug event identity/order");
         for (const start of events.filter((item) => item.event === "model.start")) {
-          if (!start.data.request.prompt || !start.data.request.system)
+          if (
+            !start.data.request.prompt ||
+            (!start.data.request.system && start.data.method !== "fork")
+          )
             throw new Error("Missing full model request");
           const terminal = events.find(
             (item) =>

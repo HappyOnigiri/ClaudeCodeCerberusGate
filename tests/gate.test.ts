@@ -655,9 +655,9 @@ void test("a task notification while a correction is queued keeps it and the cor
   assert.equal(h.events.prompts[1]!.drop, undefined);
   const reviewsAtCap = h.events.models.length;
   const materialsAtCap = h.events.materialRequests.length;
-  assert.deepEqual(shown(await h.step()), noted(REVISION_LIMIT, "CORRECTED"));
-  assert.equal(h.events.models.length, reviewsAtCap);
-  assert.equal(h.events.materialRequests.length, materialsAtCap);
+  assert.deepEqual(shown(await h.step()), noted(PASSED, "CORRECTED"));
+  assert.equal(h.events.models.length, reviewsAtCap + 1);
+  assert.equal(h.events.materialRequests.length, materialsAtCap + 1);
   assert.equal(h.events.prompts.length, 2);
   await h.prompt("new request");
   h.replies.push(verdict());
@@ -741,8 +741,8 @@ void test("reload preserves correction counts across queued and accepted correct
     assert.equal((await next.step()).text, "");
     await next.flushCorrections();
     const reviewsAtCap = next.events.models.length;
-    assert.deepEqual(shown(await next.step()), noted(REVISION_LIMIT, "UNPUBLISHED DRAFT"));
-    assert.equal(next.events.models.length, reviewsAtCap);
+    assert.deepEqual(shown(await next.step()), noted(PASSED, "UNPUBLISHED DRAFT"));
+    assert.equal(next.events.models.length, reviewsAtCap + 1);
     assert.equal(next.events.prompts.length, 2);
   }
 });
